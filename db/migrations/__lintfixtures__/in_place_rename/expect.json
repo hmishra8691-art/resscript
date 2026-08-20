@@ -1,0 +1,5 @@
+{
+  "codes": ["IN_PLACE_RENAME"],
+  "object": "app.projects",
+  "why": "B 14 bans in-place renames; reversal is expand/contract."
+}

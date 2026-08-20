@@ -1,0 +1,164 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens, three layers: primitives -> semantic -> component (UI §11).
+ *
+ * WHY CSS custom properties and not Tailwind `dark:` variants: dark mode is then a variable
+ * swap in one place instead of a second class on every element, and the studio is a tool people
+ * use for eight hours, so dark mode is not optional. A component never references a primitive
+ * directly — it uses the semantic layer, which is what makes re-theming possible at all.
+ *
+ * Density is COMPACT by default: 13px base, 28px controls, 24px rows, 4px grid (UI §11). The
+ * primary user is looking at a 2,000-row tree on a 13-inch laptop; consumer-grade padding would
+ * mean a third as much information per screen.
+ */
+@layer base {
+  :root {
+    /* primitives */
+    --rs-gray-0: #ffffff;
+    --rs-gray-50: #f7f8f9;
+    --rs-gray-100: #eceef1;
+    --rs-gray-200: #dcdfe4;
+    --rs-gray-300: #c1c6cd;
+    --rs-gray-500: #6b7280;
+    --rs-gray-700: #374151;
+    --rs-gray-800: #1f2430;
+    --rs-gray-900: #12151c;
+    --rs-blue-500: #2563eb;
+    --rs-blue-300: #93b4fd;
+    --rs-red-500: #dc2626;
+    --rs-amber-500: #d97706;
+    --rs-green-500: #059669;
+
+    /* semantic */
+    --rs-surface: var(--rs-gray-0);
+    --rs-surface-raised: var(--rs-gray-50);
+    --rs-surface-sunken: var(--rs-gray-100);
+    --rs-text: var(--rs-gray-900);
+    --rs-text-muted: var(--rs-gray-500);
+    --rs-border: var(--rs-gray-200);
+    --rs-border-focus: var(--rs-blue-500);
+    --rs-accent: var(--rs-blue-500);
+    --rs-accent-text: var(--rs-gray-0);
+    --rs-danger: var(--rs-red-500);
+    --rs-warning: var(--rs-amber-500);
+    --rs-success: var(--rs-green-500);
+
+    /* component */
+    --rs-topbar-height: 44px;
+    --rs-rail-width: 220px;
+    --rs-control-height: 28px;
+    --rs-row-height: 24px;
+    --rs-radius: 4px;
+    --rs-font-size: 13px;
+  }
+
+  /* `class` strategy on <html>, defaulting to prefers-color-scheme (UI §11). */
+  @media (prefers-color-scheme: dark) {
+    :root:not(.light) {
+      --rs-surface: var(--rs-gray-900);
+      --rs-surface-raised: var(--rs-gray-800);
+      --rs-surface-sunken: #0b0d12;
+      --rs-text: var(--rs-gray-100);
+      --rs-text-muted: var(--rs-gray-300);
+      --rs-border: #2b303c;
+      --rs-accent: var(--rs-blue-300);
+      --rs-accent-text: var(--rs-gray-900);
+    }
+  }
+
+  :root.dark {
+    --rs-surface: var(--rs-gray-900);
+    --rs-surface-raised: var(--rs-gray-800);
+    --rs-surface-sunken: #0b0d12;
+    --rs-text: var(--rs-gray-100);
+    --rs-text-muted: var(--rs-gray-300);
+    --rs-border: #2b303c;
+    --rs-accent: var(--rs-blue-300);
+    --rs-accent-text: var(--rs-gray-900);
+  }
+
+  html,
+  body {
+    background: var(--rs-surface);
+    color: var(--rs-text);
+    font-size: var(--rs-font-size);
+    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+
+  /* Visible focus on every interactive element — never removed, only restyled (UI §11). */
+  :focus-visible {
+    outline: 2px solid var(--rs-border-focus);
+    outline-offset: 1px;
+  }
+
+  /* `prefers-reduced-motion` disables pane animations and toast slides. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  .rs-input,
+  .rs-select {
+    height: var(--rs-control-height);
+    border: 1px solid var(--rs-border);
+    border-radius: var(--rs-radius);
+    background: var(--rs-surface);
+    color: var(--rs-text);
+    padding: 0 6px;
+    font-size: var(--rs-font-size);
+  }
+
+  .rs-button {
+    height: var(--rs-control-height);
+    padding: 0 10px;
+    border: 1px solid var(--rs-border);
+    border-radius: var(--rs-radius);
+    background: var(--rs-surface-raised);
+    color: var(--rs-text);
+    font-size: var(--rs-font-size);
+    cursor: pointer;
+  }
+
+  .rs-button[data-variant='primary'] {
+    background: var(--rs-accent);
+    color: var(--rs-accent-text);
+    border-color: transparent;
+  }
+
+  .rs-button:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+
+  .rs-card {
+    border: 1px solid var(--rs-border);
+    border-radius: var(--rs-radius);
+    background: var(--rs-surface-raised);
+    padding: 8px;
+  }
+
+  .rs-table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .rs-table th,
+  .rs-table td {
+    height: var(--rs-row-height);
+    text-align: left;
+    padding: 2px 6px;
+    border-bottom: 1px solid var(--rs-border);
+    white-space: nowrap;
+  }
+
+  .rs-muted {
+    color: var(--rs-text-muted);
+  }
+}

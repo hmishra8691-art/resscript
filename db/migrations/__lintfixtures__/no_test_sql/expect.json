@@ -1,0 +1,5 @@
+{
+  "codes": ["MISSING_TEST_SQL"],
+  "object": "no_test_sql",
+  "why": "A migration with no test.sql opted out of the cross-tenant isolation assertions that ADR-009 requires on every migration."
+}

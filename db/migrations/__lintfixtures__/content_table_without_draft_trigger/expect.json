@@ -1,0 +1,5 @@
+{
+  "codes": ["CONTENT_TABLE_WITHOUT_DRAFT_TRIGGER"],
+  "object": "content.fixture_nodes",
+  "why": "ADR-002 makes the version the unit of immutability; a content table without content.tg_draft_only bypasses it."
+}

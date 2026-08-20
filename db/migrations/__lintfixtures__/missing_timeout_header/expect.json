@@ -1,0 +1,5 @@
+{
+  "codes": ["MISSING_TIMEOUT_HEADER"],
+  "object": "missing_timeout_header/up.sql",
+  "why": "An ALTER TABLE waiting behind a long read drags an ACCESS EXCLUSIVE lock queue with it and stalls the runtime."
+}

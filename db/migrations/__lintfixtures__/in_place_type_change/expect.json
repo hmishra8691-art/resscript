@@ -1,0 +1,5 @@
+{
+  "codes": ["IN_PLACE_TYPE_CHANGE"],
+  "object": "app.survey_versions.notes",
+  "why": "Rewrites the table under ACCESS EXCLUSIVE and changes the shape the running app serializes against."
+}

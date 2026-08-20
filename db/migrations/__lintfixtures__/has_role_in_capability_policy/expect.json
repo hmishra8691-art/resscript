@@ -1,0 +1,5 @@
+{
+  "codes": ["HAS_ROLE_IN_CAPABILITY_POLICY"],
+  "object": "export.fixture_pii_columns.fixture_pii_read",
+  "why": "Deliverable K 1: has_role() is forbidden in a policy governing pii_access or custom_code, because a Project Manager outranks an Analyst and must not inherit PII access. CI greps for it."
+}

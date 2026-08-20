@@ -1,0 +1,199 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXT_TELEMETRY_DISABLED: '1'
+  TURBO_TELEMETRY_DISABLED: '1'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Static gates. Cheap, and each one protects a decision that is expensive to
+  # reverse, so they run before anything that takes minutes.
+  # ---------------------------------------------------------------------------
+  static:
+    name: Static gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # ADR-010's import graph. `packages/logic` must stay dependency-free or the identical
+      # evaluator cannot run in QuickJS; `apps/runtime` must never link a Supabase client or
+      # the ADR-001 plane boundary is gone. Both are one careless import away at any time.
+      - name: Import graph (ADR-010)
+        run: pnpm lint:graph
+
+      # M0.2's acceptance criteria. Every rule here names the offending object.
+      # A rule that never fires satisfies lint:graph perfectly while protecting nothing.
+      # runtime-no-supabase was exactly that until this self-test caught it.
+      - name: Import graph rules actually fire
+        run: pnpm lint:graph:test
+
+      - name: Migration lint (M0.2)
+        run: pnpm lint:migrations
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+  # ---------------------------------------------------------------------------
+  # Database. A real Postgres, not a mock.
+  #
+  # This job exists because the alternative was tried: PgJobStore's SQL was pinned by
+  # contract tests against a recording client, and those tests passed while every real call
+  # failed with "malformed array literal" — the bind order was transposed relative to the
+  # function's declaration. A recording client can only prove the code is self-consistent.
+  # Nothing short of a live server proves it agrees with the database.
+  # ---------------------------------------------------------------------------
+  database:
+    name: Migrations and RLS
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # pgTAP is not in the official image, so it is installed in the step below. Pinned to
+        # the major version production runs; a minor bump must not silently change behaviour
+        # the RLS suite depends on.
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: resscript
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/resscript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install pgTAP
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 postgresql-16-pgtap || \
+            sudo apt-get install -y postgresql-client postgresql-16-pgtap
+
+      - name: Apply migrations
+        run: node tools/migrate/cli.mjs up
+
+      # Forward-only migrations must be idempotent, or a re-run during a partial deploy
+      # corrupts the schema. Asserted, not assumed.
+      - name: Migrations are idempotent
+        run: |
+          node tools/migrate/cli.mjs up | tee /tmp/second.log
+          grep -q "up to date" /tmp/second.log
+
+      # The cross-tenant suite. ADR-009: tenant isolation is not something you assert once in
+      # a design document.
+      - name: pgTAP suite
+        run: node tools/migrate/cli.mjs test
+
+  # ---------------------------------------------------------------------------
+  # Unit and integration tests, against the same live Postgres.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: resscript
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/resscript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Apply migrations
+        run: node tools/migrate/cli.mjs up
+
+      - name: Tests
+        run: pnpm test
+
+      # PgJobStore's integration tests skip themselves when DATABASE_URL is unset, which is
+      # correct for a laptop and unacceptable here: a skipped test is a test that cannot fail.
+      # Assert they actually ran.
+      - name: Integration tests must not have skipped
+        run: |
+          pnpm --filter @resscript/worker test 2>&1 | tee /tmp/worker.log
+          if grep -q "integration tests SKIPPED" /tmp/worker.log; then
+            echo "::error::PgJobStore integration tests skipped — DATABASE_URL not visible to the test process"
+            exit 1
+          fi
+
+      - name: Build
+        run: pnpm build
+
+  # ---------------------------------------------------------------------------
+  # Release ordering: migrations apply BEFORE application code deploys, and a failing
+  # migration aborts the release without deploying anything (M0.3 acceptance).
+  #
+  # Deliberately not a matrix over the three deployables: they must be sequenced after the
+  # migration step, and a matrix would let one start while the migration is still running.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy (prod)
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [static, database, test]
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Step 1, and it gates everything after it. An expand-only migration convention
+      # (db/README.md) is what makes this safe to run before the code that uses it.
+      - name: Apply migrations to prod
+        env:
+          DATABASE_URL: ${{ secrets.PROD_DATABASE_URL }}
+        run: node tools/migrate/cli.mjs up
+
+      - name: Deploy studio
+        run: 'echo TODO M0.3 wire the hosting provider - gated on migrations above'
+      - name: Deploy runtime
+        run: 'echo TODO M0.3 wire the hosting provider - gated on migrations above'
+      - name: Deploy worker
+        run: 'echo TODO M0.3 wire the hosting provider - gated on migrations above'
+
+      # ADR-005 / P1-11 block on wildcard TLS for *.run.<domain>, and certificate
+      # provisioning is slow. Verified on every prod deploy so it is discovered now rather
+      # than on the day preview mode ships.
+      - name: Wildcard TLS probe
+        run: 'echo TODO M0.3 probe https://probe-test.run.DOMAIN for a valid certificate'

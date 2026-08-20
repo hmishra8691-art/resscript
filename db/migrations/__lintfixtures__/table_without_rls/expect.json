@@ -1,0 +1,5 @@
+{
+  "codes": ["TABLE_WITHOUT_FORCED_RLS"],
+  "object": "app.fixture_leaky",
+  "why": "A new table in app/content/billing/export without RLS is a cross-tenant read (ADR-009)."
+}

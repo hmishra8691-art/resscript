@@ -1,0 +1,47 @@
+import type { NextConfig } from 'next';
+
+/**
+ * WHY `transpilePackages`: `@resscript/schema` and `@resscript/observability` publish their
+ * `src/*.ts` directly (see their `exports` maps) so the monorepo has one source of truth and
+ * no build step between packages. Next must therefore compile them itself instead of
+ * treating them as pre-built CJS/ESM dependencies.
+ */
+const nextConfig: NextConfig = {
+  reactStrictMode: true,
+  transpilePackages: ['@resscript/schema', '@resscript/observability'],
+  /**
+   * WHY `extensionAlias`: those packages are ESM-correct TypeScript — they import siblings as
+   * `./registries.js` because that is what the emitted ESM must say, while the file on disk is
+   * `registries.ts`. `tsc` and Vite both resolve that automatically; webpack does not, and
+   * without this the build fails with "Can't resolve './registries.js'".
+   *
+   * The alternative would be to make those packages emit `dist/` and point their `exports` at
+   * it, which trades one line here for a build step between every package and every consumer.
+   */
+  webpack: (config: {
+    resolve: { extensionAlias?: Record<string, readonly string[]> };
+  }) => {
+    config.resolve.extensionAlias = {
+      ...config.resolve.extensionAlias,
+      '.js': ['.ts', '.tsx', '.js'],
+      '.mjs': ['.mts', '.mjs'],
+    };
+    return config;
+  },
+  // The studio is an authenticated control plane: nothing here should ever be cached by an
+  // intermediary, and the API surface must not be embedded in a third-party page.
+  async headers() {
+    return [
+      {
+        source: '/api/:path*',
+        headers: [
+          { key: 'Cache-Control', value: 'no-store' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+        ],
+      },
+    ];
+  },
+};
+
+export default nextConfig;

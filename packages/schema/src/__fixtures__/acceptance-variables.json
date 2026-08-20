@@ -1,0 +1,443 @@
+[
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "S1",
+    "export_column": "S1",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "S2",
+    "export_column": "S2",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "S3r1",
+    "export_column": "S3r1",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "S3r2",
+    "export_column": "S3r2",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "S3r3",
+    "export_column": "S3r3",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "S3r4",
+    "export_column": "S3r4",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "S3r5",
+    "export_column": "S3r5",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "S3r6",
+    "export_column": "S3r6",
+    "pii": false
+  },
+  {
+    "type": "set",
+    "kind": "derived",
+    "name": "S3",
+    "export_column": "S3",
+    "pii": false
+  },
+  {
+    "type": "text",
+    "kind": "response",
+    "name": "S3r6_other",
+    "export_column": "S3r6_other",
+    "pii": true
+  },
+  {
+    "type": "number",
+    "kind": "response",
+    "name": "S4",
+    "export_column": "S4",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q1",
+    "export_column": "Q1",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q2r1",
+    "export_column": "Q2r1",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q2r2",
+    "export_column": "Q2r2",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q2r3",
+    "export_column": "Q2r3",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q2r4",
+    "export_column": "Q2r4",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q2r5",
+    "export_column": "Q2r5",
+    "pii": false
+  },
+  {
+    "type": "set",
+    "kind": "derived",
+    "name": "Q2",
+    "export_column": "Q2",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q3r1",
+    "export_column": "Q3r1",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q3r2",
+    "export_column": "Q3r2",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q3r3",
+    "export_column": "Q3r3",
+    "pii": false
+  },
+  {
+    "type": "number",
+    "kind": "response",
+    "name": "Q4r1",
+    "export_column": "Q4r1",
+    "pii": false
+  },
+  {
+    "type": "number",
+    "kind": "response",
+    "name": "Q4r2",
+    "export_column": "Q4r2",
+    "pii": false
+  },
+  {
+    "type": "number",
+    "kind": "response",
+    "name": "Q4r3",
+    "export_column": "Q4r3",
+    "pii": false
+  },
+  {
+    "type": "number",
+    "kind": "response",
+    "name": "Q4r4",
+    "export_column": "Q4r4",
+    "pii": false
+  },
+  {
+    "type": "number",
+    "kind": "response",
+    "name": "Q5r1",
+    "export_column": "Q5r1",
+    "pii": false
+  },
+  {
+    "type": "text",
+    "kind": "response",
+    "name": "Q5r2",
+    "export_column": "Q5r2",
+    "pii": true
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q5r3",
+    "export_column": "Q5r3",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q6",
+    "export_column": "Q6",
+    "pii": false
+  },
+  {
+    "type": "text",
+    "kind": "response",
+    "name": "Q6_other",
+    "export_column": "Q6_other",
+    "pii": true
+  },
+  {
+    "type": "number",
+    "kind": "response",
+    "name": "Q7",
+    "export_column": "Q7",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "derived",
+    "name": "Q7_band",
+    "export_column": "Q7_band",
+    "pii": false
+  },
+  {
+    "type": "text",
+    "kind": "response",
+    "name": "Q8",
+    "export_column": "Q8",
+    "pii": true
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q9",
+    "export_column": "Q9",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q10r1",
+    "export_column": "Q10r1",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q10r2",
+    "export_column": "Q10r2",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q10r3",
+    "export_column": "Q10r3",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q10r4",
+    "export_column": "Q10r4",
+    "pii": false
+  },
+  {
+    "type": "set",
+    "kind": "derived",
+    "name": "Q10",
+    "export_column": "Q10",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q11r1",
+    "export_column": "Q11r1",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q11r2",
+    "export_column": "Q11r2",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q12",
+    "export_column": "Q12",
+    "pii": false
+  },
+  {
+    "type": "number",
+    "kind": "response",
+    "name": "Q13",
+    "export_column": "Q13",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q14",
+    "export_column": "Q14",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q15",
+    "export_column": "Q15",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q16",
+    "export_column": "Q16",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q17r1",
+    "export_column": "Q17r1",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q17r2",
+    "export_column": "Q17r2",
+    "pii": false
+  },
+  {
+    "type": "boolean",
+    "kind": "response",
+    "name": "Q17r3",
+    "export_column": "Q17r3",
+    "pii": false
+  },
+  {
+    "type": "set",
+    "kind": "derived",
+    "name": "Q17",
+    "export_column": "Q17",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q18r1",
+    "export_column": "Q18r1",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q18r2",
+    "export_column": "Q18r2",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q18r3",
+    "export_column": "Q18r3",
+    "pii": false
+  },
+  {
+    "type": "number",
+    "kind": "response",
+    "name": "Q19",
+    "export_column": "Q19",
+    "pii": false
+  },
+  {
+    "type": "date",
+    "kind": "response",
+    "name": "Q20",
+    "export_column": "Q20",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q21",
+    "export_column": "Q21",
+    "pii": false
+  },
+  {
+    "type": "text",
+    "kind": "response",
+    "name": "Q22",
+    "export_column": "Q22",
+    "pii": true
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q23",
+    "export_column": "Q23",
+    "pii": false
+  },
+  {
+    "type": "number",
+    "kind": "response",
+    "name": "Q24",
+    "export_column": "Q24",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q25",
+    "export_column": "Q25",
+    "pii": false
+  },
+  {
+    "type": "enum",
+    "kind": "response",
+    "name": "Q26",
+    "export_column": "Q26",
+    "pii": false
+  },
+  {
+    "type": "text",
+    "kind": "hidden",
+    "name": "VENDOR_PID",
+    "export_column": "VENDOR_PID",
+    "pii": true
+  },
+  {
+    "type": "text",
+    "kind": "hidden",
+    "name": "SAMPLE_WAVE",
+    "export_column": "SAMPLE_WAVE",
+    "pii": false
+  }
+]

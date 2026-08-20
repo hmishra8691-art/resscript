@@ -1,0 +1,5 @@
+{
+  "codes": ["TABLE_WITHOUT_FORCED_RLS"],
+  "object": "billing.fixture_half_locked",
+  "why": "ENABLE alone is the subtler half of the same bug and must be rejected by name."
+}

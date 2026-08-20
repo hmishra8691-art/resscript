@@ -1,0 +1,5 @@
+{
+  "codes": ["MISSING_UP_SQL"],
+  "object": "no_up_sql",
+  "why": "Forward-only means up.sql is the only script there is."
+}

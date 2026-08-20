@@ -1,0 +1,33 @@
+{
+  // Extends the repo base so `strict`, `exactOptionalPropertyTypes`,
+  // `noUncheckedIndexedAccess` and `verbatimModuleSyntax` are inherited rather than
+  // restated (and therefore cannot drift). The overrides below are the Next.js-specific
+  // ones only.
+  //
+  // WHY `composite: false` / `noEmit: true`: `next build` owns emit. A composite project
+  // would make `tsc -b` write `.d.ts` for React components nobody imports across a package
+  // boundary, and would force every other package that referenced this one to build Next's
+  // output. This app is a leaf: nothing references it, and its script is `tsc --noEmit`.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "preserve",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "composite": false,
+    "incremental": true,
+    "tsBuildInfoFile": ".next/tsconfig.tsbuildinfo",
+    "declaration": false,
+    "declarationMap": false,
+    "allowJs": true,
+    "resolveJsonModule": true,
+    "types": ["node"],
+    "plugins": [{ "name": "next" }],
+    "paths": {
+      "@/*": ["./src/*"]
+    }
+  },
+  "include": ["next-env.d.ts", "src/**/*.ts", "src/**/*.tsx", "e2e/**/*.ts", ".next/types/**/*.ts"],
+  "exclude": ["node_modules", ".next"]
+}

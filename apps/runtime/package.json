@@ -1,0 +1,23 @@
+{
+  "name": "@resscript/runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run --passWithNoTests",
+    "dev": "node --watch dist/server.js",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@resscript/logic": "workspace:*",
+    "@resscript/runtime-core": "workspace:*",
+    "@resscript/schema": "workspace:*",
+    "@resscript/observability": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.3"
+  }
+}

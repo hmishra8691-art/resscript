@@ -1,0 +1,5 @@
+{
+  "codes": ["VOLATILE_DEFAULT"],
+  "object": "app.projects.external_ref",
+  "why": "A volatile default forces a full table rewrite while holding ACCESS EXCLUSIVE."
+}

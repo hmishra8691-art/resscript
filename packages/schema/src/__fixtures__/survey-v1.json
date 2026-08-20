@@ -1,0 +1,3972 @@
+{
+  "content": [
+    {
+      "id": "blk_01K32CD000DXHX2P22DGA2QAK6",
+      "ref": "SCREENER",
+      "type": "block",
+      "children": [
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAK3",
+          "ref": "P1",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAF7",
+              "ref": "S1",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAMA"
+              ],
+              "label": {
+                "key": "s1.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAF2",
+                  "ref": "a1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.1"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAF3",
+                  "ref": "a2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.2"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAF4",
+                  "ref": "a3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.3"
+                  },
+                  "position": 3
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAF5",
+                  "ref": "a4",
+                  "code": 4,
+                  "label": {
+                    "key": "item.4"
+                  },
+                  "position": 4
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAF6",
+                  "ref": "a5",
+                  "code": 5,
+                  "label": {
+                    "key": "item.5"
+                  },
+                  "position": 5
+                }
+              ],
+              "required": true
+            },
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAFB",
+              "ref": "S2",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAMB"
+              ],
+              "label": {
+                "key": "s2.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAF8",
+                  "ref": "g1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.6"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAF9",
+                  "ref": "g2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.7"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFA",
+                  "ref": "g3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.8"
+                  },
+                  "position": 3
+                }
+              ],
+              "required": true
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAK4",
+          "ref": "P2",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAFK",
+              "ref": "S3",
+              "type": "question",
+              "question_type": "multi_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAMC",
+                "var_01K32CD000DXHX2P22DGA2QAMD",
+                "var_01K32CD000DXHX2P22DGA2QAME",
+                "var_01K32CD000DXHX2P22DGA2QAMF",
+                "var_01K32CD000DXHX2P22DGA2QAMG",
+                "var_01K32CD000DXHX2P22DGA2QAMH",
+                "var_01K32CD000DXHX2P22DGA2QAMJ",
+                "var_01K32CD000DXHX2P22DGA2QAMK"
+              ],
+              "label": {
+                "key": "s3.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFC",
+                  "ref": "i1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.9"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFD",
+                  "ref": "i2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.10"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFE",
+                  "ref": "i3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.11"
+                  },
+                  "position": 3
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFF",
+                  "ref": "i4",
+                  "code": 4,
+                  "label": {
+                    "key": "item.12"
+                  },
+                  "position": 4
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFG",
+                  "ref": "i5",
+                  "code": 5,
+                  "label": {
+                    "key": "item.13"
+                  },
+                  "position": 5
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFH",
+                  "ref": "i6",
+                  "code": 6,
+                  "label": {
+                    "key": "item.14"
+                  },
+                  "other_specify": true,
+                  "position": 6
+                }
+              ],
+              "required": true,
+              "validation": [
+                {
+                  "id": "val_01K32CD000DXHX2P22DGA2QAFJ",
+                  "type": "min_selections",
+                  "message_key": "err.pick_one",
+                  "params": {
+                    "n": 1
+                  }
+                }
+              ]
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAK5",
+          "ref": "P3",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAFM",
+              "ref": "S4",
+              "type": "question",
+              "question_type": "numeric",
+              "config": {
+                "max": 2026,
+                "min": 1900
+              },
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAMM"
+              ],
+              "label": {
+                "key": "s4.label"
+              },
+              "required": true
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        }
+      ],
+      "title": {
+        "key": "blk.screener.title"
+      }
+    },
+    {
+      "id": "blk_01K32CD000DXHX2P22DGA2QAKN",
+      "ref": "MAIN",
+      "type": "block",
+      "children": [
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAK7",
+          "ref": "P4",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAFQ",
+              "ref": "Q1",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAMN"
+              ],
+              "label": {
+                "key": "q1.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFN",
+                  "ref": "y",
+                  "code": 1,
+                  "label": {
+                    "key": "item.15"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFP",
+                  "ref": "n",
+                  "code": 2,
+                  "label": {
+                    "key": "item.16"
+                  },
+                  "position": 2
+                }
+              ],
+              "required": true
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAK8",
+          "ref": "P5",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAFX",
+              "ref": "Q2",
+              "type": "question",
+              "question_type": "multi_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAMP",
+                "var_01K32CD000DXHX2P22DGA2QAMQ",
+                "var_01K32CD000DXHX2P22DGA2QAMR",
+                "var_01K32CD000DXHX2P22DGA2QAMS",
+                "var_01K32CD000DXHX2P22DGA2QAMT",
+                "var_01K32CD000DXHX2P22DGA2QAMV"
+              ],
+              "label": {
+                "key": "q2.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFR",
+                  "ref": "b1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.17"
+                  },
+                  "meta": {
+                    "brand_id": "A",
+                    "price_point": 6.99
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFS",
+                  "ref": "b2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.18"
+                  },
+                  "meta": {
+                    "brand_id": "B",
+                    "price_point": 5.49
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFT",
+                  "ref": "b3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.19"
+                  },
+                  "meta": {
+                    "brand_id": "C",
+                    "price_point": 8.25
+                  },
+                  "position": 3
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFV",
+                  "ref": "b4",
+                  "code": 4,
+                  "label": {
+                    "key": "item.20"
+                  },
+                  "meta": {
+                    "brand_id": "D",
+                    "price_point": 4.15
+                  },
+                  "position": 4
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFW",
+                  "ref": "b5",
+                  "code": 5,
+                  "exclusive": true,
+                  "label": {
+                    "key": "item.21"
+                  },
+                  "position": 5
+                }
+              ],
+              "randomize_options": {
+                "group_ref": "brands",
+                "mode": "shuffle",
+                "respect_anchors": true,
+                "seed_salt": "Q2.opts"
+              },
+              "required": true
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAK9",
+          "ref": "P6",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAG6",
+              "ref": "Q3",
+              "type": "question",
+              "question_type": "matrix",
+              "columns": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAG1",
+                  "ref": "q3c1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.25"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAG2",
+                  "ref": "q3c2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.26"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAG3",
+                  "ref": "q3c3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.27"
+                  },
+                  "position": 3
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAG4",
+                  "ref": "q3c4",
+                  "code": 4,
+                  "label": {
+                    "key": "item.28"
+                  },
+                  "position": 4
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAG5",
+                  "ref": "q3c5",
+                  "code": 5,
+                  "label": {
+                    "key": "item.29"
+                  },
+                  "position": 5
+                }
+              ],
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAMW",
+                "var_01K32CD000DXHX2P22DGA2QAMX",
+                "var_01K32CD000DXHX2P22DGA2QAMY"
+              ],
+              "label": {
+                "key": "q3.label"
+              },
+              "randomize_rows": {
+                "group_ref": "brands",
+                "mode": "shuffle",
+                "seed_salt": "Q3.rows"
+              },
+              "required": true,
+              "rows": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFY",
+                  "ref": "r1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.22"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAFZ",
+                  "ref": "r2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.23"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAG0",
+                  "ref": "r3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.24"
+                  },
+                  "position": 3
+                }
+              ]
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKA",
+          "ref": "P7",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAGC",
+              "ref": "Q4",
+              "type": "question",
+              "question_type": "numeric_list",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAMZ",
+                "var_01K32CD000DXHX2P22DGA2QAN0",
+                "var_01K32CD000DXHX2P22DGA2QAN1",
+                "var_01K32CD000DXHX2P22DGA2QAN2"
+              ],
+              "label": {
+                "key": "q4.label"
+              },
+              "required": true,
+              "rows": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAG7",
+                  "ref": "r1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.30"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAG8",
+                  "ref": "r2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.31"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAG9",
+                  "ref": "r3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.32"
+                  },
+                  "position": 3
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGA",
+                  "ref": "r4",
+                  "code": 4,
+                  "label": {
+                    "key": "item.33"
+                  },
+                  "position": 4
+                }
+              ],
+              "validation": [
+                {
+                  "id": "val_01K32CD000DXHX2P22DGA2QAGB",
+                  "type": "sum_equals",
+                  "message_key": "err.sum100",
+                  "params": {
+                    "value": 100
+                  },
+                  "scope": "page"
+                }
+              ]
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKB",
+          "ref": "P8",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAGN",
+              "ref": "Q5",
+              "type": "question",
+              "question_type": "matrix_mixed",
+              "cells": [
+                {
+                  "control": {
+                    "question_type": "numeric",
+                    "config": {
+                      "max": 100,
+                      "min": 0
+                    }
+                  },
+                  "row_ref": "r1"
+                },
+                {
+                  "control": {
+                    "question_type": "text",
+                    "config": {
+                      "max_len": 200
+                    }
+                  },
+                  "row_ref": "r2"
+                },
+                {
+                  "control": {
+                    "question_type": "single_select",
+                    "use_columns": true
+                  },
+                  "row_ref": "r3"
+                }
+              ],
+              "columns": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGG",
+                  "ref": "q5c1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.37"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGH",
+                  "ref": "q5c2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.38"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGJ",
+                  "ref": "q5c3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.39"
+                  },
+                  "position": 3
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGK",
+                  "ref": "q5c4",
+                  "code": 4,
+                  "label": {
+                    "key": "item.40"
+                  },
+                  "position": 4
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGM",
+                  "ref": "q5c5",
+                  "code": 5,
+                  "label": {
+                    "key": "item.41"
+                  },
+                  "position": 5
+                }
+              ],
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAN3",
+                "var_01K32CD000DXHX2P22DGA2QAN4",
+                "var_01K32CD000DXHX2P22DGA2QAN5"
+              ],
+              "label": {
+                "key": "q5.label"
+              },
+              "required": true,
+              "rows": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGD",
+                  "ref": "r1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.34"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGE",
+                  "ref": "r2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.35"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGF",
+                  "ref": "r3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.36"
+                  },
+                  "position": 3
+                }
+              ]
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKC",
+          "ref": "P9",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAGT",
+              "ref": "Q6",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAN6",
+                "var_01K32CD000DXHX2P22DGA2QAN7"
+              ],
+              "label": {
+                "key": "q6.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGP",
+                  "ref": "c1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.42"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGQ",
+                  "ref": "c2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.43"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGR",
+                  "ref": "c3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.44"
+                  },
+                  "position": 3
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGS",
+                  "ref": "c4",
+                  "code": 4,
+                  "label": {
+                    "key": "item.45"
+                  },
+                  "other_specify": true,
+                  "position": 4
+                }
+              ],
+              "required": true
+            },
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAGV",
+              "ref": "Q7",
+              "type": "question",
+              "question_type": "nps",
+              "config": {
+                "max": 10,
+                "min": 0
+              },
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAN8",
+                "var_01K32CD000DXHX2P22DGA2QAN9"
+              ],
+              "label": {
+                "key": "q7.label"
+              },
+              "required": true
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKD",
+          "ref": "P10",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAGW",
+              "ref": "Q8",
+              "type": "question",
+              "question_type": "open_text",
+              "config": {
+                "max_len": 1000
+              },
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANA"
+              ],
+              "label": {
+                "key": "q8.label"
+              },
+              "required": false
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKE",
+          "ref": "P11",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAH1",
+              "ref": "Q9",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANB"
+              ],
+              "label": {
+                "key": "q9.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGX",
+                  "ref": "f1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.46"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGY",
+                  "ref": "f2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.47"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAGZ",
+                  "ref": "f3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.48"
+                  },
+                  "position": 3
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAH0",
+                  "ref": "f4",
+                  "code": 4,
+                  "label": {
+                    "key": "item.49"
+                  },
+                  "position": 4
+                }
+              ],
+              "required": true
+            },
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAH6",
+              "ref": "Q10",
+              "type": "question",
+              "question_type": "multi_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANC",
+                "var_01K32CD000DXHX2P22DGA2QAND",
+                "var_01K32CD000DXHX2P22DGA2QANE",
+                "var_01K32CD000DXHX2P22DGA2QANF",
+                "var_01K32CD000DXHX2P22DGA2QANG"
+              ],
+              "label": {
+                "key": "q10.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAH2",
+                  "ref": "m1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.50"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAH3",
+                  "ref": "m2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.51"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAH4",
+                  "ref": "m3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.52"
+                  },
+                  "position": 3
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAH5",
+                  "ref": "m4",
+                  "code": 4,
+                  "label": {
+                    "key": "item.53"
+                  },
+                  "position": 4
+                }
+              ],
+              "required": true
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKF",
+          "ref": "P12",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAHE",
+              "ref": "Q11",
+              "type": "question",
+              "question_type": "matrix",
+              "columns": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAH9",
+                  "ref": "q11c1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.56"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHA",
+                  "ref": "q11c2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.57"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHB",
+                  "ref": "q11c3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.58"
+                  },
+                  "position": 3
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHC",
+                  "ref": "q11c4",
+                  "code": 4,
+                  "label": {
+                    "key": "item.59"
+                  },
+                  "position": 4
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHD",
+                  "ref": "q11c5",
+                  "code": 5,
+                  "label": {
+                    "key": "item.60"
+                  },
+                  "position": 5
+                }
+              ],
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANH",
+                "var_01K32CD000DXHX2P22DGA2QANJ"
+              ],
+              "label": {
+                "key": "q11.label"
+              },
+              "required": true,
+              "rows": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAH7",
+                  "ref": "r1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.54"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAH8",
+                  "ref": "r2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.55"
+                  },
+                  "position": 2
+                }
+              ]
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKG",
+          "ref": "P13",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAHK",
+              "ref": "Q12",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANK"
+              ],
+              "label": {
+                "key": "q12.label"
+              },
+              "masks": [
+                {
+                  "id": "msk_01K32CD000DXHX2P22DGA2QAHJ",
+                  "applies_to": "options",
+                  "fallback": {
+                    "when_empty": "skip_question"
+                  },
+                  "mode": "include",
+                  "source": {
+                    "kind": "selected_in",
+                    "variable_id": "var_01K32CD000DXHX2P22DGA2QAMV"
+                  }
+                }
+              ],
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHF",
+                  "ref": "p1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.61"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHG",
+                  "ref": "p2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.62"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHH",
+                  "ref": "p3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.63"
+                  },
+                  "position": 3
+                }
+              ],
+              "required": true
+            },
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAHM",
+              "ref": "Q13",
+              "type": "question",
+              "question_type": "numeric",
+              "config": {
+                "max": 1000,
+                "min": 0
+              },
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANM"
+              ],
+              "label": {
+                "key": "q13.label"
+              },
+              "required": true
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKH",
+          "ref": "P14",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAHQ",
+              "ref": "Q14",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANN"
+              ],
+              "label": {
+                "key": "q14.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHN",
+                  "ref": "o1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.64"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHP",
+                  "ref": "o2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.65"
+                  },
+                  "position": 2
+                }
+              ],
+              "required": true
+            },
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAHV",
+              "ref": "Q15",
+              "type": "question",
+              "question_type": "dropdown",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANP"
+              ],
+              "label": {
+                "key": "q15.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHR",
+                  "ref": "n1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.66"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHS",
+                  "ref": "n2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.67"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHT",
+                  "ref": "n3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.68"
+                  },
+                  "position": 3
+                }
+              ],
+              "required": true
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKJ",
+          "ref": "P15",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAHZ",
+              "ref": "Q16",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANQ"
+              ],
+              "label": {
+                "key": "q16.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHW",
+                  "ref": "h1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.69"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHX",
+                  "ref": "h2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.70"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAHY",
+                  "ref": "h3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.71"
+                  },
+                  "position": 3
+                }
+              ],
+              "required": true
+            },
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAJ3",
+              "ref": "Q17",
+              "type": "question",
+              "question_type": "multi_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANR",
+                "var_01K32CD000DXHX2P22DGA2QANS",
+                "var_01K32CD000DXHX2P22DGA2QANT",
+                "var_01K32CD000DXHX2P22DGA2QANV"
+              ],
+              "label": {
+                "key": "q17.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJ0",
+                  "ref": "ad1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.72"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJ1",
+                  "ref": "ad2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.73"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJ2",
+                  "ref": "ad3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.74"
+                  },
+                  "position": 3
+                }
+              ],
+              "required": true
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKK",
+          "ref": "P16",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAJC",
+              "ref": "Q18",
+              "type": "question",
+              "question_type": "matrix",
+              "columns": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJ7",
+                  "ref": "q18c1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.78"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJ8",
+                  "ref": "q18c2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.79"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJ9",
+                  "ref": "q18c3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.80"
+                  },
+                  "position": 3
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJA",
+                  "ref": "q18c4",
+                  "code": 4,
+                  "label": {
+                    "key": "item.81"
+                  },
+                  "position": 4
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJB",
+                  "ref": "q18c5",
+                  "code": 5,
+                  "label": {
+                    "key": "item.82"
+                  },
+                  "position": 5
+                }
+              ],
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANW",
+                "var_01K32CD000DXHX2P22DGA2QANX",
+                "var_01K32CD000DXHX2P22DGA2QANY"
+              ],
+              "label": {
+                "key": "q18.label"
+              },
+              "required": true,
+              "rows": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJ4",
+                  "ref": "r1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.75"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJ5",
+                  "ref": "r2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.76"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJ6",
+                  "ref": "r3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.77"
+                  },
+                  "position": 3
+                }
+              ]
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKM",
+          "ref": "P17",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAJD",
+              "ref": "Q19",
+              "type": "question",
+              "question_type": "slider",
+              "config": {
+                "max": 100,
+                "min": 0
+              },
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QANZ"
+              ],
+              "label": {
+                "key": "q19.label"
+              },
+              "required": true
+            },
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAJE",
+              "ref": "Q20",
+              "type": "question",
+              "question_type": "date",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAP0"
+              ],
+              "label": {
+                "key": "q20.label"
+              },
+              "required": false
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        }
+      ],
+      "title": {
+        "key": "blk.main.title"
+      }
+    },
+    {
+      "id": "blk_01K32CD000DXHX2P22DGA2QAKS",
+      "ref": "CLOSING",
+      "type": "block",
+      "children": [
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKP",
+          "ref": "P18",
+          "type": "page",
+          "children": [
+            {
+              "id": "txt_01K32CD000DXHX2P22DGA2QAK2",
+              "type": "text",
+              "label": {
+                "key": "closing.text"
+              }
+            },
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAJJ",
+              "ref": "Q21",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAP1"
+              ],
+              "label": {
+                "key": "q21.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJF",
+                  "ref": "ft1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.83"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJG",
+                  "ref": "ft2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.84"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJH",
+                  "ref": "ft3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.85"
+                  },
+                  "position": 3
+                }
+              ],
+              "required": true
+            },
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAJK",
+              "ref": "Q22",
+              "type": "question",
+              "question_type": "open_text",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAP2"
+              ],
+              "label": {
+                "key": "q22.label"
+              },
+              "required": false
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKQ",
+          "ref": "P19",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAJP",
+              "ref": "Q23",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAP3"
+              ],
+              "label": {
+                "key": "q23.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJM",
+                  "ref": "st1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.86"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJN",
+                  "ref": "st2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.87"
+                  },
+                  "position": 2
+                }
+              ],
+              "required": true
+            },
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAJT",
+              "ref": "Q24",
+              "type": "question",
+              "question_type": "ranking",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAP4"
+              ],
+              "label": {
+                "key": "q24.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJQ",
+                  "ref": "rk1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.88"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJR",
+                  "ref": "rk2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.89"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJS",
+                  "ref": "rk3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.90"
+                  },
+                  "position": 3
+                }
+              ],
+              "required": true
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        },
+        {
+          "id": "pg_01K32CD000DXHX2P22DGA2QAKR",
+          "ref": "P20",
+          "type": "page",
+          "children": [
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAJY",
+              "ref": "Q25",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAP5"
+              ],
+              "label": {
+                "key": "q25.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJV",
+                  "ref": "hh1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.91"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJW",
+                  "ref": "hh2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.92"
+                  },
+                  "position": 2
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJX",
+                  "ref": "hh3",
+                  "code": 3,
+                  "label": {
+                    "key": "item.93"
+                  },
+                  "position": 3
+                }
+              ],
+              "required": true
+            },
+            {
+              "id": "qst_01K32CD000DXHX2P22DGA2QAK1",
+              "ref": "Q26",
+              "type": "question",
+              "question_type": "single_select",
+              "emits": [
+                "var_01K32CD000DXHX2P22DGA2QAP6"
+              ],
+              "label": {
+                "key": "q26.label"
+              },
+              "options": [
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAJZ",
+                  "ref": "fu1",
+                  "code": 1,
+                  "label": {
+                    "key": "item.94"
+                  },
+                  "position": 1
+                },
+                {
+                  "id": "opt_01K32CD000DXHX2P22DGA2QAK0",
+                  "ref": "fu2",
+                  "code": 2,
+                  "label": {
+                    "key": "item.95"
+                  },
+                  "position": 2
+                }
+              ],
+              "required": true
+            }
+          ],
+          "settings": {
+            "back_allowed": true,
+            "layout": "stacked"
+          }
+        }
+      ],
+      "title": {
+        "key": "blk.closing.title"
+      }
+    }
+  ],
+  "entitlement_reqs": [
+    "quotas",
+    "multi_language"
+  ],
+  "flow": {
+    "nodes": [
+      {
+        "id": "fn_01K32CD000DXHX2P22DGA2QAKW",
+        "type": "start",
+        "next": "fn_01K32CD000DXHX2P22DGA2QAKX"
+      },
+      {
+        "id": "fn_01K32CD000DXHX2P22DGA2QAKX",
+        "type": "sequence",
+        "next": "fn_01K32CD000DXHX2P22DGA2QAKY",
+        "target_id": "blk_01K32CD000DXHX2P22DGA2QAK6"
+      },
+      {
+        "id": "fn_01K32CD000DXHX2P22DGA2QAKY",
+        "type": "branch",
+        "branches": [
+          {
+            "condition": {
+              "args": [
+                {
+                  "var": "var_01K32CD000DXHX2P22DGA2QAMA"
+                },
+                {
+                  "lit": 1
+                }
+              ],
+              "n": "n1",
+              "op": "!="
+            },
+            "next": "fn_01K32CD000DXHX2P22DGA2QAKZ"
+          },
+          {
+            "condition": null,
+            "next": "fn_01K32CD000DXHX2P22DGA2QAM3"
+          }
+        ]
+      },
+      {
+        "id": "fn_01K32CD000DXHX2P22DGA2QAKZ",
+        "type": "quota_gate",
+        "on_full": "fn_01K32CD000DXHX2P22DGA2QAM3",
+        "on_pass": "fn_01K32CD000DXHX2P22DGA2QAM0",
+        "quota_ref": "MAIN"
+      },
+      {
+        "id": "fn_01K32CD000DXHX2P22DGA2QAM0",
+        "type": "sequence",
+        "next": "fn_01K32CD000DXHX2P22DGA2QAM1",
+        "target_id": "blk_01K32CD000DXHX2P22DGA2QAKN"
+      },
+      {
+        "id": "fn_01K32CD000DXHX2P22DGA2QAM1",
+        "type": "sequence",
+        "next": "fn_01K32CD000DXHX2P22DGA2QAM2",
+        "target_id": "blk_01K32CD000DXHX2P22DGA2QAKS"
+      },
+      {
+        "id": "fn_01K32CD000DXHX2P22DGA2QAM3",
+        "type": "termination",
+        "disposition": "SCREENOUT"
+      },
+      {
+        "id": "fn_01K32CD000DXHX2P22DGA2QAM2",
+        "type": "end",
+        "disposition": "COMPLETE"
+      }
+    ]
+  },
+  "languages": {
+    "available": [
+      {
+        "code": "en",
+        "label": "English"
+      },
+      {
+        "code": "de",
+        "label": "Deutsch"
+      }
+    ],
+    "base": "en",
+    "bundles": {
+      "de": {},
+      "en": {
+        "blk.closing.title": "Closing",
+        "blk.main.title": "Main questionnaire",
+        "blk.screener.title": "Screener",
+        "closing.text": "Thank you — just a few last questions.",
+        "err.pick_one": "Please choose at least one.",
+        "err.sum100": "Your answers must add up to 100.",
+        "item.1": "Under 18",
+        "item.10": "Finance",
+        "item.11": "Healthcare",
+        "item.12": "Technology",
+        "item.13": "Education",
+        "item.14": "Other (please specify)",
+        "item.15": "Yes",
+        "item.16": "No",
+        "item.17": "Brand A",
+        "item.18": "Brand B",
+        "item.19": "Brand C",
+        "item.2": "18-24",
+        "item.20": "Brand D",
+        "item.21": "None of these",
+        "item.22": "Brand A",
+        "item.23": "Brand B",
+        "item.24": "Brand C",
+        "item.25": "Strongly disagree",
+        "item.26": "Disagree",
+        "item.27": "Neither",
+        "item.28": "Agree",
+        "item.29": "Strongly agree",
+        "item.3": "25-34",
+        "item.30": "Brand A",
+        "item.31": "Brand B",
+        "item.32": "Brand C",
+        "item.33": "Any other brand",
+        "item.34": "Typical spend per week",
+        "item.35": "What would you change?",
+        "item.36": "Overall opinion",
+        "item.37": "Strongly disagree",
+        "item.38": "Disagree",
+        "item.39": "Neither",
+        "item.4": "35-54",
+        "item.40": "Agree",
+        "item.41": "Strongly agree",
+        "item.42": "Supermarket",
+        "item.43": "Coffee shop",
+        "item.44": "Online",
+        "item.45": "Other (please specify)",
+        "item.46": "Daily",
+        "item.47": "A few times a week",
+        "item.48": "Weekly",
+        "item.49": "Less often",
+        "item.5": "55 or older",
+        "item.50": "Beans",
+        "item.51": "Ground",
+        "item.52": "Pods",
+        "item.53": "Instant",
+        "item.54": "Price",
+        "item.55": "Taste",
+        "item.56": "Strongly disagree",
+        "item.57": "Disagree",
+        "item.58": "Neither",
+        "item.59": "Agree",
+        "item.6": "Man",
+        "item.60": "Strongly agree",
+        "item.61": "Brand A",
+        "item.62": "Brand B",
+        "item.63": "Brand C",
+        "item.64": "Yes",
+        "item.65": "No",
+        "item.66": "United Kingdom",
+        "item.67": "Germany",
+        "item.68": "France",
+        "item.69": "TV",
+        "item.7": "Woman",
+        "item.70": "Social media",
+        "item.71": "A friend",
+        "item.72": "TV advert",
+        "item.73": "Poster",
+        "item.74": "Online video",
+        "item.75": "Memorable",
+        "item.76": "Relevant",
+        "item.77": "Persuasive",
+        "item.78": "Strongly disagree",
+        "item.79": "Disagree",
+        "item.8": "Prefer not to say",
+        "item.80": "Neither",
+        "item.81": "Agree",
+        "item.82": "Strongly agree",
+        "item.83": "Always",
+        "item.84": "Sometimes",
+        "item.85": "Never",
+        "item.86": "I stick to one brand",
+        "item.87": "I switch often",
+        "item.88": "Brand A",
+        "item.89": "Brand B",
+        "item.9": "Retail",
+        "item.90": "Brand C",
+        "item.91": "One",
+        "item.92": "Two",
+        "item.93": "Three or more",
+        "item.94": "Yes",
+        "item.95": "No",
+        "q1.label": "Have you bought coffee in the last month?",
+        "q10.label": "Which formats do you buy?",
+        "q11.label": "How important is each factor?",
+        "q12.label": "Which brand do you buy most often?",
+        "q13.label": "How much did you spend on coffee last month?",
+        "q14.label": "Do you own a coffee machine?",
+        "q15.label": "Which country do you live in?",
+        "q16.label": "How did you hear about Brand A?",
+        "q17.label": "Which of these have you seen recently?",
+        "q18.label": "Rate the advert on each dimension",
+        "q19.label": "How likely are you to buy in the next month?",
+        "q2.label": "Which of these coffee brands have you heard of?",
+        "q20.label": "When did you last buy coffee?",
+        "q21.label": "Do you buy fair-trade coffee?",
+        "q22.label": "Anything else you would like to tell us?",
+        "q23.label": "Which statement fits you best?",
+        "q24.label": "Rank these brands from best to worst",
+        "q25.label": "What is your household size?",
+        "q26.label": "Would you take part in follow-up research?",
+        "q3.label": "How much do you agree for each brand?",
+        "q4.label": "How many cups per week from each brand?",
+        "q5.label": "A few different questions about your usage",
+        "q6.label": "Where do you usually buy coffee?",
+        "q7.label": "How likely are you to recommend Brand A?",
+        "q8.label": "Why did you give that score?",
+        "q9.label": "How often do you drink coffee?",
+        "s1.label": "How old are you?",
+        "s2.label": "Which best describes you?",
+        "s3.label": "Which of these industries do you work in?",
+        "s4.label": "In which year were you born?",
+        "screenout.message": "Thank you for your interest.",
+        "sys.nps.detractor": "Detractor",
+        "sys.nps.passive": "Passive",
+        "sys.nps.promoter": "Promoter"
+      }
+    },
+    "policy": {
+      "block_publish_if_incomplete": true,
+      "on_missing": "fallback_to_base"
+    }
+  },
+  "logic_rules": [
+    {
+      "id": "rul_01K32CD000DXHX2P22DGA2QAM8",
+      "kind": "display",
+      "authored_in": "visual",
+      "condition": {
+        "args": [
+          {
+            "var": "var_01K32CD000DXHX2P22DGA2QAMV"
+          },
+          {
+            "lit": 1
+          }
+        ],
+        "n": "r1",
+        "op": "contains"
+      },
+      "effect": {
+        "action": "show"
+      },
+      "evaluation": "on_change",
+      "notes": "Only ask the grid about brands the respondent is aware of.",
+      "target": {
+        "id": "qst_01K32CD000DXHX2P22DGA2QAG6",
+        "type": "question"
+      }
+    }
+  ],
+  "meta": {
+    "id": "svy_01K32CD000DXHX2P22DGA2QAM7",
+    "ref": "COFFEE_TRACKER_2026Q3",
+    "name": "Coffee Tracker Q3 2026",
+    "description": "Acceptance fixture for P1-02: 30 questions, mixed matrix, NPS, hidden variables.",
+    "tags": [
+      "tracker",
+      "fixture"
+    ]
+  },
+  "quotas": {
+    "dimensions": [
+      {
+        "id": "qd_01K32CD000DXHX2P22DGA2QAM4",
+        "ref": "AGE_BAND",
+        "buckets": [
+          {
+            "ref": "young",
+            "match": {
+              "args": [
+                {
+                  "var": "S1"
+                },
+                {
+                  "lit": 3
+                }
+              ],
+              "n": "b1",
+              "op": "<="
+            }
+          },
+          {
+            "ref": "older",
+            "match": {
+              "args": [
+                {
+                  "var": "S1"
+                },
+                {
+                  "lit": 3
+                }
+              ],
+              "n": "b2",
+              "op": ">"
+            }
+          }
+        ],
+        "variable_id": "var_01K32CD000DXHX2P22DGA2QAMA"
+      },
+      {
+        "id": "qd_01K32CD000DXHX2P22DGA2QAM5",
+        "ref": "GENDER",
+        "buckets": [
+          {
+            "ref": "M",
+            "match": {
+              "args": [
+                {
+                  "var": "S2"
+                },
+                {
+                  "lit": 1
+                }
+              ],
+              "n": "b3",
+              "op": "=="
+            }
+          },
+          {
+            "ref": "F",
+            "match": {
+              "args": [
+                {
+                  "var": "S2"
+                },
+                {
+                  "lit": 2
+                }
+              ],
+              "n": "b4",
+              "op": "=="
+            }
+          }
+        ],
+        "variable_id": "var_01K32CD000DXHX2P22DGA2QAMB"
+      }
+    ],
+    "plans": [
+      {
+        "id": "qp_01K32CD000DXHX2P22DGA2QAM6",
+        "ref": "MAIN",
+        "type": "interlocked",
+        "cells": [
+          {
+            "key": [
+              "young",
+              "M"
+            ],
+            "mode": "hard",
+            "target": 100
+          },
+          {
+            "key": [
+              "young",
+              "F"
+            ],
+            "mode": "hard",
+            "target": 100
+          },
+          {
+            "key": [
+              "older",
+              "M"
+            ],
+            "mode": "hard",
+            "target": 150
+          },
+          {
+            "key": [
+              "older",
+              "F"
+            ],
+            "mode": "hard",
+            "target": 150
+          }
+        ],
+        "dimension_ids": [
+          "qd_01K32CD000DXHX2P22DGA2QAM4",
+          "qd_01K32CD000DXHX2P22DGA2QAM5"
+        ],
+        "overflow": "SCREENOUT",
+        "target_mode": "count"
+      }
+    ],
+    "policy": {
+      "count_at": "reservation",
+      "on_store_unavailable": "fail_closed",
+      "reservation_ttl_s": 5400
+    },
+    "vendor_limits": [
+      {
+        "max_completes": 400,
+        "vendor_ref": "V_A"
+      }
+    ]
+  },
+  "redirects": {
+    "by_language": {},
+    "by_vendor": {},
+    "default": {
+      "COMPLETE": "https://vendor.example.com/c?pid={{VENDOR_PID}}&status=1",
+      "DUPLICATE": "https://vendor.example.com/d?pid={{VENDOR_PID}}",
+      "FRAUD": "https://vendor.example.com/f?pid={{VENDOR_PID}}",
+      "QUALITY": "https://vendor.example.com/qc?pid={{VENDOR_PID}}",
+      "QUOTA_FULL": "https://vendor.example.com/q?pid={{VENDOR_PID}}",
+      "SCREENOUT": "https://vendor.example.com/s?pid={{VENDOR_PID}}",
+      "TERMINATE": "https://vendor.example.com/t?pid={{VENDOR_PID}}"
+    }
+  },
+  "schema_version": 1,
+  "settings": {
+    "allow_test_sessions": true,
+    "max_duration_s": 3600,
+    "navigation": {
+      "back_allowed": true,
+      "show_page_numbers": true
+    },
+    "progress_bar": {
+      "mode": "pages",
+      "show_percentage": true
+    },
+    "quality": {
+      "speeder_threshold_ratio": 0.4,
+      "straightliner_min_rows": 3
+    },
+    "resume": {
+      "enabled": true,
+      "position": "last_page",
+      "window_s": 604800
+    },
+    "screenout": {
+      "message_key": "screenout.message",
+      "show_message": true
+    }
+  },
+  "theme_ref": "theme_default",
+  "variables": [
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMA",
+      "type": "enum",
+      "kind": "response",
+      "name": "S1",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.1"
+        },
+        {
+          "code": 2,
+          "label_key": "item.2"
+        },
+        {
+          "code": 3,
+          "label_key": "item.3"
+        },
+        {
+          "code": 4,
+          "label_key": "item.4"
+        },
+        {
+          "code": 5,
+          "label_key": "item.5"
+        }
+      ],
+      "export": {
+        "column": "S1",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAF7"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMB",
+      "type": "enum",
+      "kind": "response",
+      "name": "S2",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.6"
+        },
+        {
+          "code": 2,
+          "label_key": "item.7"
+        },
+        {
+          "code": 3,
+          "label_key": "item.8"
+        }
+      ],
+      "export": {
+        "column": "S2",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFB"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMC",
+      "type": "boolean",
+      "kind": "response",
+      "name": "S3r1",
+      "export": {
+        "column": "S3r1",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 1,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFC"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFK"
+      },
+      "storage": {
+        "code": 1,
+        "label_key": "item.9"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMD",
+      "type": "boolean",
+      "kind": "response",
+      "name": "S3r2",
+      "export": {
+        "column": "S3r2",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 2,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFD"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFK"
+      },
+      "storage": {
+        "code": 2,
+        "label_key": "item.10"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAME",
+      "type": "boolean",
+      "kind": "response",
+      "name": "S3r3",
+      "export": {
+        "column": "S3r3",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 3,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFE"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFK"
+      },
+      "storage": {
+        "code": 3,
+        "label_key": "item.11"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMF",
+      "type": "boolean",
+      "kind": "response",
+      "name": "S3r4",
+      "export": {
+        "column": "S3r4",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 4,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFF"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFK"
+      },
+      "storage": {
+        "code": 4,
+        "label_key": "item.12"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMG",
+      "type": "boolean",
+      "kind": "response",
+      "name": "S3r5",
+      "export": {
+        "column": "S3r5",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 5,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFG"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFK"
+      },
+      "storage": {
+        "code": 5,
+        "label_key": "item.13"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMH",
+      "type": "boolean",
+      "kind": "response",
+      "name": "S3r6",
+      "export": {
+        "column": "S3r6",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 6,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFH"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFK"
+      },
+      "storage": {
+        "code": 6,
+        "label_key": "item.14"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMJ",
+      "type": "set",
+      "kind": "derived",
+      "name": "S3",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.9"
+        },
+        {
+          "code": 2,
+          "label_key": "item.10"
+        },
+        {
+          "code": 3,
+          "label_key": "item.11"
+        },
+        {
+          "code": 4,
+          "label_key": "item.12"
+        },
+        {
+          "code": 5,
+          "label_key": "item.13"
+        },
+        {
+          "code": 6,
+          "label_key": "item.14"
+        }
+      ],
+      "export": {
+        "column": "S3",
+        "include": true
+      },
+      "persist": false,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "set_view"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFK"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMK",
+      "type": "text",
+      "kind": "response",
+      "name": "S3r6_other",
+      "export": {
+        "column": "S3r6_other",
+        "include": true
+      },
+      "persist": true,
+      "pii": true,
+      "source": {
+        "part": {
+          "kind": "other_specify",
+          "code": 6,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFH"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFK"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMM",
+      "type": "number",
+      "kind": "response",
+      "name": "S4",
+      "export": {
+        "column": "S4",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFM"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMN",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q1",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.15"
+        },
+        {
+          "code": 2,
+          "label_key": "item.16"
+        }
+      ],
+      "export": {
+        "column": "Q1",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFQ"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMP",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q2r1",
+      "export": {
+        "column": "Q2r1",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 1,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFR"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFX"
+      },
+      "storage": {
+        "code": 1,
+        "label_key": "item.17"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMQ",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q2r2",
+      "export": {
+        "column": "Q2r2",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 2,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFS"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFX"
+      },
+      "storage": {
+        "code": 2,
+        "label_key": "item.18"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMR",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q2r3",
+      "export": {
+        "column": "Q2r3",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 3,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFT"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFX"
+      },
+      "storage": {
+        "code": 3,
+        "label_key": "item.19"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMS",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q2r4",
+      "export": {
+        "column": "Q2r4",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 4,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFV"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFX"
+      },
+      "storage": {
+        "code": 4,
+        "label_key": "item.20"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMT",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q2r5",
+      "export": {
+        "column": "Q2r5",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 5,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAFW"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFX"
+      },
+      "storage": {
+        "code": 5,
+        "label_key": "item.21"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMV",
+      "type": "set",
+      "kind": "derived",
+      "name": "Q2",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.17"
+        },
+        {
+          "code": 2,
+          "label_key": "item.18"
+        },
+        {
+          "code": 3,
+          "label_key": "item.19"
+        },
+        {
+          "code": 4,
+          "label_key": "item.20"
+        },
+        {
+          "code": 5,
+          "label_key": "item.21"
+        }
+      ],
+      "export": {
+        "column": "Q2",
+        "include": true
+      },
+      "persist": false,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "set_view"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAFX"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMW",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q3r1",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.25"
+        },
+        {
+          "code": 2,
+          "label_key": "item.26"
+        },
+        {
+          "code": 3,
+          "label_key": "item.27"
+        },
+        {
+          "code": 4,
+          "label_key": "item.28"
+        },
+        {
+          "code": 5,
+          "label_key": "item.29"
+        }
+      ],
+      "export": {
+        "column": "Q3r1",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 1,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAFY"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAG6"
+      },
+      "storage": {
+        "code": 1,
+        "label_key": "item.22"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMX",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q3r2",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.25"
+        },
+        {
+          "code": 2,
+          "label_key": "item.26"
+        },
+        {
+          "code": 3,
+          "label_key": "item.27"
+        },
+        {
+          "code": 4,
+          "label_key": "item.28"
+        },
+        {
+          "code": 5,
+          "label_key": "item.29"
+        }
+      ],
+      "export": {
+        "column": "Q3r2",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 2,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAFZ"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAG6"
+      },
+      "storage": {
+        "code": 2,
+        "label_key": "item.23"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMY",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q3r3",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.25"
+        },
+        {
+          "code": 2,
+          "label_key": "item.26"
+        },
+        {
+          "code": 3,
+          "label_key": "item.27"
+        },
+        {
+          "code": 4,
+          "label_key": "item.28"
+        },
+        {
+          "code": 5,
+          "label_key": "item.29"
+        }
+      ],
+      "export": {
+        "column": "Q3r3",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 3,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAG0"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAG6"
+      },
+      "storage": {
+        "code": 3,
+        "label_key": "item.24"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAMZ",
+      "type": "number",
+      "kind": "response",
+      "name": "Q4r1",
+      "export": {
+        "column": "Q4r1",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 1,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAG7"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGC"
+      },
+      "storage": {
+        "code": 1,
+        "label_key": "item.30"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAN0",
+      "type": "number",
+      "kind": "response",
+      "name": "Q4r2",
+      "export": {
+        "column": "Q4r2",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 2,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAG8"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGC"
+      },
+      "storage": {
+        "code": 2,
+        "label_key": "item.31"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAN1",
+      "type": "number",
+      "kind": "response",
+      "name": "Q4r3",
+      "export": {
+        "column": "Q4r3",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 3,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAG9"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGC"
+      },
+      "storage": {
+        "code": 3,
+        "label_key": "item.32"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAN2",
+      "type": "number",
+      "kind": "response",
+      "name": "Q4r4",
+      "export": {
+        "column": "Q4r4",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 4,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAGA"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGC"
+      },
+      "storage": {
+        "code": 4,
+        "label_key": "item.33"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAN3",
+      "type": "number",
+      "kind": "response",
+      "name": "Q5r1",
+      "export": {
+        "column": "Q5r1",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 1,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAGD"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGN"
+      },
+      "storage": {
+        "code": 1,
+        "label_key": "item.34"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAN4",
+      "type": "text",
+      "kind": "response",
+      "name": "Q5r2",
+      "export": {
+        "column": "Q5r2",
+        "include": true
+      },
+      "persist": true,
+      "pii": true,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 2,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAGE"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGN"
+      },
+      "storage": {
+        "code": 2,
+        "label_key": "item.35"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAN5",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q5r3",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.37"
+        },
+        {
+          "code": 2,
+          "label_key": "item.38"
+        },
+        {
+          "code": 3,
+          "label_key": "item.39"
+        },
+        {
+          "code": 4,
+          "label_key": "item.40"
+        },
+        {
+          "code": 5,
+          "label_key": "item.41"
+        }
+      ],
+      "export": {
+        "column": "Q5r3",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 3,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAGF"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGN"
+      },
+      "storage": {
+        "code": 3,
+        "label_key": "item.36"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAN6",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q6",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.42"
+        },
+        {
+          "code": 2,
+          "label_key": "item.43"
+        },
+        {
+          "code": 3,
+          "label_key": "item.44"
+        },
+        {
+          "code": 4,
+          "label_key": "item.45"
+        }
+      ],
+      "export": {
+        "column": "Q6",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGT"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAN7",
+      "type": "text",
+      "kind": "response",
+      "name": "Q6_other",
+      "export": {
+        "column": "Q6_other",
+        "include": true
+      },
+      "persist": true,
+      "pii": true,
+      "source": {
+        "part": {
+          "kind": "other_specify"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGT"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAN8",
+      "type": "number",
+      "kind": "response",
+      "name": "Q7",
+      "export": {
+        "column": "Q7",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGV"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAN9",
+      "type": "enum",
+      "kind": "derived",
+      "name": "Q7_band",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "sys.nps.detractor"
+        },
+        {
+          "code": 2,
+          "label_key": "sys.nps.passive"
+        },
+        {
+          "code": 3,
+          "label_key": "sys.nps.promoter"
+        }
+      ],
+      "export": {
+        "column": "Q7_band",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "suffix",
+          "suffix": "band"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGV"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANA",
+      "type": "text",
+      "kind": "response",
+      "name": "Q8",
+      "export": {
+        "column": "Q8",
+        "include": true
+      },
+      "persist": true,
+      "pii": true,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAGW"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANB",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q9",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.46"
+        },
+        {
+          "code": 2,
+          "label_key": "item.47"
+        },
+        {
+          "code": 3,
+          "label_key": "item.48"
+        },
+        {
+          "code": 4,
+          "label_key": "item.49"
+        }
+      ],
+      "export": {
+        "column": "Q9",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAH1"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANC",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q10r1",
+      "export": {
+        "column": "Q10r1",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 1,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAH2"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAH6"
+      },
+      "storage": {
+        "code": 1,
+        "label_key": "item.50"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAND",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q10r2",
+      "export": {
+        "column": "Q10r2",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 2,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAH3"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAH6"
+      },
+      "storage": {
+        "code": 2,
+        "label_key": "item.51"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANE",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q10r3",
+      "export": {
+        "column": "Q10r3",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 3,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAH4"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAH6"
+      },
+      "storage": {
+        "code": 3,
+        "label_key": "item.52"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANF",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q10r4",
+      "export": {
+        "column": "Q10r4",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 4,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAH5"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAH6"
+      },
+      "storage": {
+        "code": 4,
+        "label_key": "item.53"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANG",
+      "type": "set",
+      "kind": "derived",
+      "name": "Q10",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.50"
+        },
+        {
+          "code": 2,
+          "label_key": "item.51"
+        },
+        {
+          "code": 3,
+          "label_key": "item.52"
+        },
+        {
+          "code": 4,
+          "label_key": "item.53"
+        }
+      ],
+      "export": {
+        "column": "Q10",
+        "include": true
+      },
+      "persist": false,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "set_view"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAH6"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANH",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q11r1",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.56"
+        },
+        {
+          "code": 2,
+          "label_key": "item.57"
+        },
+        {
+          "code": 3,
+          "label_key": "item.58"
+        },
+        {
+          "code": 4,
+          "label_key": "item.59"
+        },
+        {
+          "code": 5,
+          "label_key": "item.60"
+        }
+      ],
+      "export": {
+        "column": "Q11r1",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 1,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAH7"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAHE"
+      },
+      "storage": {
+        "code": 1,
+        "label_key": "item.54"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANJ",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q11r2",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.56"
+        },
+        {
+          "code": 2,
+          "label_key": "item.57"
+        },
+        {
+          "code": 3,
+          "label_key": "item.58"
+        },
+        {
+          "code": 4,
+          "label_key": "item.59"
+        },
+        {
+          "code": 5,
+          "label_key": "item.60"
+        }
+      ],
+      "export": {
+        "column": "Q11r2",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 2,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAH8"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAHE"
+      },
+      "storage": {
+        "code": 2,
+        "label_key": "item.55"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANK",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q12",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.61"
+        },
+        {
+          "code": 2,
+          "label_key": "item.62"
+        },
+        {
+          "code": 3,
+          "label_key": "item.63"
+        }
+      ],
+      "export": {
+        "column": "Q12",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAHK"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANM",
+      "type": "number",
+      "kind": "response",
+      "name": "Q13",
+      "export": {
+        "column": "Q13",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAHM"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANN",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q14",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.64"
+        },
+        {
+          "code": 2,
+          "label_key": "item.65"
+        }
+      ],
+      "export": {
+        "column": "Q14",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAHQ"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANP",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q15",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.66"
+        },
+        {
+          "code": 2,
+          "label_key": "item.67"
+        },
+        {
+          "code": 3,
+          "label_key": "item.68"
+        }
+      ],
+      "export": {
+        "column": "Q15",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAHV"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANQ",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q16",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.69"
+        },
+        {
+          "code": 2,
+          "label_key": "item.70"
+        },
+        {
+          "code": 3,
+          "label_key": "item.71"
+        }
+      ],
+      "export": {
+        "column": "Q16",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAHZ"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANR",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q17r1",
+      "export": {
+        "column": "Q17r1",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 1,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAJ0"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJ3"
+      },
+      "storage": {
+        "code": 1,
+        "label_key": "item.72"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANS",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q17r2",
+      "export": {
+        "column": "Q17r2",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 2,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAJ1"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJ3"
+      },
+      "storage": {
+        "code": 2,
+        "label_key": "item.73"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANT",
+      "type": "boolean",
+      "kind": "response",
+      "name": "Q17r3",
+      "export": {
+        "column": "Q17r3",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "option",
+          "code": 3,
+          "option_id": "opt_01K32CD000DXHX2P22DGA2QAJ2"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJ3"
+      },
+      "storage": {
+        "code": 3,
+        "label_key": "item.74"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANV",
+      "type": "set",
+      "kind": "derived",
+      "name": "Q17",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.72"
+        },
+        {
+          "code": 2,
+          "label_key": "item.73"
+        },
+        {
+          "code": 3,
+          "label_key": "item.74"
+        }
+      ],
+      "export": {
+        "column": "Q17",
+        "include": true
+      },
+      "persist": false,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "set_view"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJ3"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANW",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q18r1",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.78"
+        },
+        {
+          "code": 2,
+          "label_key": "item.79"
+        },
+        {
+          "code": 3,
+          "label_key": "item.80"
+        },
+        {
+          "code": 4,
+          "label_key": "item.81"
+        },
+        {
+          "code": 5,
+          "label_key": "item.82"
+        }
+      ],
+      "export": {
+        "column": "Q18r1",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 1,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAJ4"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJC"
+      },
+      "storage": {
+        "code": 1,
+        "label_key": "item.75"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANX",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q18r2",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.78"
+        },
+        {
+          "code": 2,
+          "label_key": "item.79"
+        },
+        {
+          "code": 3,
+          "label_key": "item.80"
+        },
+        {
+          "code": 4,
+          "label_key": "item.81"
+        },
+        {
+          "code": 5,
+          "label_key": "item.82"
+        }
+      ],
+      "export": {
+        "column": "Q18r2",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 2,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAJ5"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJC"
+      },
+      "storage": {
+        "code": 2,
+        "label_key": "item.76"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANY",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q18r3",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.78"
+        },
+        {
+          "code": 2,
+          "label_key": "item.79"
+        },
+        {
+          "code": 3,
+          "label_key": "item.80"
+        },
+        {
+          "code": 4,
+          "label_key": "item.81"
+        },
+        {
+          "code": 5,
+          "label_key": "item.82"
+        }
+      ],
+      "export": {
+        "column": "Q18r3",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "row",
+          "code": 3,
+          "row_id": "opt_01K32CD000DXHX2P22DGA2QAJ6"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJC"
+      },
+      "storage": {
+        "code": 3,
+        "label_key": "item.77"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QANZ",
+      "type": "number",
+      "kind": "response",
+      "name": "Q19",
+      "export": {
+        "column": "Q19",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJD"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAP0",
+      "type": "date",
+      "kind": "response",
+      "name": "Q20",
+      "export": {
+        "column": "Q20",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJE"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAP1",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q21",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.83"
+        },
+        {
+          "code": 2,
+          "label_key": "item.84"
+        },
+        {
+          "code": 3,
+          "label_key": "item.85"
+        }
+      ],
+      "export": {
+        "column": "Q21",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJJ"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAP2",
+      "type": "text",
+      "kind": "response",
+      "name": "Q22",
+      "export": {
+        "column": "Q22",
+        "include": true
+      },
+      "persist": true,
+      "pii": true,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJK"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAP3",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q23",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.86"
+        },
+        {
+          "code": 2,
+          "label_key": "item.87"
+        }
+      ],
+      "export": {
+        "column": "Q23",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJP"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAP4",
+      "type": "number",
+      "kind": "response",
+      "name": "Q24",
+      "export": {
+        "column": "Q24",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJT"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAP5",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q25",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.91"
+        },
+        {
+          "code": 2,
+          "label_key": "item.92"
+        },
+        {
+          "code": 3,
+          "label_key": "item.93"
+        }
+      ],
+      "export": {
+        "column": "Q25",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAJY"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAP6",
+      "type": "enum",
+      "kind": "response",
+      "name": "Q26",
+      "enum_domain": [
+        {
+          "code": 1,
+          "label_key": "item.94"
+        },
+        {
+          "code": 2,
+          "label_key": "item.95"
+        }
+      ],
+      "export": {
+        "column": "Q26",
+        "include": true
+      },
+      "persist": true,
+      "pii": false,
+      "source": {
+        "part": {
+          "kind": "scalar"
+        },
+        "question_id": "qst_01K32CD000DXHX2P22DGA2QAK1"
+      }
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAKT",
+      "type": "text",
+      "kind": "hidden",
+      "name": "VENDOR_PID",
+      "export": {
+        "column": "VENDOR_PID",
+        "include": true
+      },
+      "persist": true,
+      "pii": true
+    },
+    {
+      "id": "var_01K32CD000DXHX2P22DGA2QAKV",
+      "type": "text",
+      "kind": "hidden",
+      "name": "SAMPLE_WAVE",
+      "export": {
+        "column": "SAMPLE_WAVE",
+        "include": true
+      },
+      "persist": true,
+      "pii": false
+    }
+  ],
+  "vendors": [
+    {
+      "id": "vnd_01K32CD000DXHX2P22DGA2QAM9",
+      "ref": "V_A",
+      "name": "Vendor A",
+      "entry_url_template": "https://run.example.com/s/{survey_token}?src=V_A&pid={{pid}}",
+      "inbound_params": [
+        {
+          "param": "pid",
+          "required": true,
+          "variable_ref": "VENDOR_PID"
+        },
+        {
+          "param": "wave",
+          "required": false,
+          "variable_ref": "SAMPLE_WAVE"
+        }
+      ],
+      "max_completes": 400,
+      "security": {
+        "algorithm": "sha256",
+        "hash_param": "hash",
+        "secret_ref": "secret_vnd_a"
+      }
+    }
+  ]
+}
