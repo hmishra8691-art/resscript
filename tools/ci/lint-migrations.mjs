@@ -17,6 +17,11 @@
 // cannot name the FILE and it cannot run in a pull request that nobody applied to a
 // database. Both layers exist on purpose. This one is the fast one.
 //
+// Exactly one rule can be waived, in writing, by a `-- lint:exempt <CODE> <object> <reason>`
+// directive in up.sql: CONTENT_TABLE_WITHOUT_DRAFT_TRIGGER, whose database-side counterpart
+// ops.rls_exemptions.exempt_draft_trigger has existed since migration 0001. See
+// STATIC_EXEMPTIBLE below and db/README.md.
+//
 // Usage
 //   node tools/ci/lint-migrations.mjs              lint real migrations, then self-test
 //   node tools/ci/lint-migrations.mjs --only-real  lint real migrations only
@@ -71,6 +76,59 @@ const VOLATILE_DEFAULTS = [
   'localtimestamp',
   'localtime',
 ];
+
+// Rules a migration may opt out of, in writing, in up.sql. Exactly one, and the reason it
+// exists is that the DATABASE half of this net already has the concept: migration 0001
+// created ops.rls_exemptions with a separate `exempt_draft_trigger` flag, and its comment
+// names content.reserved_variable_names (Deliverable K §6's global reserved namespace) as the
+// case — a table in schema `content` with no survey_version_id, so content.tg_draft_only has
+// nothing to read and would raise feature_not_supported on every write.
+// ops.content_tables_without_draft_trigger() reads that row and is satisfied; this linter
+// cannot, because it runs before any database exists. Without a static equivalent the two
+// halves of the same net disagree, and the only ways out are worse: put the table in another
+// schema (contradicting B §4.3), or attach a trigger that can only ever raise.
+//
+// TABLE_WITHOUT_FORCED_RLS is deliberately NOT exemptible here even though
+// ops.rls_exemptions has an `exempt_rls` axis too. Its only two rows are the pre-seeded
+// global billing tables, which do not exist yet; when they arrive, that CI failure is a
+// conversation worth having in review rather than one a directive can end. Everything else —
+// renames, in-place type changes, volatile defaults, has_role() in a capability policy — has
+// no legitimate exception at all, so a directive naming one is ignored.
+const STATIC_EXEMPTIBLE = new Set(['CONTENT_TABLE_WITHOUT_DRAFT_TRIGGER']);
+
+// `-- lint:exempt <CODE> <schema.object> <reason...>`, where the reason may continue on the
+// following comment lines. The 12-character minimum mirrors
+// ops.rls_exemptions.rls_exemptions_reason_nonempty, so an exemption is a code-review
+// conversation in both halves rather than a one-word commit.
+//
+// Parsed from the RAW sql, before scrub() blanks comments — this is the one rule input that
+// lives in a comment. A directive that names an unexemptible code, or carries no reason,
+// is IGNORED rather than reported: the original rule then fires and names the object, which
+// fails closed and needs no second error code to explain itself.
+const EXEMPT_RE =
+  /^[ \t]*--[ \t]*lint:exempt[ \t]+([A-Z_]+)[ \t]+([a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*)[ \t]*(.*)$/i;
+
+export function parseExemptions(sql) {
+  const out = new Map();
+  const lines = sql.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = EXEMPT_RE.exec(lines[i]);
+    if (!m) continue;
+    const [, code, object] = m;
+    let reason = m[3] || '';
+    // Continuation: subsequent comment lines that are not themselves a directive.
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const cont = /^[ \t]*--[ \t]*(.*)$/.exec(lines[j]);
+      if (!cont || EXEMPT_RE.test(lines[j])) break;
+      reason += ` ${cont[1]}`;
+    }
+    if (!STATIC_EXEMPTIBLE.has(code.toUpperCase())) continue;
+    if (reason.trim().length < 12) continue;
+    const key = `${code.toUpperCase()} ${object.toLowerCase()}`;
+    out.set(key, reason.trim());
+  }
+  return out;
+}
 
 // pgTAP assertion functions. A test.sql containing none of these (and no plain-SQL
 // RAISE EXCEPTION guard) is not a test.
@@ -234,6 +292,7 @@ export function lintMigrationDir(dir, { repoRoot = REPO_ROOT } = {}) {
   }
 
   const sql = readFileSync(upPath, 'utf8');
+  const exemptions = parseExemptions(sql);
   const code = scrub(sql, { keepStrings: false });
   const withStrings = scrub(sql, { keepStrings: true });
   const statements = splitStatements(code);
@@ -322,7 +381,8 @@ export function lintMigrationDir(dir, { repoRoot = REPO_ROOT } = {}) {
         'enough: without FORCE the table owner — which every migration runs as — is exempt ' +
         'from its own policies, so the isolation suite passes while production leaks.'));
     }
-    if (t.schema === 'content' && !draftTriggered.has(key)) {
+    if (t.schema === 'content' && !draftTriggered.has(key)
+        && !exemptions.has(`CONTENT_TABLE_WITHOUT_DRAFT_TRIGGER ${key}`)) {
       findings.push(new Finding('CONTENT_TABLE_WITHOUT_DRAFT_TRIGGER', key, rel(upPath), t.line,
         `${key} is created in schema content but no trigger on it executes ` +
         'content.tg_draft_only() (ADR-002, B §12.1). Content rows are scoped to a ' +

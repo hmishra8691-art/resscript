@@ -1,7 +1,8 @@
 # ResScript database
 
-Milestone M0.2 (migration tooling and the RLS test harness) plus the database half of
-P1-01 (tenancy and the isolation guarantee).
+Milestone M0.2 (migration tooling and the RLS test harness), the database half of
+P1-01 (tenancy and the isolation guarantee), and the database half of P1-03 (the
+version-scoped content model and the survey tree).
 
 Authoritative design, in precedence order: **Deliverable K** (`11-canonical-registries.md`)
 beats everything; then the ADRs (`00-decisions-adr.md`, especially ADR-002 immutability and
@@ -276,6 +277,7 @@ ones written years from now).
 | `0004_tenancy` | P1-01: `app.organizations`, `app.org_members` (+ the deferred "at least one owner" constraint trigger), `app.invitations` (hashed tokens), `app.projects`, `app.surveys`, `app.survey_versions` (separate `status` / `compile_state`, three lifecycle partial unique indexes, `tg_version_guard`), `app.capability_grants`, `app.audit_log` partitioned monthly; RLS helpers `has_role` / `can_see_project` / `can_see_survey` / `has_capability`; per-command RLS policies on all eight tables; the runtime RPC placeholders and their grants; `ops.test_seed_two_orgs()`. |
 | `0005_job_ownership_and_readers` | Integration fixes found by wiring `apps/worker` and `apps/studio`: the job transitions (`heartbeat_job`, `complete_job`, `fail_job`) become **worker-scoped**, compare-and-setting on `locked_by` so a stalled worker cannot complete a reassigned job; `claim_job` now **requires** a worker identity; `enqueue_job` returns `(id, created)` and takes `p_delay_ms`; `fail_job` gains `p_retry_after_ms`; `app.get_job(app.ulid)` gives the studio a tenant-scoped, payload-free read of `ops.jobs`; `app.resolve_invitation(bytea)` resolves an invitation by token hash for a caller who is not yet a member. |
 | `0006_revoke_public_execute` | `ops.functions_executable_by_public()` — the third catalog assertion — plus a catalog-driven sweep revoking `PUBLIC EXECUTE` across all six schemas, and the one re-grant that needs (`app.gen_ulid` to `authoring`, because it is a column `DEFAULT`). See "`PUBLIC EXECUTE` is not closed by default privileges" above. |
+| `0007_content_model` | P1-03, the version-scoped authoring model: `content.nodes` (one table, `node_kind` discriminator, kind-shape CHECK, the partial `ref` index), `content.question_items`, `content.question_cells`, `content.variables` (incl. `variables_export_col_key` and the `vars_derived_expr` **carve-out**), `content.languages`, `content.i18n_strings`, `content.reserved_variable_names` + the trigger B §4.3 asks for; the `content.questions`/`pages`/`blocks` views (`security_invoker = true`); `app.can_see_version` / `app.version_is_draft` and 24 per-command RLS policies; `content.next_sort_key`, `move_node`, `next_item_sort_key`, `move_question_item`, `rebalance_items`, `tree_rows` (one recursive CTE), `clone_version` (copy-on-write, **no reference remapping**); a **redefinition of `content.rebalance_siblings`**, whose 0001 body could never run; and `ops.test_seed_content()`. |
 
 ### Deviations from Deliverable B, and why
 
@@ -301,6 +303,33 @@ ones written years from now).
 - **`app.audit_log` partitions get their own `ENABLE` + `FORCE ROW LEVEL SECURITY`.**
   Policies are not inherited by partitions for direct access, so an unprotected partition is
   a way to read another tenant's audit trail by naming the child table.
+- **`content.variables.vars_derived_expr` is the carve-out, not B §4.3's biconditional.**
+  B specifies `CHECK ((kind = 'derived') = (expression IS NOT NULL))`, which is
+  *unsatisfiable* for **structurally** derived variables: a multi-select's `set<enum>` view
+  over its boolean fan-out and an NPS band are derived but have no authorable expression —
+  the logic AST has no operator that collects the true members of a fan-out, so the compiler
+  synthesizes them. An expression is therefore required only for **authored** derived
+  variables, identified by the absence of a source, exactly as `packages/schema` relaxed its
+  equivalent rule (SCH-1015). The other direction still holds unconditionally
+  (`vars_expr_only_derived`). Without this the *first multi-select save* fails; 0005 §4
+  recorded it as a forward note and 0007's `test.sql` inserts the structural case, so
+  narrowing the constraint again fails CI rather than production.
+- **`content.nodes.nodes_sibling_order_key` is `NULLS NOT DISTINCT`.** `parent_id` is NULL
+  for root blocks, so B §4.6's plain `UNIQUE` left root ordering as the one sibling set whose
+  order was not total. Every reader queries the set as
+  `parent_id IS NOT DISTINCT FROM $1`, so treating NULL as a value matches how it is read.
+- **No content `id` column has a `DEFAULT`.** Ids are minted in TypeScript and are stable
+  across versions *and* across a variable recompute (P1-02's `variableSignature`), and a
+  clone reuses the source id verbatim; a server-side default would quietly replace a stable
+  id with a fresh one, and one default could not be right for `question_items` anyway,
+  because the prefix differs for options, rows and columns.
+- **`content.rebalance_siblings` is redefined in 0007.** 0001's body combined `FOR UPDATE`
+  with `row_number()` in one query, which PostgreSQL rejects at execution time, so the
+  function raised `feature_not_supported` for every caller that got past its
+  `to_regclass` guard — i.e. every caller from P1-03 onward. The sibling set is now locked by
+  a separate statement, in `id` order. The two tests this invalidated (0001's
+  "raises `undefined_table`" and 0006's "`authoring` cannot execute it") are maintained in
+  0001's and 0006's `test.sql`, per the rule above.
 
 ### What is stubbed
 
@@ -310,12 +339,16 @@ ones written years from now).
   P1-08. B §2's other four RPCs (`resolve_invite_token`, `start_session`, `submit_page`,
   `flush_quota_counters`) are not created at all — a grant with no consumer is a hole waiting
   for one.
-- `content.rebalance_siblings()` raises `undefined_table` until `content.nodes` lands in
-  P1-03. It is declared now so the ordering contract has exactly one implementation from the
-  start.
-- No `content.*`, `runtime.*` or `export.*` tables exist yet, and no `billing` tables. The
+- `content.rebalance_siblings()` was declared in 0001, before `content.nodes` existed, so the
+  ordering contract had exactly one implementation from the start. **0007 redefines it** and
+  it is live from there on; see the deviation note above for why the original body could
+  never have run.
+- No `runtime.*` or `export.*` tables exist yet, and no `billing` tables. The
   two `ops.rls_exemptions` rows for `billing.plans` / `billing.plan_features` are pre-seeded
-  per B §12.1 and are inert until those tables appear.
+  per B §12.1 and are inert until those tables appear. The `content.*` tables that P1-03 owns
+  exist as of 0007; `logic_rules` (P1-06), `flow_nodes` (P2), the `quota_*` set (P1-12),
+  `vendors`, `redirects`, `designs`, `code_assets` and `version_theme` arrive with the
+  milestones that use them, each with its own RLS block and draft trigger.
 - The Deliverable K generator (`packages/schema/src/registries.ts` →
   `generated/registries.sql`) lands in P1-02. Until then `0002_registry_types/up.sql`
   *is* the generated output and must stay byte-compatible with `registries.ts` when it
@@ -457,6 +490,31 @@ ROLLBACK;
 | `IN_PLACE_TYPE_CHANGE` | `ALTER TABLE … ALTER COLUMN … TYPE` |
 | `VOLATILE_DEFAULT` | `ADD COLUMN … DEFAULT` with `random()`, `gen_random_uuid()`, `clock_timestamp()`, `nextval()`, `now()`, `CURRENT_TIMESTAMP`, … |
 | `HAS_ROLE_IN_CAPABILITY_POLICY` | a policy that mentions `pii_access` or `custom_code` and calls `app.has_role()` |
+
+### The one rule that can be exempted in writing
+
+`ops.rls_exemptions` has always had two axes, and `exempt_draft_trigger` exists for exactly
+one table: `content.reserved_variable_names`, Deliverable K §6's global reserved namespace. It
+lives in schema `content` and has no `survey_version_id`, so `content.tg_draft_only` has
+nothing to read and would raise `feature_not_supported` on every write.
+`ops.content_tables_without_draft_trigger()` reads that row and is satisfied — but the linter
+runs before any database exists and cannot. So the exemption is restated in a form static
+analysis can see, in `up.sql`:
+
+```sql
+-- lint:exempt CONTENT_TABLE_WITHOUT_DRAFT_TRIGGER content.reserved_variable_names
+--   Deliverable K §6 global reference data: no survey_version_id for tg_draft_only to read.
+--   Matched by the ops.rls_exemptions row below, which exempts the trigger and NOT RLS.
+```
+
+The rule code and the qualified object are both required, and so is a reason of at least 12
+characters — the same minimum `ops.rls_exemptions.reason` carries, so an exemption is a
+code-review conversation in both halves of the net. A directive that names any **other** rule,
+or carries no reason, is ignored and the original rule fires: `CONTENT_TABLE_WITHOUT_DRAFT_TRIGGER`
+is the only exemptible code. `TABLE_WITHOUT_FORCED_RLS` deliberately is not, even though
+`ops.rls_exemptions.exempt_rls` exists — its only two rows are the global `billing` tables,
+which do not exist yet, and when they arrive that CI failure is a conversation worth having in
+review rather than one a comment can end.
 
 Note the linter is static and per-file; the *catalog* assertions in `test.sql`
 (`tables_without_rls`, `content_tables_without_draft_trigger`,

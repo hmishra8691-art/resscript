@@ -9,6 +9,7 @@
       "default": "./src/index.ts"
     }
   },
+  "dependencies": {},
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --pretty false",

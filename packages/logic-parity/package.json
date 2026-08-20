@@ -1,0 +1,17 @@
+{
+  "name": "@resscript/logic-parity",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@resscript/logic": "workspace:*",
+    "quickjs-emscripten": "^0.31.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.3"
+  }
+}

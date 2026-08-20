@@ -8,7 +8,7 @@
 -- Everything runs inside one transaction that is rolled back, so a test run leaves no
 -- trace and can be repeated against the same database without a reset.
 BEGIN;
-SELECT plan(74);
+SELECT plan(73);
 
 -- ---------------------------------------------------------------------------
 -- Schemas and the deny-by-default baseline
@@ -188,12 +188,26 @@ SELECT ok(content.frac_key_at(1) < content.frac_key_at(62)
 SELECT throws_ok($$ SELECT content.frac_key_at(0) $$, '22023', NULL,
   'dense frac_key_at rejects position 0');
 
-SELECT has_function('content', 'rebalance_siblings',
-  'content.rebalance_siblings() exists from 0001');
-SELECT throws_ok($$ SELECT content.rebalance_siblings('ver_0A000000000000000000000000',
-                                                      NULL) $$,
-  '42P01', NULL,
-  'rebalance_siblings raises undefined_table until content.nodes lands in P1-03');
+-- content.rebalance_siblings(): maintained by 0007_content_model.
+--
+-- This file used to assert that the function raises `undefined_table` (42P01) until
+-- content.nodes lands in P1-03, which was the only behaviour it could have while the table
+-- did not exist. 0007 creates content.nodes AND redefines the function — its original body
+-- combined FOR UPDATE with row_number(), which PostgreSQL rejects at execution time, so the
+-- to_regclass guard had been masking a body that could never have run. Both halves of that
+-- change land here, per db/README.md's rule that a later migration redefining an earlier
+-- one's objects must maintain the earlier tests:
+--
+--   * the `has_function` SIGNATURE assertion MOVED to 0007's test.sql, which is the
+--     migration that currently defines this signature ("move signature assertions, do not
+--     duplicate them" — two files asserting one signature means one of them is stale the
+--     next time it changes, and you will not know which);
+--   * the BEHAVIOUR that 0001 still owns is the boundary case below. The interesting
+--     behaviour — 200 adjacent inserts, order preserved, keys back under 16 characters — is
+--     asserted in 0007, with a table to assert it against.
+SELECT is(content.rebalance_siblings('ver_0A000000000000000000000000'::app.ulid, NULL), 0,
+  'rebalance_siblings returns 0 for a version with no rows rather than raising: a nightly '
+  'job over dirty parents must tolerate a parent whose children have since been deleted');
 
 -- ---------------------------------------------------------------------------
 -- ULIDs and partition maintenance

@@ -3,7 +3,14 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": "src",
-    "tsBuildInfoFile": "dist/.tsbuildinfo"
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    // This is the one package that renders. `lib` gains DOM because a renderer handles keyboard
+    // events and a hydration test drives jsdom; `jsx: react-jsx` because the components are JSX
+    // and the alternative is `createElement` calls nobody can read. Both are scoped to this
+    // package on purpose — tsconfig.base.json stays DOM-free so that `packages/logic` and the
+    // worker cannot reach for `window` by accident (ADR-004: the evaluator must run in QuickJS).
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx"
   },
   "include": [
     "src/**/*"

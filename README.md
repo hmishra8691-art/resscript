@@ -7,9 +7,13 @@ The architecture is designed before the code, and the design is the authority: s
 `architecture/` docs in the ResScript project (`00-decisions-adr.md` first). Every
 non-obvious choice in this repository cites the ADR or deliverable section it comes from.
 
-**Status: Milestone 0 and milestones P1-01 / P1-02 of Phase 1.** Nothing is deployed. What
-exists is the foundation, the tenancy layer, and the canonical survey model — plus the CI
-guard rails that protect the decisions the rest of Phase 1 depends on.
+**Status: Milestone 0 and milestones P1-01 … P1-04, P1-06 of Phase 1.** Nothing is deployed.
+What exists is the foundation, the tenancy layer, the canonical survey model, the content
+model, the question-plugin contract and the logic engine — plus the CI guard rails that
+protect the decisions the rest of Phase 1 depends on.
+
+`pnpm verify` is green: 1,879 unit tests, 537 pgTAP assertions across 7 migrations, 6 import-graph
+negative controls and 11 migration-linter fixtures all rejecting as designed.
 
 ---
 
@@ -36,9 +40,10 @@ pnpm verify                                    # graph rules, migration lint, ty
 packages/
   schema/         canonical survey model, variable derivation, JSON Schema   [P1-02 — built]
   observability/  logging, tracing, metrics facade, error envelope           [M0.4  — built]
-  logic/          AST, three-valued semantics, type checker, evaluator       [P1-06]
+  logic/          AST, three-valued semantics, type checker, evaluator       [P1-06 — built]
+  logic-parity/   differential test: Node vs QuickJS-WASM, same verdicts     [P1-06 — built]
+  question-kit/   the QuestionTypePlugin contract, registry, test kit        [P1-04 — built]
   rescript-dsl/   lexer, parser, resolver, pretty-printer                    [P1-07]
-  question-kit/   the QuestionTypePlugin contract, registry, test kit        [P1-04]
   compiler/       authoring model -> immutable artifact + the static gate    [P1-08]
   runtime-core/   page state machine, seeded PRNG, piping, validation        [P1-09]
   design/         MaxDiff and conjoint design generation                     [P4-01]
@@ -76,7 +81,7 @@ fail — a rule that never fires satisfies the linter perfectly while protecting
 
 ---
 
-## Four bugs the tests caught, worth knowing about
+## Five bugs the tests caught, worth knowing about
 
 Recorded because each is a class of mistake that will recur, and because they are the
 argument for why the guard rails above are not ceremony.
@@ -104,6 +109,19 @@ unset. CI now runs a live Postgres and fails if those tests skip.
 **4. Test isolation masquerading as a logic bug.** `ops.claim_job` hands out the oldest due
 job of a kind. Integration tests sharing the kind `noop` got each other's rows, and the
 failure read as a bug in claim ordering. Every test now uses a unique kind.
+
+**5. Guard rails that were a function of install history.** The same commit produced
+`6 rule(s), all fired as expected` on one machine and `2 failure(s)` on another. Cause:
+`options.exclude` listed `node_modules`, which *deletes* a dependency from the graph rather
+than merely declining to follow it. So `logic-is-dependency-free` and `runtime-no-supabase`
+silently depended on `fast-check` and `@supabase/supabase-js` **not being installed** — the
+import resolved under `node_modules`, the dependency vanished, and the rule reported nothing.
+An accidental `npm install` (npm hoists every transitive package to the root, where pnpm's
+per-package layout would not have made `fast-check` reachable from `packages/logic`) was
+enough to disable two ADR guard rails without a single line of the config changing. This is
+bug #1 a second time, in a new disguise; `exclude` no longer mentions `node_modules`, and
+`doNotFollow` — which keeps the dependency in the graph — does the work it always should have.
+Verified by running the negative-control suite under a deliberately flattened `node_modules`.
 
 ---
 
@@ -137,16 +155,48 @@ failure read as a bug in claim ordering. Every test now uses a unique kind.
   so adopting pgmq is a code change, not a migration.
 - Deploy steps in `.github/workflows/ci.yml` are `TODO(M0.3)` — the release *ordering* is
   wired and enforced, the hosting provider is not.
-- No `content.*` tables yet (P1-03). The `tg_draft_only` trigger and both catalog assertions
-  already exist, so P1-03 cannot forget them.
+- The static-analysis suite from D §8 (forward-reference dominance, unreachable content, the
+  abstract-domain solver, quota analyses) is P1-08, not P1-06: it needs `graph.json`, which the
+  compiler owns. The diagnostic codes are in the catalogue; only `W021` and a solver-free subset
+  of `W030` are implemented.
+- No browser leg of the logic parity test — Playwright browsers are not installed here, and a
+  silently-skipped test protects nothing. QuickJS-WASM (a from-scratch interpreter) is the more
+  valuable of the two legs and is wired; the browser leg is cheap to add onto P1-01's harness.
+- `ConfigMigration` in question-kit is type-only. No checker is implemented because none of the
+  three shipped plugins has a migration, and an unexercised code path claiming to enforce
+  F §5.1 is worse than an honest gap. P1-05.
 
-## Known gaps to close in P1-03
+## Open decisions someone must make
 
-- `content.variables` must ship the `vars_derived_expr` carve-out:
-  `CHECK (kind <> 'derived' OR expression IS NOT NULL OR source IS NOT NULL)`. Deliverable B's
-  stricter form is unsatisfiable for *structurally* derived variables — a multi-select's
-  `set<enum>` view and an NPS band are derived but have no authorable expression. Recorded in
-  migration 0005 as a comment, which enforces nothing; the first multi-select save will fail
-  without it.
-- `app.ref`'s pattern rejects the numeric option refs used in Deliverable C §5.1's example
+Surfaced by P1-03/P1-04/P1-06 and *not* resolvable inside a milestone, because each is a
+cross-document conflict where both sides are defensible. Recorded here rather than settled
+quietly in code.
+
+- **`Q5r3_band` is unnameable.** Schema §4's `VariablePart` has `{kind:'suffix'}` producing
+  `{ref}_{suffix}`, so a companion variable inside a cell scope would have to be `Q5_r3_band` —
+  which is not the cell's namespace. Consequence: **composition and companion variables are
+  mutually exclusive**, and `nps` therefore ships `composable: false`. Fixing it properly needs
+  a composite (row + suffix) part in schema §4.
+- **`enumDomain[].code` collides with schema's numeric `EnumDomainEntry.code`.** A
+  `value_override` legitimately produces a string code, which cannot be stored. Currently
+  reported as `enum_code_not_numeric` rather than coerced (`Number('BRAND_C')` is `NaN`;
+  `Number('07')` is `7`). Either schema's domain widens to `number | string` or `value_override`
+  is barred from enum domains — as it stands this is publish-blocking for legacy tracker layouts.
+- **D §5.3's propagation algorithm contradicts its own performance claim.** It seeds `triggers[v]`
+  — defined in §5.2 as the full transitive closure — then claims "propagation stops at the first
+  frontier … typical measured frontier 3–12 cells". Both cannot hold. Implemented by seeding the
+  changed variable's own cell; measured 2 cells touched on a pruned change instead of the whole
+  downstream closure.
+- **F §8 contradicts itself on checkbox groups**: one tab stop with a roving tabindex, *and* the
+  APG checkbox pattern, which puts every checkbox in the tab order. The roving tabindex is
+  implemented (right call for a 200-item list) but an a11y reviewer should sign off before an
+  external audit.
+- **`visible` base semantics are underspecified.** D §4.6 says "AND(all show-rule verdicts
+  default-true)" without saying what happens to a node that *has* a show rule. Read literally,
+  `IF x THEN SHOW Q12` shows Q12 unconditionally and a show rule can never hide anything.
+  Implemented as: a `show` rule flips the base to hidden unless the schema says otherwise.
+- **Division by zero is unspecified.** D §2.2 forbids NaN/Inf in a `VarState`; §2.5 is silent on
+  `SPEND / TRIPS` with `TRIPS = 0`, which is respondent-reachable. Chose `null` — throwing would
+  take a live survey down over ordinary missing data.
+- **`app.ref`'s pattern rejects the numeric option refs in Deliverable C §5.1's example**
   (`"ref": "1"`). The DDL is right and the doc example is wrong; worth correcting the doc.

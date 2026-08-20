@@ -1,11 +1,241 @@
 /**
- * @resscript/question-kit — reserved for milestone P1-04.
+ * `@resscript/question-kit` — the question-type plugin contract (Deliverable F, milestone P1-04).
  *
- * The QuestionTypePlugin contract, registry and test kit. Deliverable F.
+ * This entry point is **React-free at runtime**. The compiler, the exporter, the API boundary and
+ * the server-side validation pass all import from here, and none of them may pull a component tree
+ * into their process — React in `apps/worker` is dead weight, and React plus the *editor* in the
+ * respondent bundle is dead weight on the page-load path of every survey we ever run. The React
+ * halves live behind `./react.ts`, and `entrypoints.test.ts` walks this module's import graph to
+ * prove the separation rather than trusting this comment.
  *
- * This placeholder exists so `tsc -b` can build the workspace project graph before the
- * package has content: TypeScript treats a composite project with no input files as error
- * TS18003, which would break the root build for every other package. Delete it when P1-04
- * lands.
+ * Exports are explicit rather than `export *`, following `@resscript/schema`: adding a name to the
+ * public API should be a deliberate line in this file.
  */
-export const MILESTONE = 'P1-04' as const;
+
+import type { AnyPluginCore as AnyPluginCoreType } from './contract/plugin.js';
+import { multiSelectCore } from './plugins/multi-select/core.js';
+import { npsCore } from './plugins/nps/core.js';
+import { singleSelectCore } from './plugins/single-select/core.js';
+
+/* ---- the contract ------------------------------------------------------- */
+
+export type {
+  QuestionTypePlugin,
+  QuestionTypePluginCore,
+  AnyPlugin,
+  AnyPluginCore,
+  AnyPluginView,
+  ConfigMigration,
+} from './contract/plugin.js';
+export { withComponents } from './contract/plugin.js';
+
+export type {
+  PluginMeta,
+  PluginCategory,
+  PluginTrust,
+  I18nKey,
+  Semver,
+  ParsedPluginKey,
+} from './contract/meta.js';
+export {
+  PLUGIN_CATEGORIES,
+  PLUGIN_ID_PATTERN,
+  PLUGIN_TRUST_RANK,
+  PLUGIN_TRUST_TIERS,
+  compareSemver,
+  parsePluginKey,
+  parseSemver,
+  pluginKey,
+} from './contract/meta.js';
+
+/* ---- variables: the centre of the contract ------------------------------ */
+
+export type {
+  AnalysisMeasure,
+  CellControl,
+  CellOverride,
+  ComposeScope,
+  DeclarationBase,
+  DeclarationKind,
+  DeclarationPart,
+  DeclarationPartKind,
+  DeclaredAnalysis,
+  DeclaredEnumEntry,
+  DeclaredExport,
+  DeclaredNumericDomain,
+  Derivation,
+  DerivedVariableDeclaration,
+  LogicAst,
+  LoopContext,
+  NumericBand,
+  QuestionFlagsView,
+  ResponseVariableDeclaration,
+  SetViewMember,
+  StructuralComputation,
+  StructuralDerivation,
+  VariableDeclContext,
+  VariableDeclaration,
+  VariableNamer,
+} from './contract/variables.js';
+export {
+  NAME_SUFFIX_PATTERN,
+  SCALAR_VARIABLE_TYPES,
+  compareCodes,
+  evaluateDerivation,
+  isScalarVariableType,
+  requiresEnumDomain,
+} from './contract/variables.js';
+
+/* ---- items, authoring, validation, codec, export, a11y ------------------ */
+
+export type { AuthoredItem, AuthoredItemMedia, OptionCode, ResolvedItem, ResolvedItemMedia } from './contract/items.js';
+export { compareItemsForDeclaration, itemCode, itemsForDeclaration } from './contract/items.js';
+
+export type { AuthoredQuestion, DefaultConfigContext, StaticCheckContext } from './contract/authored.js';
+
+export type {
+  ResolvedQuestion,
+  ResolvedQuestionVariables,
+  ValidateContext,
+  ValidationIssue,
+  ValidationPhase,
+  ValidationSide,
+  KitMessageKey,
+} from './contract/validate.js';
+export { KIT_MESSAGE_KEYS } from './contract/validate.js';
+
+export type { CodecContext, CodecError, ResponseCodec, Result, TextRead } from './contract/codec.js';
+export {
+  CODEC_LIMITS,
+  asOptionCode,
+  asPlainObject,
+  err,
+  ok,
+  readBoundedText,
+} from './contract/codec.js';
+
+export type { DerivedExportColumn, ExportContext, ExportContribution, ExportSidecar } from './contract/export.js';
+
+export type { A11yContract, A11yException, A11yInteractionModel, A11yKey } from './contract/a11y.js';
+export { MIN_TOUCH_TARGET_PX, TOUCH_TARGET_CLASS, checkA11yContract } from './contract/a11y.js';
+
+export type { HookContext, PluginHooks } from './contract/hooks.js';
+
+export type { CompileDiagnostic, DiagnosticSeverity, PluginDiagnostic } from './contract/diagnostics.js';
+export { hasErrors, namespaceCode, namespaceDiagnostics, pointer } from './contract/diagnostics.js';
+
+/* ---- the editor bridge (types + the patch allowlist) -------------------- */
+
+export type { EditorToStudio, StudioToEditor } from './contract/editor-bridge.js';
+export {
+  EDITOR_BRIDGE_PROTOCOL,
+  EDITOR_PATCH_PATH_ALLOWLIST,
+  checkEditorPatch,
+  isAllowedEditorPatchPath,
+} from './contract/editor-bridge.js';
+
+/**
+ * View *types* only — no components. `RendererComponent` and `EditorComponent` are needed to state
+ * the contract; the implementations are behind `./react.ts`. Every React reference on this path is
+ * an `import type`, so it is erased under `verbatimModuleSyntax`.
+ */
+export type {
+  ChildProps,
+  EditorComponent,
+  EditorContext,
+  EditorProps,
+  JsonPatchOp,
+  RenderContext,
+  RenderDevice,
+  RenderIds,
+  RendererComponent,
+  RendererProps,
+  TextDirection,
+} from './contract/view.js';
+export { defineRenderer } from './contract/view.js';
+
+/* ---- the machinery ------------------------------------------------------ */
+
+export type { DeclareOptions, DeclareResult } from './declare.js';
+export { declareVariablesFor, verifyDeclarations } from './declare.js';
+
+export type { NamerSpec } from './naming.js';
+export { createNamer, createScopedNamer, deriveDeclarationName, rescopePart } from './naming.js';
+
+export type {
+  CompileResolution,
+  ListFilter,
+  PluginListEntry,
+  PluginRegistry,
+  PluginSource,
+  RegisteredPlugin,
+  RegistryOptions,
+} from './registry.js';
+export { createRegistry } from './registry.js';
+
+export type {
+  CodecContextOptions,
+  ItemState,
+  ResolveOptions,
+  ValidateContextOptions,
+} from './resolve.js';
+export { createCodecContext, createValidateContext, indexVariables, resolveQuestion } from './resolve.js';
+
+export type {
+  FromQuestionNodeOptions,
+  InteropIssue,
+  ItemIdResolver,
+  PlannedVariablesResult,
+  ToPlannedOptions,
+} from './interop.js';
+export { fromQuestionNode, toAuthoredItem, toPlannedVariables, toVariablePart } from './interop.js';
+
+export type {
+  CompiledSchema,
+  CompileOptions,
+  ConfigIssue,
+  ConfigValidationResult,
+  JsonSchema,
+  JsonSchemaObject,
+  JsonSchemaType,
+  SchemaCache,
+} from './json-schema.js';
+export {
+  RANDOMIZATION_SPEC_SCHEMA,
+  SCHEMA_REF_PREFIX,
+  applySchemaDefaults,
+  compileSchema,
+  createSchemaCache,
+} from './json-schema.js';
+
+export type { ComposeErrorCode, RegistryErrorCode } from './errors.js';
+export { PluginComposeError, PluginRegistryError } from './errors.js';
+
+/* ---- first-party plugin cores (no components) --------------------------- */
+
+export { singleSelectCore, SINGLE_SELECT_CONFIG_SCHEMA } from './plugins/single-select/core.js';
+export type {
+  SingleSelectAnswer,
+  SingleSelectConfig,
+  SingleSelectOtherConfig,
+} from './plugins/single-select/core.js';
+
+export { multiSelectCore, MULTI_SELECT_CONFIG_SCHEMA } from './plugins/multi-select/core.js';
+export type { MultiSelectAnswer, MultiSelectConfig } from './plugins/multi-select/core.js';
+
+export { npsCore, NPS_BANDS, NPS_CONFIG_SCHEMA, NPS_MAX_SCORE, NPS_MIN_SCORE } from './plugins/nps/core.js';
+export type { NpsAnswer, NpsConfig } from './plugins/nps/core.js';
+
+/**
+ * The Phase-1 cores registered by the compiler and the API boundary.
+ *
+ * A list rather than a pre-built registry: the registry's `register` assigns trust from the
+ * *source*, and only the caller knows whether it is building the first-party set, an org's custom
+ * set, or a per-artifact set (F §6, F §7). Handing out a pre-populated registry would make
+ * "first_party" the default for anything anyone added to it.
+ */
+export const FIRST_PARTY_CORES: readonly AnyPluginCoreType[] = [
+  singleSelectCore,
+  multiSelectCore,
+  npsCore,
+];

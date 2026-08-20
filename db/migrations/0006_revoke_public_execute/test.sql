@@ -6,7 +6,7 @@
 -- defaults and triggers), and that the roles which are supposed to reach a function still
 -- can.
 BEGIN;
-SELECT plan(26);
+SELECT plan(27);
 
 -- ---------------------------------------------------------------------------
 -- The assertion
@@ -47,10 +47,35 @@ SELECT is(has_function_privilege('authoring', 'app.tg_org_has_owner()', 'EXECUTE
 SELECT is(has_function_privilege('authoring',
   'ops.enqueue_job(text,jsonb,text,app.ulid,app.ulid,app.ulid,integer,integer)', 'EXECUTE'),
   false, 'authoring cannot execute ops.enqueue_job');
+-- content.rebalance_siblings: maintained by 0007_content_model.
+--
+-- 0006 asserted that `authoring` cannot execute it. That was correct then and is wrong now,
+-- and the reason is worth keeping rather than deleting: 0006's own §3 comment said
+-- "content.frac_key_at and content.rebalance_siblings are deliberately left ungranted. They
+-- have no consumer until content.nodes exists; P1-03 grants them to `authoring` in the
+-- migration that gives them something to order." P1-03 is 0007, and it does — because
+-- SECURITY INVOKER is transitive: content.move_node runs its whole body with the CALLER's
+-- privileges, so the caller needs EXECUTE on next_sort_key, frac_key_at and
+-- rebalance_siblings or every drag fails with `42501 permission denied for function
+-- next_sort_key`, which is indistinguishable at a glance from an RLS denial and is not one.
+--
+-- What 0006 was actually protecting still holds and is asserted below and in 0007: the grant
+-- goes to `authoring` BY NAME, PUBLIC still cannot execute anything, and a direct rebalance
+-- is bounded by RLS because its UPDATE is the caller's — rebalancing another tenant's
+-- sibling set, or a frozen version's, affects zero rows.
 SELECT is(has_function_privilege('authoring', 'content.rebalance_siblings(app.ulid,app.ulid)',
-  'EXECUTE'), false,
-  'authoring cannot execute content.rebalance_siblings — and this one WAS reachable before '
-  '0006, because authoring holds USAGE on schema content');
+  'EXECUTE'), true,
+  'authoring CAN execute content.rebalance_siblings, granted by name in 0007 — it is reached '
+  'transitively from content.move_node, which is SECURITY INVOKER (0006 §3 predicted this '
+  'grant and named the migration that would make it)');
+SELECT is_empty($$
+  SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+   WHERE n.nspname = 'content'
+     AND (p.proacl IS NULL
+          OR EXISTS (SELECT 1 FROM aclexplode(p.proacl) a
+                      WHERE a.grantee = 0 AND a.privilege_type = 'EXECUTE'))
+$$, 'and granting it to `authoring` by name is not the same as leaving it open: nothing in '
+    'schema content is executable by PUBLIC');
 SELECT is(has_function_privilege('runtime_writer', 'ops.claim_job(text[],text)', 'EXECUTE'),
   false, 'runtime_writer cannot execute the queue RPCs either');
 

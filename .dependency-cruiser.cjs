@@ -15,9 +15,14 @@ module.exports = {
       name: 'logic-is-dependency-free',
       comment:
         'ADR-004/ADR-010: packages/logic must have zero third-party dependencies so the ' +
-        'same evaluator runs in Node, the browser, a worker and QuickJS-WASM.',
+        'same evaluator runs in Node, the browser, a worker and QuickJS-WASM.\n' +
+        '\n' +
+        'The `from.pathNot` carve-out is for test files only, which may import vitest and ' +
+        'fast-check: those never ship, and QuickJS never loads them. It exists because this ' +
+        'rule is no longer blind to installed packages (see `options.exclude` below), so ' +
+        'without it the suite itself would be the first violation reported.',
       severity: 'error',
-      from: { path: '^packages/logic/' },
+      from: { path: '^packages/logic/', pathNot: '\\.test\\.ts$' },
       to: {
         pathNot: '^packages/logic/',
         dependencyTypesNot: ['core'],
@@ -106,7 +111,24 @@ module.exports = {
   ],
   options: {
     doNotFollow: { path: 'node_modules' },
-    exclude: { path: '(node_modules|dist|\\.next|__fixtures__)' },
+    // `node_modules` is deliberately ABSENT from `exclude`, and that distinction is the whole
+    // guard rail. `doNotFollow` keeps a third-party dependency IN the graph while declining to
+    // traverse into it; `exclude` deletes it from the graph entirely. With node_modules
+    // excluded, every rule matched on a third-party package silently depended on that package
+    // NOT BEING INSTALLED: the import resolved under node_modules, the dependency vanished,
+    // and the rule reported nothing.
+    //
+    // That is not hypothetical. `logic-is-dependency-free` and `runtime-no-supabase` both
+    // passed their deliberate violations on a checkout whose node_modules had been flattened
+    // by an accidental `npm install` (npm hoists every transitive package to the root, where
+    // pnpm's per-package layout would not have made fast-check reachable from packages/logic).
+    // The negative-control suite went green-with-2-failures on one machine and clean on
+    // another, from the same commit — the guard rails were a function of install history.
+    //
+    // This is the same class of bug as the original `runtime-no-supabase` (matching a
+    // `node_modules/` path that an uninstalled package never has), and the second time it has
+    // bitten. Recorded here because the fix is one word and rediscovering it cost a day.
+    exclude: { path: '(dist|\\.next|__fixtures__)' },
     tsPreCompilationDeps: true,
     tsConfig: { fileName: 'tsconfig.base.json' },
     enhancedResolveOptions: {
