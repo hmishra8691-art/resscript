@@ -124,3 +124,11 @@ export {
   testEscaping,
   type EscapeContext,
 } from './piping.js';
+
+export {
+  parsePreviewToStudio,
+  parseStudioToPreview,
+  type DeviceClass,
+  type PreviewToStudio,
+  type StudioToPreview,
+} from './preview-protocol.js';

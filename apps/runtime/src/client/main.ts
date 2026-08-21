@@ -17,6 +17,11 @@
  * the budget line for it is reserved in E §12.1's table.
  */
 
+import {
+  parseStudioToPreview,
+  type PreviewToStudio,
+} from '@resscript/runtime-core';
+
 interface SubmitResponse {
   page?: { page_id: string };
   disposition?: string;
@@ -42,8 +47,15 @@ interface SubmitResponse {
     focusLostAt = null;
   });
 
+  // The surface prefix, derived from the form action so ONE client serves both the survey
+  // origin (`/s/<token>/…`) and the preview surface (`/preview/<hash>/…?pt=…`, P1-11). The
+  // signed preview token rides in the query and must survive into every URL built here.
   const base = new URL(form.action);
-  const eventUrl = `${base.origin}/s/${base.pathname.split('/')[2]}/event?session=${session}`;
+  const prefixPath = base.pathname.replace(/\/submit$/, '');
+  const pt = base.searchParams.get('pt');
+  const q = (rest: string) => (pt ? `pt=${encodeURIComponent(pt)}&${rest}` : rest);
+  const urlFor = (sub: string, rest: string) => `${base.origin}${prefixPath}${sub}?${q(rest)}`;
+  const eventUrl = urlFor('/event', `session=${session}`);
 
   // First-render timing, once, fire-and-forget. sendBeacon when available so an immediate
   // navigation cannot cancel it; the endpoint answers 204 whatever happens.
@@ -82,7 +94,7 @@ interface SubmitResponse {
       },
     };
 
-    void fetch(`${base.origin}${base.pathname}?session=${session}`, {
+    void fetch(urlFor('/submit', `session=${session}`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
@@ -98,8 +110,12 @@ interface SubmitResponse {
         // Navigation is the server's answer, always: next page or terminal. The client never
         // computes a destination (E §12.2).
         const next = json.page?.page_id ?? json.page_id;
+        if (json.disposition) postToStudio({
+          t: 'preview:disposition', disposition: json.disposition,
+          redirect_url: (json as { redirect_url?: string | null }).redirect_url ?? null,
+        });
         if (next) {
-          location.assign(`${base.origin}/s/${base.pathname.split('/')[2]}/p/${next}?session=${session}`);
+          location.assign(urlFor(`/p/${encodeURIComponent(next)}`, `session=${session}`));
         } else {
           location.reload(); // terminal renders server-side
         }
@@ -124,6 +140,48 @@ interface SubmitResponse {
       target.before(p);
     }
     document.querySelector('.error')?.scrollIntoView({ block: 'center' });
+  }
+
+  // ---- the preview channel (P1-11, security §3.2) --------------------------
+  // Active only when the server marked this page as preview-framed. Origin checked on every
+  // message AND every message validated before dispatch — both, always: origin alone trusts a
+  // compromised studio tab's structure; validation alone answers any frame that can postMessage.
+  const previewOrigin = script.dataset['previewOrigin'];
+  const artifactHash = script.dataset['artifact'];
+  function postToStudio(msg: PreviewToStudio): void {
+    if (previewOrigin && window.parent !== window) window.parent.postMessage(msg, previewOrigin);
+  }
+  if (previewOrigin && artifactHash && window.parent !== window) {
+    postToStudio({ t: 'preview:ready', artifact_hash: artifactHash, session_id: session });
+    postToStudio({
+      t: 'preview:page', page_id: pageId, height: document.documentElement.scrollHeight,
+    });
+    addEventListener('message', ev => {
+      if (ev.origin !== previewOrigin) return;
+      const msg = parseStudioToPreview(ev.data);
+      if (!msg) return; // malformed: ignored, never crashed on (security §3.2)
+      switch (msg.t) {
+        case 'preview:goto':
+          location.assign(urlFor(`/p/${encodeURIComponent(msg.page_id)}`, `session=${session}`));
+          return;
+        case 'preview:setVars':
+          void fetch(urlFor('/setvars', `session=${session}`), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ vars: msg.vars }),
+          }).then(() => location.reload())
+            .catch(() => postToStudio({ t: 'preview:error', code: 'setvars_failed', message: '' }));
+          return;
+        case 'preview:init':
+        case 'preview:reload':
+          // A (re)init targets a possibly different artifact, whose signed token this frame
+          // does not hold: the studio performs it by setting the iframe src, not by message.
+          postToStudio({ t: 'preview:error', code: 'reinit_by_src', message: 'set the iframe src' });
+          return;
+        case 'preview:setDevice':
+          return; // a viewport concern; the studio resizes the iframe, nothing to do in-frame
+      }
+    });
   }
 
   /** FNV-1a, enough for an idempotency discriminator — not the shared PRNG, no seed here. */

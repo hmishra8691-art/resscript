@@ -21,6 +21,7 @@ import { createMemorySessionStore } from './session/store.js';
 import { createStaticTokenResolver, type ResolvedToken } from './token.js';
 import type { Redirects } from '@resscript/schema';
 import { createScriptHost } from './script/host.js';
+import { mintPreviewToken } from './preview/token.js';
 import { ArtifactNotFound, type ArtifactHead, type ArtifactLoader } from './artifact/loader.js';
 import { createSession } from './entry.js';
 import { rehydrate } from '@resscript/runtime-core';
@@ -1020,9 +1021,9 @@ describe('no-JavaScript flow — the P1-09 acceptance line', () => {
 });
 
 describe('deferred routes', () => {
-  it('preview is 501', async () => {
+  it('preview without a signing secret is indistinguishable from no route', async () => {
     const r = await call(deps(), { method: 'POST', path: '/preview/abc' });
-    expect(r.status).toBe(501);
+    expect(r.status).toBe(404);
   });
 
   it('an unknown path is 404', async () => {
@@ -1469,5 +1470,153 @@ describe('server scripts on submit — REAL QuickJS through the whole HTTP path'
     expect(stored?.current_page_id).toBe('pg_1');              // did not advance
     expect('var_seg' in (stored?.vars ?? {})).toBe(false);     // the write did not survive
     expect('var_q1' in (stored?.vars ?? {})).toBe(false);      // NEITHER did the answer: no-op
+  });
+});
+
+/* ---------------------------------------------------------------- *
+ * The preview surface (P1-11, E §12, security §3.2)
+ * ---------------------------------------------------------------- */
+
+describe('the preview surface', () => {
+  const SECRET = 'preview-test-secret';
+  const NOW = 1_700_000_000_000;
+  const previewDeps = (over: Partial<RuntimeDeps> = {}) =>
+    deps({ previewSecret: SECRET, studioOrigin: 'https://studio.local', ...over });
+  const pt = () => mintPreviewToken(SECRET, HASH, NOW + 60_000);
+  const previewCall = (d: RuntimeDeps, path: string, opts: Record<string, unknown> = {}) =>
+    call(d, { host: 'prv-abc123.run.local', path, ...opts } as never);
+
+  it('renders an artifact BY HASH with a valid signed token — is_test, framed for the studio', async () => {
+    const d = previewDeps();
+    const r = await previewCall(d, `/preview/${HASH}?pt=${encodeURIComponent(pt())}`, {
+      headers: { accept: 'text/html' },
+    });
+
+    expect(r.status).toBe(200);
+    expect(r.raw).toContain('<form method="post"');
+    // The form posts back to the PREVIEW surface, carrying the signed token.
+    expect(r.raw).toContain(`action="/preview/${HASH}/submit?pt=`);
+    // Framed for exactly the studio origin — never 'none', never *.
+    expect(r.headers['content-security-policy']).toContain('frame-ancestors https://studio.local');
+    expect(r.headers['x-frame-options']).toBeUndefined();
+    // The preview channel attributes the client bundle keys on.
+    expect(r.raw).toContain('data-preview-origin="https://studio.local"');
+    expect(r.raw).toContain(`data-artifact="${HASH}"`);
+  });
+
+  it('mints an is_test session and NEVER touches the durable writer', async () => {
+    const writerCalls: string[] = [];
+    const d = previewDeps({
+      writer: {
+        startSession: async () => void writerCalls.push('startSession'),
+        submitPage: async () => {
+          writerCalls.push('submitPage');
+          return -1; // what the real RPC answers for a session with no birth row
+        },
+      } as never,
+    });
+    const r = await previewCall(d, `/preview/${HASH}?pt=${encodeURIComponent(pt())}`);
+
+    expect(r.status).toBe(200);
+    const sessionId = r.body.session_id as string;
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.is_test).toBe(true);
+
+    // ...and the SUBMIT skips the writer too. Without ctx.ephemeral, submit_page's
+    // last_event_seq guard reads the missing birth row as a replay and 409s every submit.
+    const s1 = await previewCall(d, `/preview/${HASH}/submit?pt=${encodeURIComponent(pt())}&session=${sessionId}`, {
+      method: 'POST', body: { page_id: 'pg_1', values: { var_q1: 1 } },
+    });
+    expect(s1.status).toBe(200);
+    expect(s1.body.page.page_id).toBe('pg_2');
+    expect(writerCalls).toEqual([]); // no durable birth, no durable submit: not respondent data
+  });
+
+  it('THE GATE: no token, a forged token, and an expired token are all refused', async () => {
+    const d = previewDeps();
+    const none = await previewCall(d, `/preview/${HASH}`);
+    const forged = await previewCall(d, `/preview/${HASH}?pt=v1.${NOW + 60_000}.${'a'.repeat(64)}`);
+    const expired = await previewCall(
+      d, `/preview/${HASH}?pt=${encodeURIComponent(mintPreviewToken(SECRET, HASH, NOW - 1))}`,
+    );
+
+    expect(none.status).toBe(403);
+    expect(forged.status).toBe(403);
+    expect(expired.status).toBe(403);
+    expect(expired.body.error.reason).toBe('expired');
+  });
+
+  it('a token minted for artifact A does not open artifact B', async () => {
+    const d = previewDeps();
+    const other = mintPreviewToken(SECRET, 'b'.repeat(64), NOW + 60_000);
+    const r = await previewCall(d, `/preview/${HASH}?pt=${encodeURIComponent(other)}`);
+    expect(r.status).toBe(403);
+    expect(r.body.error.reason).toBe('bad_signature');
+  });
+
+  it('no signing secret configured = the surface does not exist', async () => {
+    const d = deps(); // no previewSecret
+    const r = await previewCall(d, `/preview/${HASH}?pt=${encodeURIComponent(pt())}`);
+    expect(r.status).toBe(404);
+  });
+
+  it('?seed= reproduces a session (E §14.1: seed overridable in test mode)', async () => {
+    const d = previewDeps();
+    const seed = '1234567890abcdef1234567890abcdef';
+    const r1 = await previewCall(d, `/preview/${HASH}?pt=${encodeURIComponent(pt())}&seed=${seed}`);
+    const r2 = await previewCall(d, `/preview/${HASH}?pt=${encodeURIComponent(pt())}&seed=${seed}`);
+
+    const s1 = await d.sessions.load(r1.body.session_id as string);
+    const s2 = await d.sessions.load(r2.body.session_id as string);
+    expect(s1?.random_seed).toBe(seed);
+    expect(s2?.random_seed).toBe(seed);
+  });
+
+  it('the whole interview runs on the preview surface: submit advances, completes', async () => {
+    const d = previewDeps();
+    const entry = await previewCall(d, `/preview/${HASH}?pt=${encodeURIComponent(pt())}`);
+    const sessionId = entry.body.session_id as string;
+
+    const s1 = await previewCall(d, `/preview/${HASH}/submit?pt=${encodeURIComponent(pt())}&session=${sessionId}`, {
+      method: 'POST', body: { page_id: 'pg_1', values: { var_q1: 2 } },
+    });
+    expect(s1.body.page.page_id).toBe('pg_2');
+
+    const s2 = await previewCall(d, `/preview/${HASH}/submit?pt=${encodeURIComponent(pt())}&session=${sessionId}`, {
+      method: 'POST', body: { page_id: 'pg_2', values: {} },
+    });
+    expect(s2.body.disposition).toBe('COMPLETE');
+  });
+
+  it('setvars jumps the variable state, manifest-validated, invented refs rejected', async () => {
+    const d = previewDeps();
+    const entry = await previewCall(d, `/preview/${HASH}?pt=${encodeURIComponent(pt())}`);
+    const sessionId = entry.body.session_id as string;
+
+    const r = await previewCall(d, `/preview/${HASH}/setvars?pt=${encodeURIComponent(pt())}&session=${sessionId}`, {
+      method: 'POST', body: { vars: { Q1: 2, INVENTED: 'x' } },
+    });
+
+    expect(r.status).toBe(200);
+    expect(r.body.set).toBe(1);
+    expect(r.body.rejected).toEqual(['INVENTED']);
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.vars['var_q1' as never]).toBe(2);
+    expect(stored?.var_provenance['var_q1' as never]).toEqual({ p: 'system' });
+  });
+
+  it('setvars refuses a non-test session — the same message on production is inert', async () => {
+    // Enter through the SURVEY surface (production session), then aim setvars at it.
+    const d = previewDeps();
+    const entry = await call(d, { path: `/s/${TOKEN}` });
+    const sessionId = entry.body.session_id as string;
+
+    const r = await previewCall(d, `/preview/${HASH}/setvars?pt=${encodeURIComponent(pt())}&session=${sessionId}`, {
+      method: 'POST', body: { vars: { Q1: 2 } },
+    });
+
+    expect(r.status).toBe(404); // indistinguishable from "no such session"
+    const stored = await d.sessions.load(sessionId);
+    expect('var_q1' in (stored?.vars ?? {})).toBe(false);
   });
 });

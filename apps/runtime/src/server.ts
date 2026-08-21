@@ -114,6 +114,12 @@ export function buildDeps(): RuntimeDeps {
     // The WASM module loads lazily on the first script run, so surveys without scripts pay
     // nothing for this being always-on.
     scriptHost: createScriptHost(),
+    // The preview gate (P1-11). Absent = the preview surface 404s; the control plane that
+    // mints preview tokens holds the same secret.
+    ...(process.env['PREVIEW_SIGNING_SECRET']
+      ? { previewSecret: process.env['PREVIEW_SIGNING_SECRET'] }
+      : {}),
+    ...(process.env['STUDIO_ORIGIN'] ? { studioOrigin: process.env['STUDIO_ORIGIN'] } : {}),
   };
 }
 

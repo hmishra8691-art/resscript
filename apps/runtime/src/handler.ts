@@ -47,6 +47,7 @@ import {
 } from './render/html.js';
 import { resolveRedirect, type RedirectOutcome } from './redirect/index.js';
 import { makeHookRunner } from './script/hooks.js';
+import { verifyPreviewToken } from './preview/token.js';
 import type { ScriptHost } from './script/host.js';
 import { makeCtx, step } from './machine/index.js';
 import type { SessionStore } from './session/store.js';
@@ -88,6 +89,13 @@ export interface RuntimeDeps {
   readonly vendorSecret?: (vendorRef: string) => string | null;
   /** The QuickJS host (E §13). Absent = artifacts with server scripts skip their hooks. */
   readonly scriptHost?: ScriptHost;
+  /**
+   * HMAC key for signed preview tokens (P1-11). Absent = the preview surface 404s — an
+   * ungated preview endpoint would render unpublished surveys to anyone holding a hash.
+   */
+  readonly previewSecret?: string;
+  /** The studio origin allowed to FRAME preview pages (frame-ancestors). */
+  readonly studioOrigin?: string;
 }
 
 /* ------------------------------------------------------------------ *
@@ -114,6 +122,25 @@ function json(res: ServerResponse, status: number, body: unknown): void {
     'content-length': Buffer.byteLength(payload),
   });
   res.end(payload);
+}
+
+/**
+ * Preview HTML: identical to `html()` except the frame policy. A survey page is never a
+ * legitimate frame target (frame-ancestors 'none'); a PREVIEW page exists to be framed — by
+ * exactly one origin, the studio's. `sandbox="allow-scripts allow-forms"` on the studio side
+ * (security §3.2) is the other half; this header is the half the runtime controls.
+ */
+function htmlFramed(res: ServerResponse, status: number, body: string, studioOrigin: string): void {
+  const headers: Record<string, string | number> = {
+    ...SECURITY_HEADERS,
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': Buffer.byteLength(body),
+    'content-security-policy':
+      `default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'; frame-ancestors ${studioOrigin}`,
+  };
+  delete (headers as Record<string, unknown>)['x-frame-options']; // CSP's frame-ancestors is the policy here
+  res.writeHead(status, headers);
+  res.end(body);
 }
 
 /**
@@ -520,6 +547,24 @@ interface Ctx {
   readonly url: URL;
   readonly token: string;
   readonly wantsHtml: boolean;
+  /**
+   * Where this surface's URLs live: `/s/<token>` for a survey origin, `/preview/<hash>?pt=…`
+   * for the preview surface (P1-11). Every URL the handler builds — form actions, PRG
+   * Location headers — derives from it, which is what lets one handler serve both surfaces.
+   */
+  readonly basePath: string;
+  /**
+   * Preview sessions live in the session store only (see handlePreview's header): they have
+   * no durable birth row, so their submits must not reach `runtime.submit_page` — its
+   * `last_event_seq` guard would read the missing row as a replay and 409 every submit.
+   */
+  readonly ephemeral?: boolean;
+}
+
+/** `<base>/p/<page>?…session=…`, folding any query the base itself carries. */
+function pageUrl(ctx: Ctx, pageId: string, sessionId: string): string {
+  const [path, query] = ctx.basePath.split('?');
+  return `${path}/p/${encodeURIComponent(pageId)}?${query ? `${query}&` : ''}session=${encodeURIComponent(sessionId)}`;
 }
 
 /**
@@ -828,6 +873,7 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
       page: out.page,
       sessionId: out.session.session_id,
       token: ctx.token,
+      actionBase: ctx.basePath,
       variableOf: variableOfFactory(logicFor(head)),
       clientScriptUrl: '/client.js',
     }));
@@ -921,6 +967,7 @@ async function handlePageRender(
       page: rendered,
       sessionId: stamped.session_id,
       token: ctx.token,
+      actionBase: ctx.basePath,
       prefill,
       variableOf: variableOfFactory(logicFor(pinned.head)),
       clientScriptUrl: '/client.js',
@@ -976,7 +1023,7 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
     return page === null ? null : (page as unknown as RenderPage);
   };
 
-  const writer = ctx.deps.writer;
+  const writer = ctx.ephemeral ? undefined : ctx.deps.writer;
   const runHooks = ctx.deps.scriptHost
     ? makeHookRunner(ctx.deps.scriptHost, ctx.deps.artifacts, head)
     : undefined;
@@ -1009,8 +1056,8 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
         res.writeHead(303, {
           ...SECURITY_HEADERS,
           location: dest
-            ? `/s/${ctx.token}/p/${encodeURIComponent(dest)}?session=${encodeURIComponent(sessionId)}`
-            : `/s/${ctx.token}`,
+            ? pageUrl(ctx, dest, sessionId)
+            : ctx.basePath,
         });
         res.end();
         return;
@@ -1024,7 +1071,7 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
         // A no-JS double-navigation lands on whatever page the session is really on.
         res.writeHead(303, {
           ...SECURITY_HEADERS,
-          location: `/s/${ctx.token}/p/${encodeURIComponent(outcome.current_page_id)}?session=${encodeURIComponent(sessionId)}`,
+          location: pageUrl(ctx, outcome.current_page_id, sessionId),
         });
         res.end();
         return;
@@ -1075,6 +1122,7 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
           page: outcome.page,
           sessionId: session.session_id,
           token: ctx.token,
+          actionBase: ctx.basePath,
           errors,
           prefill: body.values as Record<string, unknown>,
           variableOf: variableOfFactory(logic),
@@ -1135,7 +1183,7 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
         // instead of re-submitting, and the back button is the browser's own.
         res.writeHead(303, {
           ...SECURITY_HEADERS,
-          location: `/s/${ctx.token}/p/${encodeURIComponent(String(out.session.current_page_id))}?session=${encodeURIComponent(sessionId)}`,
+          location: pageUrl(ctx, String(out.session.current_page_id), sessionId),
         });
         res.end();
         return;
@@ -1387,6 +1435,230 @@ async function readiness(deps: RuntimeDeps): Promise<{
   return { ready, checks };
 }
 
+
+/* ------------------------------------------------------------------ *
+ * The preview surface (P1-11, E §12, security §3.2)
+ * ------------------------------------------------------------------ */
+
+/**
+ * `/preview/:artifact_hash[...]` — render an artifact BY HASH, before any survey token
+ * exists. Gated per request on a signed preview token (`?pt=`), verified statelessly; the
+ * hash is inside the signature so a token minted for one artifact opens no other.
+ *
+ * Sessions minted here are `is_test: true` with everything E §14.1 attaches to that (the
+ * full trace in responses, the redirect interstitial, read-only quota evaluation), pinned to
+ * the requested hash, and deliberately NOT written through the durable writer: a preview
+ * session belongs to an artifact that may never be published, and `runtime.sessions` rows
+ * reference survey versions the authoring plane owns. Redis/memory only — a preview that
+ * outlives its store is a preview someone left open for a week, and restarting it costs one
+ * click. Recorded as a P1-11 scope decision.
+ */
+async function handlePreview(
+  res: ServerResponse,
+  deps: RuntimeDeps,
+  req: IncomingMessage,
+  requestId: string,
+  url: URL,
+): Promise<void> {
+  const secret = deps.previewSecret;
+  if (!secret) {
+    // Indistinguishable from "no such route": an ungated deployment does not advertise that
+    // previews would exist if only a secret were set.
+    json(res, 404, { error: { code: 'not_found' }, request_id: requestId });
+    return;
+  }
+
+  // /preview/<hash>[/<sub...>]
+  const parts = url.pathname.slice('/preview/'.length).split('/');
+  const hash = parts[0] ?? '';
+  if (!/^[0-9a-f]{64}$/.test(hash)) {
+    json(res, 404, { error: { code: 'not_found' }, request_id: requestId });
+    return;
+  }
+  const pt = url.searchParams.get('pt') ?? '';
+  const verdict = verifyPreviewToken(secret, hash, pt, deps.now());
+  if (!verdict.ok) {
+    json(res, 403, {
+      error: { code: 'preview_denied', reason: verdict.reason }, request_id: requestId,
+    });
+    return;
+  }
+
+  const ctx: Ctx = {
+    deps, requestId, url, token: '', wantsHtml: wantsHtml(req),
+    basePath: `/preview/${hash}?pt=${encodeURIComponent(pt)}`,
+    ephemeral: true,
+  };
+  const sub = parts.slice(1).join('/');
+
+  try {
+    if (req.method === 'GET' && sub === '') {
+      await handlePreviewEntry(res, ctx, hash);
+      return;
+    }
+    if (req.method === 'GET' && sub.startsWith('p/')) {
+      await handlePageRender(res, ctx, decodeURIComponent(sub.slice(2)), url.searchParams.get('session'));
+      return;
+    }
+    if (req.method === 'POST' && sub === 'submit') {
+      await handleSubmit(res, ctx, req);
+      return;
+    }
+    if (req.method === 'POST' && sub === 'setvars') {
+      await handlePreviewSetVars(res, ctx, req, hash);
+      return;
+    }
+    if (req.method === 'POST' && sub === 'event') {
+      await handleTelemetry(res, ctx, req);
+      return;
+    }
+  } catch (err) {
+    if (err instanceof ArtifactNotFound) {
+      // On the preview surface the hash IS the resource the caller named, so a missing
+      // artifact is their 404, not our 503.
+      json(res, 404, { error: { code: 'artifact_not_found' }, request_id: requestId });
+      return;
+    }
+    throw err;
+  }
+
+  json(res, 404, { error: { code: 'not_found' }, request_id: requestId });
+}
+
+async function handlePreviewEntry(res: ServerResponse, ctx: Ctx, hash: string): Promise<void> {
+  const head = await ctx.deps.artifacts.head(hash);
+  const now = ctx.deps.now();
+
+  const seedParam = ctx.url.searchParams.get('seed');
+  const langParam = ctx.url.searchParams.get('lang');
+  const language =
+    langParam && head.manifest.languages.includes(langParam)
+      ? langParam
+      : head.manifest.base_language;
+
+  const base = createSession({
+    session_id: `ses_${ctx.deps.newId()}`,
+    respondent_id: `rsp_${ctx.deps.newId()}`,
+    survey_id: head.manifest.survey_id,
+    artifact_hash: hash,
+    // E §14.1: the seed is overridable in test mode, so a reported bug is reproducible.
+    random_seed: seedParam && /^[0-9a-f]{32}$/.test(seedParam) ? seedParam : ctx.deps.newSeed(),
+    language,
+  });
+  const session: SessionState = {
+    ...base,
+    survey_version_id: head.manifest.survey_version_id,
+    is_test: true,
+    entry_params: captureEntryParams(ctx.url),
+    started_at: now,
+    last_activity_at: now,
+    server_time_ms: now,
+  };
+
+  const entered = step(session, { i: 'enter' }, asMachineArtifact(head), machineCtx(session, now));
+  const out = await interpret(entered.cmds, entered.next, pageFetcher(ctx, hash, language), {
+    logic: logicFor(head),
+    escapeContext: 'html_text',
+    ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
+  });
+  await ctx.deps.sessions.save(out.session);
+
+  log.info('preview_entered', {
+    request_id: ctx.requestId, session_id: out.session.session_id, artifact_hash: hash,
+  });
+
+  if (out.disposition) {
+    await respondFinal(ctx, res, out.session, out.disposition, {
+      htmlMode: ctx.wantsHtml, redirectStatus: 302,
+    });
+    return;
+  }
+  if (!out.page) {
+    json(res, 500, { error: { code: 'no_page' }, request_id: ctx.requestId });
+    return;
+  }
+  if (ctx.wantsHtml) {
+    const studioOrigin = ctx.deps.studioOrigin ?? "'none'";
+    htmlFramed(res, 200, renderHtmlPage({
+      page: out.page,
+      sessionId: out.session.session_id,
+      token: '',
+      actionBase: ctx.basePath,
+      variableOf: variableOfFactory(logicFor(head)),
+      clientScriptUrl: '/client.js',
+      ...(ctx.deps.studioOrigin
+        ? { preview: { studioOrigin: ctx.deps.studioOrigin, artifactHash: hash } }
+        : {}),
+    }), studioOrigin);
+    return;
+  }
+  json(res, 200, pageBody(out.page, out.session, ctx.requestId, out.debug));
+}
+
+/**
+ * `preview:setVars`, server side (security §3.2): jump the session into a variable state.
+ * Accepted ONLY for `is_test` sessions and re-validated against the variable manifest, so the
+ * same message on a production session is inert and an invented ref writes nothing.
+ */
+async function handlePreviewSetVars(
+  res: ServerResponse,
+  ctx: Ctx,
+  req: IncomingMessage,
+  hash: string,
+): Promise<void> {
+  let raw: unknown;
+  try {
+    raw = await readJsonBody(req);
+  } catch {
+    json(res, 400, { error: { code: 'malformed_request' }, request_id: ctx.requestId });
+    return;
+  }
+  const vars = (raw as { vars?: unknown }).vars;
+  const sessionId = ctx.url.searchParams.get('session');
+  if (!sessionId || typeof vars !== 'object' || vars === null || Array.isArray(vars)) {
+    json(res, 400, { error: { code: 'malformed_request' }, request_id: ctx.requestId });
+    return;
+  }
+  const session = await loadSessionState(ctx.deps, sessionId);
+  if (!session || session.artifact_hash !== hash || !session.is_test) {
+    // One answer for "no such session", "someone else's artifact" and "not a test session":
+    // distinguishing them would let a caller probe which sessions exist.
+    json(res, 404, { error: { code: 'session_not_found' }, request_id: ctx.requestId });
+    return;
+  }
+
+  const head = await ctx.deps.artifacts.head(hash);
+  const byRef = new Map(head.manifest.variable_manifest.map(e => [e.name, e]));
+  const accepted: Record<string, unknown> = {};
+  const rejected: string[] = [];
+  for (const [ref, value] of Object.entries(vars as Record<string, unknown>)) {
+    const entry = byRef.get(ref);
+    if (!entry) {
+      rejected.push(ref);
+      continue;
+    }
+    accepted[entry.id] = value;
+  }
+
+  const next: SessionState = {
+    ...session,
+    vars: { ...(session.vars as Record<string, unknown>), ...accepted } as never,
+    var_provenance: {
+      ...session.var_provenance,
+      ...Object.fromEntries(Object.keys(accepted).map(id => [id, { p: 'system' }])),
+    } as never,
+    last_activity_at: ctx.deps.now(),
+  };
+  await ctx.deps.sessions.save(next);
+  json(res, 200, {
+    ok: true,
+    set: Object.keys(accepted).length,
+    rejected,
+    page_id: next.current_page_id,
+    request_id: ctx.requestId,
+  });
+}
+
 /**
  * Build the request handler.
  *
@@ -1429,14 +1701,24 @@ export function createHandler(deps: RuntimeDeps) {
       return;
     }
 
+    // The preview surface rides its own opaque host labels (`prv-…`, security §3.2), not
+    // survey-token origins, so it is routed before token-origin validation. Its own gate is
+    // the signed preview token, checked per request inside.
+    if (url.pathname.startsWith('/preview/')) {
+      await handlePreview(res, deps, req, requestId, url);
+      return;
+    }
+
     const origin = parseOrigin(req.headers.host, deps.domain);
     if (!origin) {
       json(res, 404, { error: { code: 'not_found' }, request_id: requestId });
       return;
     }
 
-    const ctx: Ctx = { deps, requestId, url, token: origin.token, wantsHtml: wantsHtml(req) };
     const prefix = `/s/${origin.token}`;
+    const ctx: Ctx = {
+      deps, requestId, url, token: origin.token, wantsHtml: wantsHtml(req), basePath: prefix,
+    };
 
     try {
       if (req.method === 'GET' && url.pathname === prefix) {
@@ -1495,14 +1777,6 @@ export function createHandler(deps: RuntimeDeps) {
         log.error('resume_failed', { request_id: requestId, err: String(err) });
         json(res, 500, { error: { code: 'internal' }, request_id: requestId });
       }
-      return;
-    }
-
-    if (url.pathname.startsWith('/preview/')) {
-      json(res, 501, {
-        error: { code: 'not_implemented', message: 'P1-11: preview' },
-        request_id: requestId,
-      });
       return;
     }
 

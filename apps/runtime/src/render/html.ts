@@ -42,6 +42,14 @@ export interface HtmlPageInput {
   readonly progress?: { readonly visited: number };
   /** Serve the enhancement bundle? Absent in environments that have not built it. */
   readonly clientScriptUrl?: string;
+  /**
+   * Where the form posts. Defaults to the survey origin's `/s/<token>`; the preview surface
+   * (P1-11) passes `/preview/<hash>?pt=…`-shaped bases because a preview session has no
+   * survey token to build the default from.
+   */
+  readonly actionBase?: string;
+  /** Set on the preview surface: the studio origin the frame may talk to, and the hash. */
+  readonly preview?: { readonly studioOrigin: string; readonly artifactHash: string };
 }
 
 function inputFor(q: RenderedQuestion, input: HtmlPageInput): string {
@@ -96,7 +104,12 @@ ${control}
 
 export function renderHtmlPage(input: HtmlPageInput): string {
   const { page } = input;
-  const action = `/s/${esc(input.token)}/submit?session=${esc(input.sessionId)}&html=1`;
+  const base = input.actionBase ?? `/s/${input.token}`;
+  // The base may carry its own query (`/preview/<hash>?pt=…`); fold it into the action's.
+  const [basePath, baseQuery] = base.split('?');
+  const action = esc(
+    `${basePath}/submit?${baseQuery ? `${baseQuery}&` : ''}session=${input.sessionId}&html=1`,
+  );
 
   return `<!doctype html>
 <html lang="en">
@@ -128,7 +141,13 @@ ${
   input.clientScriptUrl
     ? `<script src="${esc(input.clientScriptUrl)}" defer data-session="${esc(
         input.sessionId,
-      )}" data-page="${esc(page.page_id)}"></script>`
+      )}" data-page="${esc(page.page_id)}"${
+        input.preview
+          ? ` data-preview-origin="${esc(input.preview.studioOrigin)}" data-artifact="${esc(
+              input.preview.artifactHash,
+            )}"`
+          : ''
+      }></script>`
     : ''
 }
 </body>
