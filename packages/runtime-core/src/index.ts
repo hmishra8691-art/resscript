@@ -7,3 +7,14 @@
  */
 
 export { deriveKey, permute, sfc32Counter, testDistributionUniformity, testPermuteDeterminism } from './prng.js';
+
+export {
+  randomize,
+  testRandomizationDeterminism,
+  testSharedGroupOrder,
+  testAnchors,
+  type Item,
+  type Group,
+  type RandomizationMode,
+  type RandomizationConfig,
+} from './randomize.js';
