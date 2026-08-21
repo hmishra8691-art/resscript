@@ -31,3 +31,14 @@ export {
   type FallbackKind,
   type MaskResult,
 } from './masking.js';
+
+export {
+  pipe,
+  escape,
+  testBasicPiping,
+  testVariableForms,
+  testFilters,
+  testNullHandling,
+  testEscaping,
+  type EscapeContext,
+} from './piping.js';
