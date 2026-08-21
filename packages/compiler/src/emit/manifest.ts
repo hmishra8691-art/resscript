@@ -54,6 +54,7 @@ import type {
   Survey,
   Variable,
   VariableManifestEntry,
+  ScriptBindingEntry,
 } from '@resscript/schema';
 
 import { collectEntitlements } from '../analyses/entitlements.js';
@@ -75,6 +76,14 @@ export interface ManifestInput {
 export function buildManifest(input: ManifestInput): ArtifactManifest {
   const survey = input.survey;
   const hashes = scriptHashes(survey);
+  // The dispatch table (artifact.ts's ScriptBindingEntry): ref-sorted for canonical bytes,
+  // last-wins on a duplicate ref — the same tie-break scriptsOf and scriptHashes make, so the
+  // binding always describes the source that shipped.
+  const bindingByRef = new Map<string, ScriptBindingEntry>();
+  for (const a of survey.assets?.scripts ?? []) {
+    bindingByRef.set(a.ref, { ref: a.ref, scope: a.scope, hooks: a.hooks, runs_on: a.runs_on });
+  }
+  const bindings = [...bindingByRef.values()].sort((x, y) => (x.ref < y.ref ? -1 : 1));
   return {
     artifact_schema_version: ARTIFACT_SCHEMA_VERSION,
     survey_id: survey.meta.id,
@@ -84,6 +93,7 @@ export function buildManifest(input: ManifestInput): ArtifactManifest {
     base_language: survey.languages.base,
     languages: artifactLanguages(survey),
     script_hashes: hashes,
+    ...(bindings.length > 0 ? { script_bindings: bindings } : {}),
     csp_directives: cspDirectives(hashes),
     variable_manifest: variableManifest(survey),
     entitlements: collectEntitlements(survey, input.plugins),

@@ -19,6 +19,7 @@ import { createLogger } from '@resscript/observability';
 import { createArtifactLoader } from './artifact/loader.js';
 import { generateSeed, generateULID } from './entry.js';
 import { createHandler, type RuntimeDeps } from './handler.js';
+import { createScriptHost } from './script/host.js';
 import { createMemorySessionStore } from './session/store.js';
 import { createPgWriter, createRedisSessionStore } from './session/durable.js';
 import { createQuotaClient } from './quota/index.js';
@@ -110,6 +111,9 @@ export function buildDeps(): RuntimeDeps {
     // boot. The control-plane secret store replaces this in P2-04; an env var is honest about
     // what exists today and keeps secrets out of artifacts either way.
     vendorSecret: makeVendorSecretLookup(process.env['RUNTIME_VENDOR_SECRETS']),
+    // The WASM module loads lazily on the first script run, so surveys without scripts pay
+    // nothing for this being always-on.
+    scriptHost: createScriptHost(),
   };
 }
 

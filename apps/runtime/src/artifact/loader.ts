@@ -63,6 +63,12 @@ export interface ArtifactLoader {
    * put an extra fetch on the entry path of every session to save one on the exit path.
    */
   redirects(hash: string): Promise<Redirects | null>;
+  /**
+   * One script asset's source, verbatim (`scripts/<ref>.js` is a text file, not JSON), or
+   * null when the artifact carries no such script. Cached like pages: an artifact's bytes
+   * never change, so a null is as cacheable as a hit.
+   */
+  script(hash: string, ref: string): Promise<string | null>;
   /** Best-effort pre-warm of the head. Never throws. */
   warm(hash: string): Promise<void>;
 }
@@ -173,6 +179,8 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
   // Sized like heads: one entry per active survey. Nulls are cached — "this survey has no
   // redirects" is as immutable as any other fact about a content-addressed artifact.
   const redirects = new LruCache<Redirects | null>(opts.maxHeads ?? 64);
+  // Scripts are small and few per survey; the page budget is the right order of magnitude.
+  const scripts = new LruCache<string | null>(opts.maxPages ?? 512);
 
   if (opts.sources.length === 0) {
     throw new Error('createLoader: at least one artifact source is required');
@@ -264,6 +272,17 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
       const loaded = await fetchJson<Redirects>(hash, 'redirects.json');
       redirects.set(hash, loaded);
       return loaded;
+    },
+
+    async script(hash: string, ref: string): Promise<string | null> {
+      // The ref reaches a URL path; a traversal-shaped ref must die here, not at the CDN.
+      if (!/^[A-Za-z0-9_-]+$/.test(ref)) return null;
+      const key = `${hash}/scripts/${ref}`;
+      const cached = scripts.get(key);
+      if (cached !== undefined) return cached;
+      const source = await fetchFile(hash, `scripts/${ref}.js`);
+      scripts.set(key, source);
+      return source;
     },
 
     async warm(hash: string): Promise<void> {

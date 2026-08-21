@@ -143,6 +143,7 @@ export type {
   /* the compiled artifact (types only — the compiler is P1-08) */
   CompiledArtifact,
   ArtifactManifest,
+  ScriptBindingEntry,
   ArtifactGraph,
   ArtifactLogic,
   ArtifactLogicCell,

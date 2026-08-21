@@ -20,6 +20,7 @@ import {
 import { createMemorySessionStore } from './session/store.js';
 import { createStaticTokenResolver, type ResolvedToken } from './token.js';
 import type { Redirects } from '@resscript/schema';
+import { createScriptHost } from './script/host.js';
 import { ArtifactNotFound, type ArtifactHead, type ArtifactLoader } from './artifact/loader.js';
 import { createSession } from './entry.js';
 import { rehydrate } from '@resscript/runtime-core';
@@ -147,6 +148,7 @@ const REHYDRATED = rehydrate(EMPTY_LOGIC as never);
  */
 interface FakeArtifact {
   readonly redirects?: Redirects;
+  readonly scripts?: Record<string, string>;
   head: ArtifactHead;
   pages: Record<string, Record<string, unknown>>;
 }
@@ -256,6 +258,9 @@ function loaderFor(artifacts: Record<string, FakeArtifact>): ArtifactLoader {
     },
     async redirects(hash: string) {
       return artifacts[hash]?.redirects ?? null;
+    },
+    async script(hash: string, ref: string) {
+      return artifacts[hash]?.scripts?.[ref] ?? null;
     },
     async page(hash: string, language: string, pageId: string) {
       pageFetches.push(`${hash}/${language}/${pageId}`);
@@ -1356,5 +1361,113 @@ describe('redirects — the exit door (E §11)', () => {
     });
 
     expect(r.body.redirect_url).toBeNull();
+  });
+});
+
+/* ---------------------------------------------------------------- *
+ * Server script hooks (E §5 step 6, E §13)
+ * ---------------------------------------------------------------- */
+
+describe('server scripts on submit — REAL QuickJS through the whole HTTP path', () => {
+  function scriptedArtifact(source: string): FakeArtifact {
+    const base = linearArtifact();
+    const head = base.head as unknown as { manifest: Record<string, unknown> };
+    return {
+      ...base,
+      scripts: { enrich: source },
+      head: {
+        ...base.head,
+        manifest: {
+          ...head.manifest,
+          script_bindings: [
+            { ref: 'enrich', scope: 'survey', hooks: ['onPageSubmit'], runs_on: 'server' },
+          ],
+          variable_manifest: [
+            ...(head.manifest['variable_manifest'] as unknown[]),
+            { id: 'var_seg', name: 'SEGMENT', kind: 'hidden', type: 'text',
+              export_column: 'SEGMENT', export_include: true, pii: false, persist: true },
+          ],
+        },
+      } as never,
+    };
+  }
+
+  function scripted(source: string) {
+    return deps({
+      artifacts: loaderFor({ [HASH]: scriptedArtifact(source) }),
+      scriptHost: createScriptHost(),
+    });
+  }
+  async function enterAndSubmit(d: RuntimeDeps) {
+    const entry = await call(d, { path: `/s/${TOKEN}` });
+    const sessionId = entry.body.session_id as string;
+    const r = await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/submit?session=${sessionId}`,
+      body: { page_id: 'pg_1', values: { var_q1: 1 } },
+    });
+    return { d, sessionId, r };
+  }
+
+  it('a clean script writes a hidden variable, with script provenance', async () => {
+    const d = scripted(`
+      const q1 = survey.getValue('Q1');
+      survey.setValue('SEGMENT', q1 === 1 ? 'coke' : 'pepsi');
+    `);
+    const { sessionId, r } = await enterAndSubmit(d);
+
+    expect(r.status).toBe(200);
+    expect(r.body.page.page_id).toBe('pg_2'); // the submit advanced normally
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.vars['var_seg' as never]).toBe('coke'); // the script read THIS submit's answer
+    expect(stored?.var_provenance['var_seg' as never])
+      .toEqual({ p: 'script', asset_ref: 'enrich' });
+  });
+
+  it('FAIL-OPEN: a dying script strands nothing — the respondent advances', async () => {
+    const d = scripted(`
+      survey.setValue('SEGMENT', 'half-done');
+      throw new Error('crm timeout');
+    `);
+    const { sessionId, r } = await enterAndSubmit(d);
+
+    expect(r.status).toBe(200);
+    expect(r.body.page.page_id).toBe('pg_2');
+    // E §13.3 step 2: the half-done write rolled back with the script.
+    const stored = await d.sessions.load(sessionId);
+    expect('var_seg' in (stored?.vars ?? {})).toBe(false);
+  });
+
+  it('a runaway script is budgeted out and the interview continues', async () => {
+    const d = scripted('while (true) {}');
+    const { r } = await enterAndSubmit(d);
+    expect(r.status).toBe(200);
+    expect(r.body.page.page_id).toBe('pg_2');
+  }, 20_000);
+
+  it('survey.terminate() finalizes with the script disposition', async () => {
+    const d = scripted(`survey.terminate('QUALITY');`);
+    const { sessionId, r } = await enterAndSubmit(d);
+
+    expect(r.status).toBe(200);
+    expect(r.body.disposition).toBe('QUALITY');
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.machine_state.state).toBe('FINALIZED');
+    expect(stored?.disposition).toBe('QUALITY');
+  });
+
+  it('survey.reject() blocks progression with validation semantics — a genuine no-op', async () => {
+    const d = scripted(`
+      survey.setValue('SEGMENT', 'should-not-survive');
+      survey.reject('msg.duplicate_entry');
+    `);
+    const { sessionId, r } = await enterAndSubmit(d);
+
+    expect(r.status).toBe(200);
+    expect(r.body.validation_failed[0]).toMatchObject({ message_key: 'msg.duplicate_entry' });
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.current_page_id).toBe('pg_1');              // did not advance
+    expect('var_seg' in (stored?.vars ?? {})).toBe(false);     // the write did not survive
+    expect('var_q1' in (stored?.vars ?? {})).toBe(false);      // NEITHER did the answer: no-op
   });
 });

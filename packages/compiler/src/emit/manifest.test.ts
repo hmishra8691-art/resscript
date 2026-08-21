@@ -66,6 +66,20 @@ describe('buildManifest', () => {
     expect(manifest.csp_directives['default-src']).toEqual(["'none'"]);
     expect(manifest.csp_directives['script-src']).toEqual(["'self'", `'sha256-${hash ?? ''}'`]);
   });
+
+  it('emits the script dispatch table — hashes say WHAT, bindings say WHEN', () => {
+    // Without script_bindings the runtime knows the bytes are intact but not which hook to
+    // run them on; E §13's host would be unreachable from a published artifact.
+    const { manifest } = compileFixture({ scriptSource: 'export const a = 1;' });
+
+    expect(manifest.script_bindings).toEqual([
+      { ref: 'tracker', scope: 'survey', hooks: ['onPageLoad'], runs_on: 'client' },
+    ]);
+  });
+
+  it('omits the table entirely for a script-free survey', () => {
+    expect(compileFixture().manifest.script_bindings).toBeUndefined();
+  });
 });
 
 describe('variableManifest', () => {

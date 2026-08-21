@@ -74,11 +74,32 @@ export type SubmitOutcome =
   | { readonly kind: 'stale'; readonly current_page_id: string | null }
   | { readonly kind: 'back_refused'; readonly reason: string };
 
+/** What a page's server hooks did, already resolved to effects (E §13.3). */
+export interface HookRunResult {
+  /** variable id → value: the committed copy-on-write overlays of every clean script. */
+  readonly writes: Record<string, unknown>;
+  /** variable id → asset_ref, for provenance — "who set this?" must name the script. */
+  readonly write_provenance: Record<string, string>;
+  readonly flags: readonly string[];
+  readonly terminate: { disposition: string; custom_key: string | null } | null;
+  /** A message key: blocks progression with validation semantics, not an error. */
+  readonly reject: string | null;
+  /** `script.executed` / `script.failed` events for the submit's event payload. */
+  readonly events: readonly Record<string, unknown>[];
+}
+
 export interface SubmitDeps {
   readonly head: ArtifactHead;
   readonly logic: RehydratedLogic;
   readonly loadPage: (pageId: string) => Promise<RenderPage | null>;
   readonly now: () => number;
+  /**
+   * E §5 step 6: run this page's `onPageSubmit` server scripts. Absent = the survey declares
+   * none (or the deployment has no script host) and the step is skipped entirely. Failure
+   * policy lives INSIDE the runner (fail-open by default, per E §13.3) — by the time this
+   * resolves, everything in it is an outcome to apply, not an error to handle.
+   */
+  readonly runHooks?: (session: SessionState, pageId: string) => Promise<HookRunResult>;
   /** Persist through runtime.submit_page. Absent = in-memory mode (tests); seq still advances. */
   readonly persist?: (w: {
     expected_seq: number; event_id: string; event_type: string; page_id: string | null;
@@ -295,6 +316,45 @@ export async function handleSubmitCore(
     if (back.event) events.push(back.event as never);
   }
 
+  // ---- 6. SERVER HOOKS (E §5 step 6, E §13) ---------------------------------
+  let hookTerminate: { disposition: string; custom_key: string | null } | null = null;
+  if (deps.runHooks) {
+    const hooks = await deps.runHooks(session, body.page_id);
+    events.push(...(hooks.events as never[]));
+    if (hooks.reject !== null) {
+      // Validation semantics (E §13.1): the submit becomes a genuine no-op, INCLUDING the
+      // script's own writes — a rejecting script that half-commits would leave state the
+      // respondent is about to change again.
+      return {
+        kind: 'validation_failed',
+        session: session0,
+        page: rerender(page, session0, before),
+        failures: [{ rule_id: 'script', question_id: '', type: 'script', message_key: hooks.reject, scope: 'page' }],
+      };
+    }
+    if (Object.keys(hooks.writes).length > 0) {
+      session = {
+        ...session,
+        vars: { ...(session.vars as Record<string, unknown>), ...hooks.writes } as never,
+        var_provenance: {
+          ...session.var_provenance,
+          ...Object.fromEntries(
+            Object.entries(hooks.write_provenance).map(([v, ref]) => [
+              v, { p: 'script', asset_ref: ref },
+            ]),
+          ),
+        } as never,
+      };
+    }
+    if (hooks.flags.length > 0) {
+      session = {
+        ...session,
+        quality_flags: [...new Set([...session.quality_flags, ...hooks.flags])] as never,
+      };
+    }
+    hookTerminate = hooks.terminate;
+  }
+
   // ---- 7. ADVANCE -----------------------------------------------------------
   const machineCtx = makeCtx({
     now_ms: now,
@@ -306,13 +366,15 @@ export async function handleSubmitCore(
   const { next, cmds } = step(session, input, deps.head as unknown as MachineArtifact, machineCtx);
   session = next;
 
-  // A rule-driven termination out of evaluation #2 overrides a page advance: the machine has
-  // its own terminate input for exactly this.
-  if (after.termination && session.machine_state.state !== 'FINALIZED') {
+  // A rule-driven termination out of evaluation #2 — or a script's terminate() (E §13.1) —
+  // overrides a page advance: the machine has its own terminate input for exactly this. The
+  // rule wins over the script when both fire, because authored logic outranks customer code.
+  const termination = after.termination ?? hookTerminate;
+  if (termination && session.machine_state.state !== 'FINALIZED') {
     const t = step(
       session,
-      { i: 'terminate', disposition: after.termination.disposition as never,
-        ...(after.termination.custom_key ? { custom_key: after.termination.custom_key } : {}) },
+      { i: 'terminate', disposition: termination.disposition as never,
+        ...(termination.custom_key ? { custom_key: termination.custom_key } : {}) },
       deps.head as unknown as MachineArtifact,
       machineCtx,
     );

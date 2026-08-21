@@ -20,6 +20,7 @@ import type { Expr, Iso8601, JsonObject, RandomizationSpec } from './common.js';
 import type { FlowNode } from './flow.js';
 import type { QuotaConfig } from './quotas.js';
 import type { Redirects } from './vendors.js';
+import type { ScriptHook, ScriptScope, ScriptTarget } from './assets.js';
 import type { StringBundle } from './i18n.js';
 import type { EnumDomainEntry, VariableKind, VariableType } from './variables.js';
 import type { Mask } from './masks.js';
@@ -39,6 +40,13 @@ export interface VariableManifestEntry {
   readonly persist: boolean;
 }
 
+export interface ScriptBindingEntry {
+  readonly ref: string;
+  readonly scope: ScriptScope;
+  readonly hooks: readonly ScriptHook[];
+  readonly runs_on: ScriptTarget;
+}
+
 export interface ArtifactManifest {
   /** The artifact's own schema version, distinct from the authoring `schema_version`. */
   readonly artifact_schema_version: number;
@@ -50,6 +58,16 @@ export interface ArtifactManifest {
   readonly languages: readonly string[];
   /** `ref → sha256`, so a tampered script fails its integrity check rather than executing. */
   readonly script_hashes: { readonly [ref: string]: string };
+  /**
+   * Which script runs where — the runtime's dispatch table for E §13 and F's client hooks.
+   *
+   * **Added in artifact schema version 1, append-only.** `script_hashes` says what the bytes
+   * must be; it says nothing about WHEN to run them, and a runtime that had to guess would
+   * either run nothing (dead feature) or run everything on every hook (a customer script
+   * firing on hooks its author never declared). Absent on artifacts compiled before it existed
+   * and on surveys with no scripts — both mean "run nothing", which is the safe reading.
+   */
+  readonly script_bindings?: readonly ScriptBindingEntry[];
   readonly csp_directives: { readonly [directive: string]: readonly string[] };
   readonly variable_manifest: readonly VariableManifestEntry[];
   readonly entitlements: readonly string[];

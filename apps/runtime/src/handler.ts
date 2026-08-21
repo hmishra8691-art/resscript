@@ -46,6 +46,8 @@ import {
   renderTerminalPage,
 } from './render/html.js';
 import { resolveRedirect, type RedirectOutcome } from './redirect/index.js';
+import { makeHookRunner } from './script/hooks.js';
+import type { ScriptHost } from './script/host.js';
 import { makeCtx, step } from './machine/index.js';
 import type { SessionStore } from './session/store.js';
 import type { PageVisit, SessionState } from './session/types.js';
@@ -84,6 +86,8 @@ export interface RuntimeDeps {
   readonly redirectHosts?: readonly string[];
   /** Vendor HMAC secret lookup (E §11.2), injected so the secret source stays out of here. */
   readonly vendorSecret?: (vendorRef: string) => string | null;
+  /** The QuickJS host (E §13). Absent = artifacts with server scripts skip their hooks. */
+  readonly scriptHost?: ScriptHost;
 }
 
 /* ------------------------------------------------------------------ *
@@ -973,11 +977,15 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
   };
 
   const writer = ctx.deps.writer;
+  const runHooks = ctx.deps.scriptHost
+    ? makeHookRunner(ctx.deps.scriptHost, ctx.deps.artifacts, head)
+    : undefined;
   const outcome = await handleSubmitCore(session, body as SubmitBody, {
     head,
     logic,
     loadPage,
     now: ctx.deps.now,
+    ...(runHooks ? { runHooks } : {}),
     ...(writer
       ? {
           persist: async w =>

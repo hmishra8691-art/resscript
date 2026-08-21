@@ -16,7 +16,8 @@
     "@resscript/runtime-core": "workspace:*",
     "@resscript/schema": "workspace:*",
     "ioredis": "^6.0.0",
-    "pg": "^8.13.0"
+    "pg": "^8.13.0",
+    "quickjs-emscripten": "^0.31.0"
   },
   "devDependencies": {
     "@types/pg": "^8.11.10",
