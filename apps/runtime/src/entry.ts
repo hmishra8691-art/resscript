@@ -92,9 +92,8 @@ export function createSession(params: {
     session_id: params.session_id,
     respondent_id: params.respondent_id,
     survey_id: params.survey_id,
-    // Overwritten by the caller from the resolved token; 0 means "not yet resolved" rather than
-    // "version zero", which no published survey has.
-    survey_version: 0,
+    // Overwritten by the caller from the resolved token.
+    survey_version_id: '',
     artifact_hash: params.artifact_hash,
     schema_version: 1,
 
@@ -143,6 +142,8 @@ export function createSession(params: {
     // Integrity
     revision: 0,
     resume_token_hash: null,
+    last_event_seq: 0,
+    last_submit: null,
   };
 }
 

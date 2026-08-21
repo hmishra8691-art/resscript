@@ -59,12 +59,33 @@ function fakeRes(): { res: ServerResponse; captured: () => Captured } {
   };
 }
 
-function req(opts: { method?: string; host?: string; path: string }): IncomingMessage {
-  return {
+function req(opts: {
+  method?: string;
+  host?: string;
+  path: string;
+  body?: unknown;
+}): IncomingMessage {
+  // A minimal event-emitting body, because the real handler streams req 'data'/'end'.
+  const chunks = opts.body === undefined ? [] : [Buffer.from(JSON.stringify(opts.body))];
+  const listeners: Record<string, Array<(arg?: unknown) => void>> = {};
+  const fake = {
     method: opts.method ?? 'GET',
     url: opts.path,
     headers: { host: opts.host ?? `${TOKEN}.run.local` },
-  } as unknown as IncomingMessage;
+    on(event: string, cb: (arg?: unknown) => void) {
+      (listeners[event] ??= []).push(cb);
+      if (event === 'end') {
+        // Deliver synchronously on the microtask queue, after 'data' has been subscribed.
+        queueMicrotask(() => {
+          for (const c of chunks) listeners['data']?.forEach(f => f(c));
+          listeners['end']?.forEach(f => f());
+        });
+      }
+      return fake;
+    },
+    destroy() {},
+  };
+  return fake as unknown as IncomingMessage;
 }
 
 /* ---------------------------------------------------------------- *
@@ -93,7 +114,12 @@ const EMPTY_LOGIC = {
   base_items: { 'qst_1.options': [1, 2] },
   base_option: {},
   derived: {},
-  schema: { question_variables: {}, page_questions: {}, page_of: {}, label_keys: {} },
+  schema: {
+    question_variables: { qst_1: ['var_q1'] },
+    page_questions: { pg_1: ['qst_1'], pg_2: ['qst_2'] },
+    page_of: { qst_1: 'pg_1', qst_2: 'pg_2' },
+    label_keys: {},
+  },
 };
 
 /** The logic a direct `interpret` call needs. Rehydrated once for the whole suite. */
@@ -113,7 +139,19 @@ function linearArtifact(): FakeArtifact {
   return {
     head: {
       hash: HASH,
-      manifest: { base_language: 'en', artifact_hash: HASH },
+      manifest: {
+        base_language: 'en',
+        artifact_hash: HASH,
+        survey_id: 'svy_0A000000000000000000000000',
+        // The closed world of writable names — what the anti-tamper filter reads. A head
+        // without one would make every submit die in filterSubmit, which is exactly what
+        // happened when this fixture carried a two-field manifest stub.
+        variable_manifest: [
+          { id: 'var_q1', name: 'Q1', kind: 'response', type: 'enum',
+            export_column: 'Q1', export_include: true, pii: false, persist: true,
+            enum_domain: [{ code: 1, label_key: 'q1.o1' }, { code: 2, label_key: 'q1.o2' }] },
+        ],
+      },
       graph: {
         page_order: ['pg_1', 'pg_2'],
         nodes: [
@@ -138,6 +176,7 @@ function linearArtifact(): FakeArtifact {
               ref: 'Q1',
               question_type: 'single_select',
               required: true,
+              emits: ['var_q1'],
               label: 'Which brand, {{name}}?',
               options: [
                 { id: 'opt_1', ref: 'o1', code: 1, position: 1, label: 'Coca-Cola' },
@@ -181,8 +220,7 @@ function screenoutArtifact(): FakeArtifact {
 function token(over: Partial<ResolvedToken> = {}): ResolvedToken {
   return {
     token: TOKEN,
-    survey_id: 'srv_1',
-    survey_version: 3,
+    survey_version_id: 'ver_0A100000000000000000000000',
     artifact_hash: HASH,
     status: 'live',
     is_test: false,
@@ -231,7 +269,7 @@ beforeEach(() => {
 
 async function call(
   d: RuntimeDeps,
-  opts: { method?: string; host?: string; path: string },
+  opts: { method?: string; host?: string; path: string; body?: unknown },
 ): Promise<Captured> {
   const h = createHandler(d);
   const { res, captured } = fakeRes();
@@ -358,7 +396,7 @@ describe('GET /s/:token', () => {
     const stored = await d.sessions.load(r.body.session_id);
 
     expect(stored?.artifact_hash).toBe(HASH);
-    expect(stored?.survey_version).toBe(3);
+    expect(stored?.survey_version_id).toBe('ver_0A100000000000000000000000');
   });
 
   it('records the render digest on the visit', async () => {
@@ -580,13 +618,131 @@ describe('GET /s/:token/p/:page_id', () => {
  * Routes deferred to later milestones
  * ---------------------------------------------------------------- */
 
-describe('deferred routes', () => {
-  it('submit is 501 and names its milestone', async () => {
-    const r = await call(deps(), { method: 'POST', path: `/s/${TOKEN}/submit` });
-    expect(r.status).toBe(501);
-    expect(r.body.error.message).toContain('P1-10');
+describe('POST /s/:token/submit — E §5 end to end', () => {
+  /** Enter, then submit helper. The fixture's Q1 emits nothing declared, so the manifest
+   *  below drives what is writable. */
+  async function entered(d = deps()) {
+    const entry = await call(d, { path: `/s/${TOKEN}` });
+    return { d, sessionId: entry.body.session_id as string, entry };
+  }
+  const submit = (d: RuntimeDeps, sessionId: string, body: unknown) =>
+    call(d, { method: 'POST', path: `/s/${TOKEN}/submit?session=${sessionId}`, body });
+
+  it('advances to the next page on a clean submit', async () => {
+    const { d, sessionId } = await entered();
+    const r = await submit(d, sessionId, { page_id: 'pg_1', values: { var_q1: 1 } });
+
+    expect(r.status).toBe(200);
+    expect(r.body.page.page_id).toBe('pg_2');
   });
 
+  it('walks the whole survey to COMPLETE and the answers persist', async () => {
+    const { d, sessionId } = await entered();
+    await submit(d, sessionId, { page_id: 'pg_1', values: { var_q1: 2 } });
+    const r = await submit(d, sessionId, { page_id: 'pg_2', values: {} });
+
+    expect(r.status).toBe(200);
+    expect(r.body.disposition).toBe('COMPLETE');
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.vars['var_q1' as never]).toBe(2);
+    expect(stored?.machine_state.state).toBe('FINALIZED');
+  });
+
+  it('THE ANTI-TAMPER TEST: a hidden question value is discarded and recorded', async () => {
+    // The roadmap's own acceptance line, over HTTP: the manifest knows var_ghost belongs to a
+    // question that is not on this page, so a crafted POST cannot write it.
+    const { d, sessionId } = await entered();
+    const r = await submit(d, sessionId, {
+      page_id: 'pg_1',
+      values: { var_q1: 1, disposition: 'COMPLETE', var_hidden: 5 },
+    });
+
+    expect(r.status).toBe(200);
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.vars['var_q1' as never]).toBe(1);
+    expect('disposition' in (stored?.vars ?? {})).toBe(false);
+    expect(stored?.disposition).toBeNull(); // the injected key changed NOTHING
+  });
+
+  it('a validation failure is a genuine no-op', async () => {
+    const { d, sessionId } = await entered();
+    // Q1 is required in the fixture; submit nothing for it.
+    const r = await submit(d, sessionId, { page_id: 'pg_1', values: {} });
+
+    expect(r.status).toBe(200);
+    expect(r.body.validation_failed[0]).toMatchObject({ type: 'required', question_id: 'qst_1' });
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.current_page_id).toBe('pg_1'); // did not advance
+    expect(stored?.last_event_seq).toBe(0);       // nothing persisted
+    // ...but the attempt counter moved, because speeder detection needs it (E §5 step 4).
+    expect(stored?.page_timings['pg_1' as never]?.submits).toBe(1);
+  });
+
+  it('THE REPLAY: an identical retried submit returns the identical outcome, once', async () => {
+    const { d, sessionId } = await entered();
+    const body = { page_id: 'pg_1', values: { var_q1: 1 }, idempotency_key: 'k1' };
+    const first = await submit(d, sessionId, body);
+    const second = await submit(d, sessionId, body);
+
+    expect(first.body.page.page_id).toBe('pg_2');
+    expect(second.status).toBe(200);
+    expect(second.body.replayed).toBe(true);
+    expect(second.body.page_id).toBe('pg_2');
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.last_event_seq).toBe(first.body ? 1 : 1); // one submit, one event seq
+  });
+
+  it('a stale tab gets 409 and the current page back', async () => {
+    const { d, sessionId } = await entered();
+    const r = await submit(d, sessionId, { page_id: 'pg_2', values: {} });
+
+    expect(r.status).toBe(409);
+    expect(r.body.error.code).toBe('stale_page');
+    expect(r.body.error.current_page_id).toBe('pg_1');
+  });
+
+  it('a divergent client trace is recorded, not rejected', async () => {
+    // ADR-004: the client's verdicts are advisory. A divergence is evidence, never a 4xx —
+    // rejecting would let a broken client bundle strand every respondent on it.
+    const { d, sessionId } = await entered();
+    const r = await submit(d, sessionId, {
+      page_id: 'pg_1',
+      values: { var_q1: 1 },
+      client_trace: { state_hash: 'wrong', artifact_hash: HASH },
+    });
+
+    expect(r.status).toBe(200);
+    expect(r.body.page.page_id).toBe('pg_2');
+  });
+
+  it('submitting to a finalized session replays the disposition', async () => {
+    const { d, sessionId } = await entered();
+    await submit(d, sessionId, { page_id: 'pg_1', values: { var_q1: 1 } });
+    await submit(d, sessionId, { page_id: 'pg_2', values: {} });
+    const r = await submit(d, sessionId, { page_id: 'pg_2', values: {} });
+
+    expect(r.status).toBe(200);
+    expect(r.body.disposition).toBe('COMPLETE');
+  });
+
+  it('a malformed body is 400, not a crash', async () => {
+    const { d, sessionId } = await entered();
+    const r = await submit(d, sessionId, { values: {} }); // no page_id
+
+    expect(r.status).toBe(400);
+    expect(r.body.error.code).toBe('malformed_request');
+  });
+
+  it('an unknown session is 404', async () => {
+    const d = deps();
+    const r = await submit(d, 'ses_00000000000000000000000000', {
+      page_id: 'pg_1', values: {},
+    });
+    expect(r.status).toBe(404);
+  });
+});
+
+describe('deferred routes', () => {
   it('telemetry is 501', async () => {
     const r = await call(deps(), { method: 'POST', path: `/s/${TOKEN}/event` });
     expect(r.status).toBe(501);

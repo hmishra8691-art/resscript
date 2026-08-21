@@ -12,10 +12,16 @@ import type { Value } from '@resscript/logic';
 
 export interface SessionState {
   // ---- identity -------------------------------------------------------
-  session_id: string; // ULID
+  session_id: string; // ses_ ULID — the app.ulid shape, so the DB can hold it unmodified
   respondent_id: string; // ULID, stable across resume
-  survey_id: string; // ULID
-  survey_version: number;
+  survey_id: string; // ULID, from the artifact manifest (the token deliberately omits it)
+  /**
+   * The version id, not a version NUMBER: runtime.resolve_token returns survey_version_id
+   * and nothing else (its comment: every extra column is a cross-tenant leak waiting for a
+   * bug), and the write path keys every table by it. E §3.1 spells this field
+   * `survey_version`; the id is what every consumer actually needs.
+   */
+  survey_version_id: string;
   artifact_hash: string; // PINNED at entry (§3.3)
   schema_version: number;
 
@@ -58,6 +64,21 @@ export interface SessionState {
   // ---- integrity ------------------------------------------------------
   revision: number; // optimistic concurrency (§3.4)
   resume_token_hash: string | null;
+  /**
+   * The seq of the last event persisted for this session — the counter
+   * runtime.submit_page's guard compares. Lives on the session so the Redis copy and the
+   * document cannot drift silently: every persist sends last_event_seq + 1 and the database
+   * refuses anything else.
+   */
+  last_event_seq: number;
+  /**
+   * The last submit's idempotency key and the response it produced, for E §3.4's replay:
+   * a mobile retry of an already-applied POST returns the identical body and appends
+   * nothing. ONE entry, not E's eight — the dominant retry is the immediately preceding
+   * request, and eight bodies of stored response is Redis weight for a tail that has not
+   * been observed yet. Widen when measured.
+   */
+  last_submit: { key: string; response: unknown } | null;
 }
 
 export type MachineState =

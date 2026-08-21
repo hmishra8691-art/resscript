@@ -177,8 +177,13 @@ const BOOT_ENV = {
     PORT: '0',
     RUNTIME_DOMAIN: 'run.local',
     // A source is required at startup by design — a runtime with nowhere to load artifacts from
-    // would look healthy and fail on the first respondent.
+    // would look healthy and fail on the first respondent. Same for tokens: with neither a
+    // database nor a static table the server refuses to boot, so the boot check supplies the
+    // dev-mode static table it would refuse production for.
     ARTIFACT_DIR: '/tmp/resscript-packaging-lint',
+    RUNTIME_STATIC_TOKENS:
+      '[{"token":"abcdefghij0123456789klmnop","survey_version_id":"ver_0A100000000000000000000000",' +
+      '"artifact_hash":"' + 'e'.repeat(64) + '","status":"live","is_test":false}]',
   },
   '@resscript/worker': {
     NODE_ENV: 'development',

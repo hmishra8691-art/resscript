@@ -11,8 +11,13 @@ export type TokenStatus = 'live' | 'paused' | 'closed' | 'test';
 
 export interface ResolvedToken {
   readonly token: string;
-  readonly survey_id: string;
-  readonly survey_version: number;
+  /**
+   * The ONLY identity the token resolves to. runtime.resolve_token deliberately returns no
+   * survey_id, no org, no name — its comment: "every extra column is a cross-tenant leak
+   * waiting for a bug". The survey_id a session needs comes from the artifact manifest,
+   * which the hash already authorizes the holder to read.
+   */
+  readonly survey_version_id: string;
   /**
    * PINNED at entry (E §3.3). A session keeps the hash it started on for its whole life, so
    * republishing mid-field cannot change the questionnaire under a respondent who is halfway
@@ -48,19 +53,41 @@ export function createStaticTokenResolver(
 }
 
 /**
- * The Postgres-backed resolver.
+ * The Postgres-backed resolver: `runtime.resolve_token`, through the writer's pool.
  *
- * Not implemented yet: the write path and the `runtime_reader` connection arrive with P1-10, and
- * a half-wired client that throws on first use is worse than one that says so. `apps/runtime`
- * links no Postgres driver today, and the `runtime-no-supabase` dependency-cruiser rule would
- * fail CI if a Supabase client appeared here.
+ * A 60-second in-process cache, keyed by token. E §4 step 2 wants Redis in front with the same
+ * TTL; in-process is the same freshness bound with one fewer hop, and the trade is that a
+ * revocation propagates per instance within a minute rather than globally at once — which is
+ * also true of the Redis design, since it caches with the same TTL.
  */
-export function createPgTokenResolver(): TokenResolver {
+export function createPgTokenResolver(query: {
+  resolveToken(token: string): Promise<{
+    survey_version_id: string; artifact_hash: string; is_test: boolean; status: string;
+  } | null>;
+}): TokenResolver {
+  const cache = new Map<string, { at: number; row: ResolvedToken | null }>();
+  const TTL_MS = 60_000;
+
   return {
-    async resolve(): Promise<ResolvedToken | null> {
-      throw new Error(
-        'P1-10: Postgres token resolution not wired. Set RUNTIME_STATIC_TOKENS for local use.',
-      );
+    async resolve(token: string): Promise<ResolvedToken | null> {
+      const hit = cache.get(token);
+      if (hit && Date.now() - hit.at < TTL_MS) return hit.row;
+
+      const raw = await query.resolveToken(token);
+      const row: ResolvedToken | null = raw
+        ? {
+            token,
+            survey_version_id: raw.survey_version_id,
+            artifact_hash: raw.artifact_hash,
+            // The DB status axis is app.version_status (production/staging/...); the runtime's
+            // TokenStatus is the serving axis. A resolvable, unrevoked token serves; is_test
+            // routes it into test mode.
+            status: raw.is_test ? 'test' : 'live',
+            is_test: raw.is_test,
+          }
+        : null;
+      cache.set(token, { at: Date.now(), row });
+      return row;
     },
   };
 }

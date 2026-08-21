@@ -32,7 +32,9 @@ import {
 } from '@resscript/runtime-core';
 import { evalCondition, evaluate, varStateOf } from '@resscript/logic';
 import { ArtifactNotFound, type ArtifactHead, type ArtifactLoader } from './artifact/loader.js';
-import { createSession } from './entry.js';
+import { createSession, generateULID } from './entry.js';
+import { rebuildSession, type RuntimeWriter } from './session/durable.js';
+import { handleSubmitCore, type SubmitBody } from './submit.js';
 import { makeCtx, step } from './machine/index.js';
 import type { SessionStore } from './session/store.js';
 import type { PageVisit, SessionState } from './session/types.js';
@@ -48,6 +50,12 @@ export interface RuntimeDeps {
   readonly tokens: TokenResolver;
   readonly artifacts: ArtifactLoader;
   readonly sessions: SessionStore;
+  /**
+   * The Postgres record, through 0011's RPCs. Optional so the in-memory mode (tests, local
+   * dev without Postgres) still exercises the full request path — the seq counter advances
+   * either way, so behaviour cannot silently differ between the two modes.
+   */
+  readonly writer?: RuntimeWriter;
   /** Injected so a replayed request produces identical timestamps (ADR-006). */
   readonly now: () => number;
   /** ULID generator. */
@@ -124,6 +132,60 @@ function captureEntryParams(url: URL): Record<string, string> {
     out[k] = v.slice(0, 512);
   }
   return out;
+}
+
+/**
+ * Read and parse a JSON body, capped.
+ *
+ * The cap is a request-level defence: a 2,000-variable page of long open-ends fits in well
+ * under 1 MB, and an unbounded body is memory a hostile client controls.
+ */
+function readJsonBody(req: IncomingMessage, maxBytes = 1_048_576): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new BodyTooLarge());
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      try {
+        resolve(chunks.length === 0 ? {} : JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch {
+        reject(new MalformedBody());
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+class BodyTooLarge extends Error {}
+class MalformedBody extends Error {}
+
+/**
+ * Load a session: Redis (or the in-memory store) first, then the Postgres rebuild.
+ *
+ * The rebuild is written back to the fast store so the NEXT request is a cache hit again —
+ * without that, a session Redis evicted pays the Postgres round trip on every remaining page.
+ */
+async function loadSessionState(
+  deps: RuntimeDeps,
+  sessionId: string,
+): Promise<SessionState | null> {
+  const cached = await deps.sessions.load(sessionId);
+  if (cached) return cached;
+  if (!deps.writer) return null;
+  const doc = await deps.writer.loadSession(sessionId);
+  if (!doc) return null;
+  const rebuilt = rebuildSession(doc);
+  await deps.sessions.save(rebuilt);
+  log.warn('session_rebuilt_from_postgres', { session_id: sessionId });
+  return rebuilt;
 }
 
 /* ------------------------------------------------------------------ *
@@ -425,23 +487,42 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
   const now = ctx.deps.now();
   const language = head.manifest.base_language;
   const base = createSession({
-    session_id: ctx.deps.newId(),
-    respondent_id: ctx.deps.newId(),
-    survey_id: resolved.survey_id,
+    // ses_-prefixed: the app.ulid domain requires a kind prefix, and minting it here means
+    // the DB can hold the id unmodified — one identity everywhere, no mapping table.
+    session_id: `ses_${ctx.deps.newId()}`,
+    respondent_id: `rsp_${ctx.deps.newId()}`,
+    // The token deliberately resolves to no survey_id (a leak surface); the manifest, which
+    // the pinned hash already authorizes, carries it.
+    survey_id: head.manifest.survey_id,
     artifact_hash: resolved.artifact_hash,
     random_seed: ctx.deps.newSeed(),
     language,
   });
 
-  const session: SessionState = {
+  let session: SessionState = {
     ...base,
-    survey_version: resolved.survey_version,
+    survey_version_id: resolved.survey_version_id,
     is_test: resolved.is_test || resolved.status === 'test',
     entry_params: captureEntryParams(ctx.url),
     started_at: now,
     last_activity_at: now,
     server_time_ms: now,
   };
+
+  // The durable birth FIRST (E §5 step 8's order, applied at entry too): session row +
+  // document + session_start event, one transaction. If the Redis write after it fails, the
+  // session rebuilds from this; the reverse order can lose the birth.
+  if (ctx.deps.writer) {
+    await ctx.deps.writer.startSession({
+      token: ctx.token,
+      session_id: session.session_id,
+      random_seed: session.random_seed,
+      language,
+      is_test: session.is_test,
+      entry_payload: { entry_params: session.entry_params },
+    });
+    session = { ...session, last_event_seq: 1 };
+  }
 
   const { next, cmds } = step(
     session,
@@ -502,7 +583,9 @@ async function handlePageRender(
     return;
   }
 
-  const session = await ctx.deps.sessions.load(sessionId);
+  // Through the rebuild path, not the store directly: a session Redis evicted mid-interview
+  // must render from the Postgres record, or every eviction strands a respondent (E §3.2).
+  const session = await loadSessionState(ctx.deps, sessionId);
   if (!session) {
     json(res, 404, { error: { code: 'session_not_found' }, request_id: ctx.requestId });
     return;
@@ -543,6 +626,146 @@ async function handlePageRender(
   await ctx.deps.sessions.save(stamped);
 
   json(res, 200, pageBody(rendered, stamped, ctx.requestId));
+}
+
+/**
+ * `POST /s/{token}/submit` — the endpoint shell around `handleSubmitCore` (E §5).
+ *
+ * The core is pure given its deps; this shell owns everything with a side effect: body
+ * parsing, session loading, the Postgres persist closure, the Redis save, rendering the NEXT
+ * page out of the machine's commands, and mapping each outcome to a status code.
+ */
+async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage): Promise<void> {
+  let raw: unknown;
+  try {
+    raw = await readJsonBody(req);
+  } catch {
+    json(res, 400, { error: { code: 'malformed_request' }, request_id: ctx.requestId });
+    return;
+  }
+  const body = raw as Partial<SubmitBody>;
+  if (typeof body.page_id !== 'string' || typeof body.values !== 'object' || body.values === null) {
+    json(res, 400, { error: { code: 'malformed_request' }, request_id: ctx.requestId });
+    return;
+  }
+  const sessionId = ctx.url.searchParams.get('session');
+  if (!sessionId) {
+    json(res, 400, { error: { code: 'session_required' }, request_id: ctx.requestId });
+    return;
+  }
+
+  const session = await loadSessionState(ctx.deps, sessionId);
+  if (!session) {
+    json(res, 404, { error: { code: 'session_not_found' }, request_id: ctx.requestId });
+    return;
+  }
+
+  // The PINNED artifact, not the token's current one (E §3.3).
+  const head = await ctx.deps.artifacts.head(session.artifact_hash);
+  const logic = logicFor(head);
+  const language = session.language;
+  const loadPage = async (pageId: string) => {
+    const page = await ctx.deps.artifacts.page(session.artifact_hash, language, pageId);
+    return page === null ? null : (page as unknown as RenderPage);
+  };
+
+  const writer = ctx.deps.writer;
+  const outcome = await handleSubmitCore(session, body as SubmitBody, {
+    head,
+    logic,
+    loadPage,
+    now: ctx.deps.now,
+    ...(writer
+      ? {
+          persist: async w =>
+            writer.submitPage({
+              session_id: session.session_id,
+              ...w,
+              // page ids in a real artifact are pg_-prefixed app.ulids; a fixture id that is
+              // not one cannot be stored in the typed column, so it rides in the payload.
+              page_id: /^pg_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(w.page_id ?? '')
+                ? w.page_id
+                : null,
+            }),
+        }
+      : {}),
+  });
+
+  switch (outcome.kind) {
+    case 'replay':
+      json(res, 200, { replayed: true, ...(outcome.response as object), request_id: ctx.requestId });
+      return;
+
+    case 'stale':
+      json(res, 409, {
+        error: { code: 'stale_page', current_page_id: outcome.current_page_id },
+        request_id: ctx.requestId,
+      });
+      return;
+
+    case 'back_refused':
+      json(res, 409, {
+        error: { code: 'back_refused', reason: outcome.reason },
+        request_id: ctx.requestId,
+      });
+      return;
+
+    case 'validation_failed': {
+      // THE NO-OP: nothing durable moved. Only the Redis-side attempt counter may advance,
+      // because attempt counts feed speeder detection (E §5 step 4) — done with a plain save
+      // (not CAS) since revision is unchanged by design.
+      const bumped: SessionState = {
+        ...outcome.session,
+        last_activity_at: ctx.deps.now(),
+        page_timings: {
+          ...outcome.session.page_timings,
+          [body.page_id]: {
+            first_render_ms:
+              outcome.session.page_timings[body.page_id as never]?.first_render_ms ?? 0,
+            total_ms: outcome.session.page_timings[body.page_id as never]?.total_ms ?? 0,
+            submits: (outcome.session.page_timings[body.page_id as never]?.submits ?? 0) + 1,
+            focus_loss_ms:
+              outcome.session.page_timings[body.page_id as never]?.focus_loss_ms ?? 0,
+          },
+        } as never,
+      };
+      await ctx.deps.sessions.save(bumped);
+      json(res, 200, {
+        validation_failed: outcome.failures,
+        page: { page_id: outcome.page.page_id, questions: outcome.page.questions,
+                skipped: outcome.page.skipped },
+        session_id: session.session_id,
+        request_id: ctx.requestId,
+      });
+      return;
+    }
+
+    case 'final': {
+      await ctx.deps.sessions.save(outcome.session);
+      json(res, 200, finalBody(outcome.session, outcome.disposition, ctx.requestId));
+      return;
+    }
+
+    case 'advanced': {
+      // Interpret the machine's commands: render the next page (stamping its digest), or a
+      // late finalize out of the flow walk.
+      const out = await interpret(outcome.cmds, outcome.session, loadPage, {
+        logic,
+        escapeContext: 'html_text',
+      });
+      await ctx.deps.sessions.save(out.session);
+      if (out.disposition) {
+        json(res, 200, finalBody(out.session, out.disposition, ctx.requestId));
+        return;
+      }
+      if (!out.page) {
+        json(res, 500, { error: { code: 'no_page' }, request_id: ctx.requestId });
+        return;
+      }
+      json(res, 200, pageBody(out.page, out.session, ctx.requestId));
+      return;
+    }
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -627,14 +850,14 @@ export function createHandler(deps: RuntimeDeps) {
       throw err;
     }
 
-    // The submit write path is P1-10 (arch §3.3's ten steps: the append-only event log,
-    // server-authoritative re-evaluation, and divergence detection). The machine and
-    // invalidate-forward that it drives are built and tested; only the write path is missing.
     if (req.method === 'POST' && url.pathname === `${prefix}/submit`) {
-      json(res, 501, {
-        error: { code: 'not_implemented', message: 'P1-10: POST /s/:token/submit' },
-        request_id: requestId,
-      });
+      try {
+        await handleSubmit(res, ctx, req);
+      } catch (err) {
+        if (err instanceof ArtifactNotFound) throw err; // the outer catch owns 503s
+        log.error('submit_failed', { request_id: requestId, err: String(err) });
+        json(res, 500, { error: { code: 'internal' }, request_id: requestId });
+      }
       return;
     }
 

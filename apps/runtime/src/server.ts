@@ -19,7 +19,8 @@ import { createLogger } from '@resscript/observability';
 import { createArtifactLoader } from './artifact/loader.js';
 import { generateSeed, generateULID } from './entry.js';
 import { createHandler, type RuntimeDeps } from './handler.js';
-import { createMemorySessionStore, createSessionStore } from './session/store.js';
+import { createMemorySessionStore } from './session/store.js';
+import { createPgWriter, createRedisSessionStore } from './session/durable.js';
 import { createPgTokenResolver, createStaticTokenResolver, type ResolvedToken } from './token.js';
 
 const log = createLogger({ service: 'runtime' });
@@ -36,9 +37,16 @@ const RUNTIME_DOMAIN = process.env['RUNTIME_DOMAIN'] ?? 'run.local';
  * and a runtime that cannot resolve any token is untestable by hand. Refused outside development
  * so it cannot become a production back door that mints survey access from an env var.
  */
-function resolveTokens() {
+function resolveTokens(writer: ReturnType<typeof resolveWriter>) {
   const raw = process.env['RUNTIME_STATIC_TOKENS'];
-  if (!raw) return createPgTokenResolver();
+  if (!raw) {
+    if (!writer) {
+      throw new Error(
+        'No token source: set RUNTIME_DATABASE_URL (production) or RUNTIME_STATIC_TOKENS (dev).',
+      );
+    }
+    return createPgTokenResolver(writer);
+  }
 
   if (process.env['NODE_ENV'] === 'production') {
     throw new Error('RUNTIME_STATIC_TOKENS is not permitted in production');
@@ -55,20 +63,34 @@ function resolveTokens() {
 }
 
 function resolveSessions() {
-  // The Redis-backed store throws on use until P1-10. In development, fall back to the in-process
-  // one so the entry path is exercisable; in production, fail loudly at startup rather than
-  // serving respondents into a store that will throw on the first save.
-  if (process.env['REDIS_URL']) return createSessionStore();
-  if (process.env['NODE_ENV'] === 'production') return createSessionStore();
+  const redisUrl = process.env['REDIS_URL'];
+  if (redisUrl) return createRedisSessionStore({ redisUrl });
+  if (process.env['NODE_ENV'] === 'production') {
+    // A production runtime without Redis would silently hold every session in one process's
+    // memory — lost on deploy, invisible until the first respondent mid-interview vanishes.
+    throw new Error('REDIS_URL is required in production');
+  }
   log.warn('memory_session_store_enabled', { reason: 'REDIS_URL unset' });
   return createMemorySessionStore();
 }
 
+function resolveWriter() {
+  const url = process.env['RUNTIME_DATABASE_URL'] ?? process.env['DATABASE_URL'];
+  if (url) return createPgWriter(url);
+  if (process.env['NODE_ENV'] === 'production') {
+    throw new Error('RUNTIME_DATABASE_URL is required in production — responses must be durable');
+  }
+  log.warn('no_postgres_writer', { reason: 'RUNTIME_DATABASE_URL unset; responses not durable' });
+  return undefined;
+}
+
 export function buildDeps(): RuntimeDeps {
+  const writer = resolveWriter();
   return {
-    tokens: resolveTokens(),
+    tokens: resolveTokens(writer),
     artifacts: createArtifactLoader(),
     sessions: resolveSessions(),
+    ...(writer ? { writer } : {}),
     now: () => Date.now(),
     newId: generateULID,
     newSeed: generateSeed,

@@ -29,6 +29,23 @@ export {
 } from './artifact-logic.js';
 
 export {
+  runValidations,
+  type ValidateInput,
+  type ValidateQuestion,
+  type ValidationFailure as PageValidationFailure,
+  type ValidationRuleLike,
+} from './validate.js';
+
+export {
+  filterSubmit,
+  type FilterInput,
+  type FilterResult,
+  type ManifestVariableLike,
+  type RejectReason,
+  type Rejection,
+} from './filter-submit.js';
+
+export {
   evaluatePage,
   type EvalConditionFn,
   type EvaluateFn,

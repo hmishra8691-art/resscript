@@ -12,11 +12,14 @@
   },
   "dependencies": {
     "@resscript/logic": "workspace:*",
+    "@resscript/observability": "workspace:*",
     "@resscript/runtime-core": "workspace:*",
     "@resscript/schema": "workspace:*",
-    "@resscript/observability": "workspace:*"
+    "ioredis": "^6.0.0",
+    "pg": "^8.13.0"
   },
   "devDependencies": {
+    "@types/pg": "^8.11.10",
     "typescript": "^5.6.3",
     "vitest": "^2.1.3"
   }
