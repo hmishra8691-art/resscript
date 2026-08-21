@@ -21,6 +21,7 @@ import { generateSeed, generateULID } from './entry.js';
 import { createHandler, type RuntimeDeps } from './handler.js';
 import { createMemorySessionStore } from './session/store.js';
 import { createPgWriter, createRedisSessionStore } from './session/durable.js';
+import { createQuotaClient } from './quota/index.js';
 import { createPgTokenResolver, createStaticTokenResolver, type ResolvedToken } from './token.js';
 
 const log = createLogger({ service: 'runtime' });
@@ -86,11 +87,15 @@ function resolveWriter() {
 
 export function buildDeps(): RuntimeDeps {
   const writer = resolveWriter();
+  const redisUrl = process.env['REDIS_URL'];
   return {
     tokens: resolveTokens(writer),
     artifacts: createArtifactLoader(),
     sessions: resolveSessions(),
     ...(writer ? { writer } : {}),
+    // The quota arbiter shares the session Redis. ADR-008 allows a dedicated instance later;
+    // splitting is a URL, not a refactor.
+    ...(redisUrl ? { quota: createQuotaClient(redisUrl) } : {}),
     now: () => Date.now(),
     newId: generateULID,
     newSeed: generateSeed,

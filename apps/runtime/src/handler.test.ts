@@ -861,9 +861,11 @@ describe('interpret', () => {
     });
   });
 
-  it('records deferred quota commands rather than dropping them', async () => {
+  it('records quota commands it cannot execute rather than dropping them', async () => {
     // A session that should have taken a reservation must be visible in the log. Dropping the
-    // command silently shows up as an over-filled cell weeks later.
+    // command silently shows up as an over-filled cell weeks later. With no quota client
+    // (in-memory mode) commit records its deferral; release is a silent no-op when nothing is
+    // held; reserve is deferred until quota plans exist in artifacts at all.
     const out = await interpret(
       [
         { c: 'reserve_quota', quota_ref: 'GENDER_AGE', node_id: 'fn_q' },
@@ -876,10 +878,45 @@ describe('interpret', () => {
     );
 
     expect(out.events.map(e => e.kind)).toEqual([
-      'quota.reserve_quota_deferred',
+      'quota.reserve_deferred',
       'quota.commit_quota_deferred',
-      'quota.release_quota_deferred',
     ]);
+  });
+
+  it('executes commit and release through a quota client when one is present', async () => {
+    const calls: string[] = [];
+    const quota = {
+      commit: async (sid: string) => { calls.push(`commit:${sid}`); return 2; },
+      release: async (sid: string) => { calls.push(`release:${sid}`); return 1; },
+    };
+    const out = await interpret(
+      [{ c: 'commit_quota' }, { c: 'release_quota' }],
+      session(),
+      fetcher(),
+      { logic: REHYDRATED, escapeContext: 'none', quota: quota as never },
+    );
+
+    expect(calls).toEqual(['commit:S', 'release:S']);
+    expect(out.events).toContainEqual({ kind: 'quota.committed', cells: 2 });
+    expect(out.events).toContainEqual({ kind: 'quota.released', cells: 1 });
+  });
+
+  it('an unreachable quota store at settle time does not fail the respondent', async () => {
+    // The event log records the COMPLETE; reconciliation recomputes committed from it
+    // (ADR-008). The respondent finished — the counter catches up.
+    const quota = {
+      commit: async () => { throw new Error('redis gone'); },
+      release: async () => { throw new Error('redis gone'); },
+    };
+    const out = await interpret(
+      [{ c: 'commit_quota' }],
+      session(),
+      fetcher(),
+      { logic: REHYDRATED, escapeContext: 'none', quota: quota as never },
+    );
+
+    expect(out.events.map(e => e.kind)).toContain('quota.commit_unavailable');
+    expect(out.events.map(e => e.kind)).toContain('quota.committed'); // with cells: 0
   });
 
   it('records a deferred api_call with its node', async () => {

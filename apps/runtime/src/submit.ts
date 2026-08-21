@@ -66,7 +66,8 @@ export interface SubmitBody {
 export type SubmitOutcome =
   | { readonly kind: 'advanced'; readonly session: SessionState;
       readonly cmds: readonly Cmd[]; readonly events: readonly Record<string, unknown>[] }
-  | { readonly kind: 'final'; readonly session: SessionState; readonly disposition: string }
+  | { readonly kind: 'final'; readonly session: SessionState; readonly disposition: string;
+      readonly cmds?: readonly Cmd[] }
   | { readonly kind: 'validation_failed'; readonly session: SessionState;
       readonly page: RenderedPage; readonly failures: readonly PageValidationFailure[] }
   | { readonly kind: 'replay'; readonly response: unknown }
@@ -383,8 +384,10 @@ export async function handleSubmitCore(
 
   // ---- 10. RESPOND ----------------------------------------------------------
   if (finalized) {
+    // The cmds still ride along: they carry commit_quota/release_quota for the endpoint's
+    // interpreter, and dropping them here would leak the reservation until the sweep.
     return withStoredResponse(
-      { kind: 'final', session, disposition: session.disposition ?? 'TERMINATE' },
+      { kind: 'final', session, disposition: session.disposition ?? 'TERMINATE', cmds },
       idemKey,
     );
   }

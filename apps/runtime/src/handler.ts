@@ -34,6 +34,7 @@ import { evalCondition, evaluate, varStateOf } from '@resscript/logic';
 import { ArtifactNotFound, type ArtifactHead, type ArtifactLoader } from './artifact/loader.js';
 import { createSession, generateULID } from './entry.js';
 import { rebuildSession, type RuntimeWriter } from './session/durable.js';
+import type { QuotaClient } from './quota/index.js';
 import { handleSubmitCore, type SubmitBody } from './submit.js';
 import { makeCtx, step } from './machine/index.js';
 import type { SessionStore } from './session/store.js';
@@ -56,6 +57,8 @@ export interface RuntimeDeps {
    * either way, so behaviour cannot silently differ between the two modes.
    */
   readonly writer?: RuntimeWriter;
+  /** The Redis quota arbiter. Optional for the same reason the writer is. */
+  readonly quota?: QuotaClient;
   /** Injected so a replayed request produces identical timestamps (ADR-006). */
   readonly now: () => number;
   /** ULID generator. */
@@ -289,6 +292,7 @@ export interface RenderDeps {
   readonly logic: RehydratedLogic;
   readonly labels?: { readonly [key: string]: string };
   readonly escapeContext: EscapeContext;
+  readonly quota?: QuotaClient;
 }
 
 /**
@@ -352,10 +356,44 @@ export async function interpret(
         break;
       }
 
+      case 'commit_quota': {
+        // COMPLETING converts every held reservation, exactly once (E §10.3). Idempotent by
+        // construction: the res: set is deleted by the first commit, so a replayed finalize
+        // converts nothing.
+        if (opts.quota) {
+          const n = await opts.quota.commit(current.session_id).catch(err => {
+            // A commit that cannot reach Redis is NOT a respondent-facing failure: the event
+            // log records the COMPLETE, and reconciliation (ADR-008) recomputes committed
+            // from it. The respondent finished; the counter catches up.
+            events.push({ kind: 'quota.commit_unavailable', err: String(err) });
+            return 0;
+          });
+          events.push({ kind: 'quota.committed', cells: n });
+        } else {
+          events.push({ kind: 'quota.commit_quota_deferred', detail: 'no quota client' });
+        }
+        break;
+      }
+
+      case 'release_quota': {
+        if (opts.quota) {
+          const n = await opts.quota.release(current.session_id).catch(err => {
+            // Same shape as commit: the sweep and reconciliation repair a missed release.
+            events.push({ kind: 'quota.release_unavailable', err: String(err) });
+            return 0;
+          });
+          if (n > 0) events.push({ kind: 'quota.released', cells: n });
+        }
+        break;
+      }
+
       case 'reserve_quota':
-      case 'commit_quota':
-      case 'release_quota':
-        events.push({ kind: `quota.${cmd.c}_deferred`, detail: 'P1-10' });
+        // The reserve needs the PLAN — which dimensions, which cells this respondent's
+        // answers put them in — and plans ship in quotas.json, which nothing can author yet
+        // (the quotas tables have no columns; roadmap blocker #4). The client, the Lua
+        // scripts and the gate decision are built and tested (quota/); this event is the
+        // honest record that a gate node was reached before plans exist to resolve.
+        events.push({ kind: 'quota.reserve_deferred', detail: 'no quota plan in artifact' });
         break;
 
       case 'call_api':
@@ -533,6 +571,7 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
   const out = await interpret(cmds, next, pageFetcher(ctx, head.hash, language), {
     logic: logicFor(head),
     escapeContext: 'html_text',
+    ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
   });
 
   await ctx.deps.sessions.save(out.session);
@@ -741,6 +780,16 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
     }
 
     case 'final': {
+      // The machine's settle commands (commit or release, per E §2.2's table) run here — the
+      // interpreter is where quota I/O lives, and skipping it would leak the reservation
+      // until the sweep.
+      if (outcome.cmds && outcome.cmds.length > 0) {
+        await interpret(outcome.cmds, outcome.session, loadPage, {
+          logic,
+          escapeContext: 'html_text',
+          ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
+        });
+      }
       await ctx.deps.sessions.save(outcome.session);
       json(res, 200, finalBody(outcome.session, outcome.disposition, ctx.requestId));
       return;
@@ -752,6 +801,7 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
       const out = await interpret(outcome.cmds, outcome.session, loadPage, {
         logic,
         escapeContext: 'html_text',
+        ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
       });
       await ctx.deps.sessions.save(out.session);
       if (out.disposition) {
