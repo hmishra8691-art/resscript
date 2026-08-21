@@ -181,6 +181,47 @@ export interface ArtifactLogicCell {
 }
 
 /**
+ * The type-environment views the evaluator needs, materialized at publish.
+ *
+ * **Added in artifact schema version 1.** `packages/logic`'s `EvalSchema` is a set of closures over
+ * the authoring type environment, and ADR-001 forbids the runtime from reading authoring tables —
+ * so without this section the runtime could not build one and `evaluate()` could not be called.
+ *
+ * Every map here is *cross-page*: a rule on page 5 can ask `SHOWN(Q2r3)` or `ASKED(Q2)`, so the
+ * answer cannot come from the page being rendered. Deriving them from compiled pages would mean
+ * reading all of them, which is precisely the per-page cost C §17 forbids — the same reason
+ * `graph.page_entry` is precomputed rather than resolved from each page's `block_path`.
+ *
+ * The maps are small: id-to-id, one entry per question, page and variable. They ship in
+ * `logic.json`, which is already fetched once per session with the manifest and the graph.
+ */
+export interface ArtifactLogicSchema {
+  /**
+   * Question id → the variables it emits.
+   *
+   * `EvalSchema.ownerQuestion` is the inverse and is derived on read rather than emitted, so the two
+   * cannot disagree — a variable listed under two questions would be a contradiction the artifact
+   * could otherwise carry.
+   */
+  readonly question_variables: { readonly [questionId: string]: readonly string[] };
+  /** Page id → its questions, in document order, for a page-scoped probe. */
+  readonly page_questions: { readonly [pageId: string]: readonly string[] };
+  /**
+   * Question or block id → the page it sits on, so `ASKED(Q5)` can ask whether that page was
+   * submitted. A block spanning more than one page is absent rather than pointing at an arbitrary
+   * one of them.
+   */
+  readonly page_of: { readonly [nodeId: string]: string };
+  /**
+   * `<domain id>` → `<code>` → label key, for `label_of` to reach `ctx.labels`.
+   *
+   * Nested rather than keyed by a joined string: a separator has to be a character that cannot
+   * appear in a domain id, and nesting needs no such argument.
+   */
+  readonly label_keys: { readonly [domainId: string]: { readonly [code: string]: string } };
+}
+
+/**
  * The compiled logic program: the cell graph, its evaluation order, and the flattened AST.
  *
  * WHY THE CELL GRAPH IS IN THE ARTIFACT rather than rebuilt at runtime. Building it needs the
@@ -232,6 +273,14 @@ export interface ArtifactLogic {
   readonly base_option: { readonly [optionProp: string]: boolean };
   /** Cell index (as a decimal string) → index into `nodes` of its defining expression. */
   readonly derived: { readonly [cellIndex: string]: number };
+  /**
+   * The type-environment views `EvalSchema` is built from.
+   *
+   * **Added in artifact schema version 1.** Optional so an artifact compiled before it existed still
+   * parses; a reader that finds it absent has an artifact whose rules cannot be evaluated, which is
+   * a republish rather than a fallback.
+   */
+  readonly schema?: ArtifactLogicSchema;
 }
 
 export interface CompiledArtifact {

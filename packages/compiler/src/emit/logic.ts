@@ -64,16 +64,27 @@
  * compiled state and belong to whatever the runtime builds from a compiled page.
  */
 
-import type { ArtifactLogic, ArtifactLogicCell, CompiledRule, Expr, JsonObject } from '@resscript/schema';
+import type {
+  ArtifactLogic,
+  ArtifactLogicCell,
+  ArtifactLogicSchema,
+  CompiledRule,
+  Expr,
+  JsonObject,
+} from '@resscript/schema';
 import { flattenContent, type Survey } from '@resscript/schema';
+import { pageOfQuestion, blockPathOf } from '../flow.js';
 import {
   asQuestionId,
   cellKey,
   itemsKey,
   optionKey,
+  EMPTY_SCHEMA,
   type Cell,
   type CellIdx,
   type CompiledLogic,
+  type DomainId,
+  type EvalSchema,
   type Expr as LogicExpr,
   type MaskAxis,
   type OptProp,
@@ -156,7 +167,112 @@ export function buildArtifactLogic(input: EmitLogicInput): ArtifactLogic {
     base_items: baseItems(logic, space),
     base_option: baseOption(logic, space),
     derived: derivedIndex(logic.derived),
+    schema: buildLogicSchema(input.survey),
   };
+}
+
+/* ========================================================================== */
+/* 2b. The type-environment views (EvalSchema)                                 */
+/* ========================================================================== */
+
+/**
+ * Materialize the closures `EvalSchema` is made of.
+ *
+ * These are views of the authoring type environment, and ADR-001 forbids the runtime from reading
+ * authoring tables — so they have to be emitted here or the runtime cannot build an `EvalSchema`,
+ * and without one `evaluate()` cannot be called at all.
+ *
+ * Every map is cross-page on purpose: a rule on page 5 can ask `SHOWN(Q2r3)` or `ASKED(Q2)`, so the
+ * answer is not in the page being rendered. Deriving them from compiled pages would mean reading all
+ * of them, which is the per-page cost C §17 forbids.
+ *
+ * Derived from the `Survey` rather than from `CompiledLogic`, because that is where the content tree
+ * and the variable sources are. `emit/pages.ts`' `indexContent` computes the same three maps for its
+ * own use; both follow `registry.ts`' `fallbackEmits` in reading `variables[].source.question_id`
+ * rather than `QuestionNode.emits`, which is stored but optional — one derivation, not a second.
+ */
+export function buildLogicSchema(survey: Survey): ArtifactLogicSchema {
+  const questionVariables = new Map<string, string[]>();
+  for (const variable of survey.variables) {
+    const questionId = variable.source?.question_id;
+    if (questionId === undefined) continue;
+    const list = questionVariables.get(questionId) ?? [];
+    list.push(variable.id);
+    questionVariables.set(questionId, list);
+  }
+
+  const pageQuestions = new Map<string, string[]>();
+  const pageOf = new Map<string, string>();
+  const pagesOfBlock = new Map<string, Set<string>>();
+  const blockPath = blockPathOf(survey);
+
+  for (const node of flattenContent(survey.content)) {
+    if (node.type !== 'page') continue;
+    pageQuestions.set(
+      node.id,
+      node.children.filter((child) => child.type === 'question').map((child) => child.id),
+    );
+    for (const blockId of blockPath.get(node.id) ?? []) {
+      const pages = pagesOfBlock.get(blockId) ?? new Set<string>();
+      pages.add(node.id);
+      pagesOfBlock.set(blockId, pages);
+    }
+  }
+
+  for (const [questionId, pageId] of pageOfQuestion(survey)) pageOf.set(questionId, pageId);
+  for (const [blockId, pages] of pagesOfBlock) {
+    // A block spanning several pages has no single answer, so it is absent rather than pointing at
+    // an arbitrary one. `pageOf` returning the wrong page would make `ASKED(block)` answer about a
+    // page the respondent may not have reached.
+    if (pages.size !== 1) continue;
+    const only = [...pages][0];
+    if (only !== undefined) pageOf.set(blockId, only);
+  }
+
+  const labelKeys: { [domainId: string]: { [code: string]: string } } = {};
+  for (const variable of survey.variables) {
+    const domainId = `dom_${variable.source?.question_id ?? variable.id}`;
+    for (const entry of variable.enum_domain ?? []) {
+      const byCode = labelKeys[domainId] ?? {};
+      // First writer wins: two variables sharing a domain must agree on a code's label, and the
+      // compiler already refuses to merge two questions' identical domains (`CMP-0701`).
+      if (byCode[String(entry.code)] === undefined) byCode[String(entry.code)] = entry.label_key;
+      labelKeys[domainId] = byCode;
+    }
+  }
+
+  return {
+    question_variables: sortedObject(questionVariables),
+    page_questions: sortedObject(pageQuestions),
+    page_of: sortedObject(new Map([...pageOf].map(([k, v]) => [k, v] as const))),
+    label_keys: Object.fromEntries(
+      Object.keys(labelKeys)
+        .sort()
+        .map((domainId) => [
+          domainId,
+          Object.fromEntries(
+            Object.keys(labelKeys[domainId] ?? {})
+              .sort()
+              .map((code) => [code, labelKeys[domainId]?.[code] ?? '']),
+          ),
+        ]),
+    ),
+  };
+}
+
+/**
+ * `Map` → object with keys in code-point order.
+ *
+ * The same argument as `sortedRecord`: this record is also the in-memory `artifact.logic`, and an
+ * insertion-ordered object there would make an in-memory comparison disagree with a byte one.
+ */
+function sortedObject<V>(source: ReadonlyMap<string, V>): { readonly [key: string]: V } {
+  const out: { [key: string]: V } = {};
+  for (const key of [...source.keys()].sort()) {
+    const value = source.get(key);
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
 }
 
 function serializeCell(cell: Cell, key: string): ArtifactLogicCell {
@@ -432,6 +548,16 @@ export interface RehydratedLogic {
   readonly baseOption: (optionId: string, prop: OptProp) => boolean;
   /** Cell key → index, the inverse of `cells`. The runtime's only string-keyed cell lookup. */
   readonly indexOf: (key: string) => CellIdx | undefined;
+  /**
+   * The type environment `evaluate()` needs, rebuilt from `ArtifactLogic.schema`.
+   *
+   * `EMPTY_SCHEMA` when the artifact carries no `schema` section — an artifact compiled before the
+   * section existed. Every probe then answers "nothing", which makes a page-scoped or
+   * question-scoped condition evaluate as if the survey had no structure. That is why the section
+   * is emitted rather than optional in practice: an artifact without it needs a republish, not a
+   * fallback.
+   */
+  readonly schema: EvalSchema;
 }
 
 export function rehydrate(artifact: ArtifactLogic): RehydratedLogic {
@@ -465,6 +591,7 @@ export function rehydrate(artifact: ArtifactLogic): RehydratedLogic {
   return {
     cells,
     cellKeys,
+    schema: rehydrateSchema(artifact, baseVisibleMap),
     topo: Int32Array.from(artifact.topo),
     topoPos: Int32Array.from(artifact.topo_pos),
     dependents: artifact.dependents.map((edges) => Int32Array.from(edges)),
@@ -481,6 +608,43 @@ export function rehydrate(artifact: ArtifactLogic): RehydratedLogic {
     baseItems: (questionId, axis) => baseItemsMap[itemsKey(questionId, axis)] ?? [],
     baseOption: (optionId, prop) => baseOptionMap[optionKey(optionId, prop)] ?? BASE_OPTION_DEFAULT[prop],
     indexOf: (key) => byKey.get(key),
+  };
+}
+
+/**
+ * `ArtifactLogicSchema` → `EvalSchema`.
+ *
+ * `ownerQuestion` is inverted from `question_variables` rather than read from a second map, so the
+ * two cannot disagree: a variable listed under two questions would be a contradiction the artifact
+ * could otherwise carry, and the inversion makes it unrepresentable — the last writer simply wins,
+ * deterministically, because the emitted keys are sorted.
+ *
+ * `declaredVisible` reads the same `base_visible` record `RehydratedLogic.baseVisible` does, with
+ * the same sparse default. Two closures over one record rather than two records, because a
+ * disagreement between "the node is visible by default" and "the node is declared visible" is not a
+ * distinction the model has.
+ */
+function rehydrateSchema(
+  artifact: ArtifactLogic,
+  baseVisibleMap: { readonly [nodeId: string]: boolean },
+): EvalSchema {
+  const schema = artifact.schema;
+  if (schema === undefined) return EMPTY_SCHEMA;
+
+  const owner = new Map<string, string>();
+  for (const questionId of Object.keys(schema.question_variables).sort()) {
+    for (const variableId of schema.question_variables[questionId] ?? []) {
+      owner.set(variableId, questionId);
+    }
+  }
+
+  return {
+    labelKey: (domain: DomainId, code: number) => schema.label_keys[domain]?.[String(code)],
+    questionVariables: (id) => (schema.question_variables[id] ?? []) as never,
+    pageQuestions: (id) => (schema.page_questions[id] ?? []) as never,
+    ownerQuestion: (id) => owner.get(id) as never,
+    pageOf: (nodeId) => schema.page_of[nodeId] as never,
+    declaredVisible: (nodeId) => baseVisibleMap[nodeId] ?? BASE_VISIBLE_DEFAULT,
   };
 }
 

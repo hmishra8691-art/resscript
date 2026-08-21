@@ -223,6 +223,123 @@ describe('rules survive the trip in executable form', () => {
   });
 });
 
+describe('the logic schema section', () => {
+  /**
+   * WHY THIS EXISTS. `packages/logic`'s `EvalSchema` is a set of closures over the authoring type
+   * environment, and ADR-001 forbids the runtime from reading authoring tables. Without this section
+   * the runtime could not build one, so `evaluate()` could not be called — the second half of the
+   * same gap that made the serialized rules unevaluable.
+   *
+   * Every map is cross-page on purpose: a rule on page 5 can ask `SHOWN(Q2r3)` or `ASKED(Q2)`, so
+   * the answer is not in the page being rendered. Deriving them from compiled pages would mean
+   * reading all of them, which is the per-page cost C §17 forbids.
+   */
+  it('maps each question to the variables it emits', () => {
+    const { artifactLogic, ids } = compileFixture();
+    const schema = artifactLogic.schema;
+
+    expect(schema).toBeDefined();
+    // Q5 is the multi-select, so it fans out to one variable per option plus the parent.
+    expect(schema?.question_variables[ids.q5]?.length).toBeGreaterThan(1);
+    expect(schema?.question_variables[ids.q1]).toBeDefined();
+  });
+
+  it('maps each page to its questions in document order', () => {
+    const { artifactLogic, ids } = compileFixture();
+
+    expect(artifactLogic.schema?.page_questions[ids.page1]).toEqual([ids.q1, ids.q5]);
+  });
+
+  it('maps a question to its page', () => {
+    const { artifactLogic, ids } = compileFixture();
+    const pageOf = artifactLogic.schema?.page_of;
+
+    expect(pageOf?.[ids.q1]).toBe(ids.page1);
+    expect(pageOf?.[ids.q5]).toBe(ids.page1);
+    expect(pageOf?.[ids.q7]).toBe(ids.page2);
+  });
+
+  it('maps a domain code to its label key, for label_of', () => {
+    const { artifactLogic, ids } = compileFixture();
+    const keys = artifactLogic.schema?.label_keys[`dom_${ids.q1}`];
+
+    expect(keys?.['1']).toBe('q1.o1');
+    expect(keys?.['2']).toBe('q1.o2');
+  });
+
+  it('emits keys in code-point order, so bytes and memory agree', () => {
+    // The same argument as `sortedRecord`: this record is also the in-memory `artifact.logic`, and
+    // an insertion-ordered object there would make an in-memory comparison disagree with a byte one.
+    const { artifactLogic } = compileFixture();
+    const schema = artifactLogic.schema;
+
+    for (const map of [schema?.question_variables, schema?.page_questions, schema?.page_of]) {
+      const keys = Object.keys(map ?? {});
+      expect([...keys].sort()).toEqual(keys);
+    }
+  });
+
+  it('survives the JSON round trip as a usable EvalSchema', () => {
+    const { artifactLogic, ids } = compileFixture();
+    const back = rehydrate(throughJson(artifactLogic));
+
+    expect(back.schema.pageOf(ids.q1)).toBe(ids.page1);
+    expect(back.schema.pageQuestions(ids.page1 as never)).toEqual([ids.q1, ids.q5]);
+    expect(back.schema.questionVariables(ids.q1 as never).length).toBeGreaterThan(0);
+    expect(back.schema.labelKey(`dom_${ids.q1}` as never, 1)).toBe('q1.o1');
+  });
+
+  it('inverts question_variables to answer ownerQuestion', () => {
+    // Inverted rather than emitted as a second map, so the two cannot disagree: a variable listed
+    // under two questions would be a contradiction the artifact could otherwise carry.
+    const { artifactLogic, ids } = compileFixture();
+    const back = rehydrate(throughJson(artifactLogic));
+    const emitted = artifactLogic.schema?.question_variables[ids.q5] ?? [];
+
+    expect(emitted.length).toBeGreaterThan(0);
+    for (const variableId of emitted) {
+      expect(back.schema.ownerQuestion(variableId as never)).toBe(ids.q5);
+    }
+  });
+
+  it('declaredVisible agrees with baseVisible, from the one record', () => {
+    // Two closures over `base_visible` rather than two records: a disagreement between "visible by
+    // default" and "declared visible" is not a distinction the model has.
+    const { artifactLogic, ids } = compileFixture();
+    const back = rehydrate(throughJson(artifactLogic));
+
+    expect(back.schema.declaredVisible(ids.q7)).toBe(back.baseVisible(ids.q7));
+    expect(back.schema.declaredVisible(ids.q1)).toBe(back.baseVisible(ids.q1));
+  });
+
+  it('falls back to EMPTY_SCHEMA when the section is absent', () => {
+    // An artifact compiled before the section existed. Every probe answers "nothing", which makes a
+    // page-scoped condition evaluate as if the survey had no structure — so this is a republish
+    // path, not a supported mode. Asserted so the behaviour is deliberate rather than a crash.
+    const { artifactLogic } = compileFixture();
+    const { schema: _dropped, ...withoutSchema } = throughJson(artifactLogic);
+    const back = rehydrate(withoutSchema as typeof artifactLogic);
+
+    expect(back.schema.pageQuestions('pg_whatever' as never)).toEqual([]);
+    expect(back.schema.ownerQuestion('var_whatever' as never)).toBeUndefined();
+  });
+
+  it('omits a block that spans more than one page', () => {
+    // `pageOf` returning the wrong page would make `ASKED(block)` answer about a page the respondent
+    // may not have reached, so a multi-page block is absent rather than pointing at one of them.
+    const { artifactLogic, ids } = compileFixture();
+    const schema = artifactLogic.schema;
+
+    // Established rather than assumed: the fixture's block really does contain both pages, so the
+    // absence below is the rule firing and not an empty map.
+    expect(Object.keys(schema?.page_questions ?? {}).sort()).toEqual([ids.page1, ids.page2].sort());
+    expect(schema?.page_of[ids.block]).toBeUndefined();
+    // And the questions inside it are still mapped, so nothing was dropped wholesale.
+    expect(schema?.page_of[ids.q1]).toBe(ids.page1);
+    expect(schema?.page_of[ids.q7]).toBe(ids.page2);
+  });
+});
+
 describe('the sparse base_* encodings', () => {
   it('emits base_visible only for nodes that are not visible by default', () => {
     const { artifactLogic, ids } = compileFixture();
