@@ -42,6 +42,7 @@ export {
   cellsWrittenBy,
   compiledRuleOf,
   rehydrate,
+  ruleOf,
   type EmitLogicInput,
   type RehydratedLogic,
 } from './logic.js';

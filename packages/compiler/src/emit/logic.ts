@@ -79,6 +79,7 @@ import {
   type OptProp,
   type QuestionId,
   type Rule,
+  type Target,
   type VariableId,
 } from '@resscript/logic';
 
@@ -171,11 +172,17 @@ function serializeCell(cell: Cell, key: string): ArtifactLogicCell {
 }
 
 /**
- * One `Rule` → one `CompiledRule`.
+ * One `Rule` → one `CompiledRule`, losslessly.
+ *
+ * It was not lossless before: `target.type`, `evaluation`, `authored_in`, `order_key`,
+ * `on_unknown`, `priority_group`, `flow_node_id` and `label` were all dropped, so the serialized
+ * rules could not be evaluated and `rehydrate` could not produce a `CompiledLogic`. C §17 claims the
+ * artifact is self-contained; it was not.
  *
  * `target_id` is absent for a survey-scoped rule rather than `null`. The contract admits both and
  * they mean the same thing, and the absent form is the one that does not put a key in every stored
- * artifact for the arm of `Target` that carries no id.
+ * artifact for the arm of `Target` that carries no id. Each optional field follows the same rule, so
+ * adding them costs bytes only on the rules that use them.
  *
  * Exported because `pages.ts` emits the same shape into `CompiledPage.inline_rules`, and a page
  * whose inlined copy of a rule differed from `logic.rules`' copy would be a rule the client and
@@ -191,7 +198,54 @@ export function compiledRuleOf(rule: Rule): CompiledRule {
     // themselves JSON), so the cast is the same assertion `serializeCell` makes: a union of
     // records has no implicit index signature even when every member is JSON-shaped.
     effect: rule.effect as unknown as JsonObject,
+    target_type: rule.target.type,
     ...(targetId === undefined ? {} : { target_id: targetId }),
+    evaluation: rule.evaluation,
+    authored_in: rule.authored_in,
+    order_key: rule.order_key,
+    ...(rule.on_unknown === undefined ? {} : { on_unknown: rule.on_unknown }),
+    ...(rule.priority_group === undefined ? {} : { priority_group: rule.priority_group }),
+    ...(rule.flow_node_id === undefined ? {} : { flow_node_id: rule.flow_node_id }),
+    ...(rule.label === undefined ? {} : { label: rule.label }),
+  };
+}
+
+/**
+ * `CompiledRule` → `Rule`: the inverse, and the reason the fields above are serialized.
+ *
+ * The branded-id casts are the whole difficulty. An id's brand is erased by JSON, and this is the
+ * parse boundary, so re-attaching it is exactly what a cast is for — the ids came from a `Rule` that
+ * the compiler had already validated, and the artifact is content-addressed, so a tampered id is a
+ * different artifact under a different hash.
+ */
+export function ruleOf(compiled: CompiledRule): Rule {
+  const target =
+    compiled.target_type === 'survey'
+      ? ({ type: 'survey' } as Target)
+      : ({ type: compiled.target_type, id: compiled.target_id } as unknown as Target);
+
+  const base = {
+    id: compiled.id as Rule['id'],
+    kind: compiled.kind as Rule['kind'],
+    target,
+    condition: compiled.condition as unknown as Rule['condition'],
+    effect: compiled.effect as unknown as Rule['effect'],
+    evaluation: compiled.evaluation as Rule['evaluation'],
+    authored_in: compiled.authored_in,
+    order_key: compiled.order_key,
+  };
+
+  // Built by conditional spread rather than by assigning `undefined`: under
+  // `exactOptionalPropertyTypes` an absent optional and one set to `undefined` are different types,
+  // and only the absent form round-trips through JSON unchanged.
+  return {
+    ...base,
+    ...(compiled.on_unknown === undefined ? {} : { on_unknown: compiled.on_unknown }),
+    ...(compiled.priority_group === undefined ? {} : { priority_group: compiled.priority_group }),
+    ...(compiled.flow_node_id == null
+      ? {}
+      : { flow_node_id: compiled.flow_node_id as NonNullable<Rule['flow_node_id']> }),
+    ...(compiled.label === undefined ? {} : { label: compiled.label }),
   };
 }
 
@@ -369,7 +423,8 @@ export interface RehydratedLogic {
   readonly writers: readonly Int32Array[];
   readonly triggers: ReadonlyMap<VariableId, Int32Array>;
   readonly validCells: ReadonlyMap<string, Int32Array>;
-  readonly rules: readonly CompiledRule[];
+  /** Executable rules, not the serialized form: `evaluate` needs `Rule`, not `CompiledRule`. */
+  readonly rules: readonly Rule[];
   readonly nodes: readonly LogicExpr[];
   readonly derived: ReadonlyMap<CellIdx, LogicExpr>;
   readonly baseVisible: (nodeId: string) => boolean;
@@ -417,7 +472,7 @@ export function rehydrate(artifact: ArtifactLogic): RehydratedLogic {
     writers: artifact.writers.map((rules) => Int32Array.from(rules)),
     triggers,
     validCells,
-    rules: artifact.rules,
+    rules: artifact.rules.map(ruleOf),
     nodes,
     derived,
     // The three sparse defaults, applied on the read side. This is the only place that knows the

@@ -126,12 +126,43 @@ export interface CompiledPage {
   readonly settings: JsonObject;
 }
 
+/**
+ * One rule, in the form the runtime evaluates.
+ *
+ * **`target_type`, `evaluation`, `authored_in`, `order_key` and the four optional fields below were
+ * added in artifact schema version 1.** Without them this shape carried `id`, `kind`, `condition`,
+ * `effect` and `target_id` — which is not enough to evaluate anything, so C §17's claim that "the
+ * artifact is self-contained: given it and a session's variable state, the next page is computable
+ * with no database read except the session itself" was false. `packages/logic`'s `Rule` needs
+ * `target` (with its arm, which `writesOf` switches on), `evaluation`, `authored_in` and
+ * `order_key`, and none of the four survived serialization.
+ *
+ * The optional four are each load-bearing for a behaviour the runtime would otherwise silently
+ * lose: `on_unknown` is D §2.5's author override of the UNKNOWN collapse, `priority_group` is
+ * D §4.6's single `LGC-CONFLICT` exemption (without it two rules the author deliberately let race
+ * become a conflict), `flow_node_id` is what D §8.1's dominance analysis keys on, and `label` is the
+ * trace's `rule_label` (E §14.2).
+ */
 export interface CompiledRule {
   readonly id: string;
   readonly kind: string;
   readonly condition: Expr;
   readonly effect: JsonObject;
+  /**
+   * The arm of `Target`. Kept separate from `target_id` rather than nested so the addition is
+   * append-only and a survey-scoped rule — which has no id — still needs only one field.
+   */
+  readonly target_type: 'question' | 'page' | 'block' | 'option' | 'variable' | 'survey';
+  /** Absent for a survey-scoped rule, which carries no id. */
   readonly target_id?: string | null;
+  readonly evaluation: string;
+  readonly authored_in: 'visual' | 'dsl';
+  /** Compiler-assigned deterministic tie-break for independent rules (D §4.4). */
+  readonly order_key: number;
+  readonly on_unknown?: 'default' | 'fire';
+  readonly priority_group?: string;
+  readonly flow_node_id?: string;
+  readonly label?: string;
 }
 
 /**

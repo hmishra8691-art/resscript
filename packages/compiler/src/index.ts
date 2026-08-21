@@ -108,6 +108,7 @@ export {
   designsOf,
   pagePath,
   rehydrate,
+  ruleOf,
   scriptsOf,
   stringResolver,
   treeHash,

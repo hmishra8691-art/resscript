@@ -132,6 +132,97 @@ describe('buildArtifactLogic', () => {
   });
 });
 
+describe('rules survive the trip in executable form', () => {
+  /**
+   * WHY THIS EXISTS. `compiledRuleOf` used to emit only `id`, `kind`, `condition`, `effect` and
+   * `target_id`, dropping `target.type`, `evaluation`, `authored_in`, `order_key`, `on_unknown`,
+   * `priority_group`, `flow_node_id` and `label`. Every existing round-trip assertion passed,
+   * because they compared `cells`, `topo`, `dependents`, `writers` and `triggers` — the cell graph —
+   * and never the rules.
+   *
+   * The consequence was that `evaluate()` could not be called on a rehydrated artifact at all:
+   * `packages/logic`'s `Rule` needs those four required fields and `CompiledRule` had none of them.
+   * C §17 claims "the artifact is self-contained: given it and a session's variable state, the next
+   * page is computable with no database read except the session itself", and it was not.
+   *
+   * So the assertion here is per-field equality over every rule, not a spot check: a field added to
+   * `Rule` and forgotten in `compiledRuleOf` fails this test rather than shipping a rule the runtime
+   * evaluates differently from the one that was reviewed.
+   */
+  it('every field of every rule survives, per field', () => {
+    const { artifactLogic, logic } = compileFixture();
+    const back = rehydrate(throughJson(artifactLogic));
+
+    expect(back.rules).toHaveLength(logic.rules.length);
+    expect(back.rules).toEqual(logic.rules);
+  });
+
+  it('carries the four fields whose absence made rules unevaluable', () => {
+    // Named individually so a regression says which one went missing.
+    const { artifactLogic, logic } = compileFixture();
+    const emitted = artifactLogic.rules;
+
+    expect(emitted.length).toBeGreaterThan(0);
+    emitted.forEach((rule, i) => {
+      const original = logic.rules[i];
+      expect(rule.target_type).toBe(original?.target.type);
+      expect(rule.evaluation).toBe(original?.evaluation);
+      expect(rule.authored_in).toBe(original?.authored_in);
+      expect(rule.order_key).toBe(original?.order_key);
+    });
+  });
+
+  it('reconstructs the Target arm, which writesOf switches on', () => {
+    // `target_id` alone cannot say whether a target is a question, a page or a variable, and
+    // `writesOf` picks the cell a rule writes from exactly that.
+    const { artifactLogic, logic } = compileFixture();
+    const back = rehydrate(throughJson(artifactLogic));
+
+    back.rules.forEach((rule, i) => {
+      expect(rule.target).toEqual(logic.rules[i]?.target);
+    });
+  });
+
+  it('omits an absent optional rather than writing null', () => {
+    // An absent optional and one set to `undefined` are different types under
+    // `exactOptionalPropertyTypes`, and only the absent form round-trips through JSON unchanged.
+    const { artifactLogic } = compileFixture();
+    const bytes = stableStringify(artifactLogic);
+
+    for (const rule of artifactLogic.rules) {
+      if (rule.on_unknown === undefined) expect('on_unknown' in rule).toBe(false);
+      if (rule.priority_group === undefined) expect('priority_group' in rule).toBe(false);
+      if (rule.label === undefined) expect('label' in rule).toBe(false);
+    }
+    expect(bytes).not.toContain('"on_unknown":null');
+    expect(bytes).not.toContain('"label":null');
+  });
+
+  it('a survey-scoped rule carries no target_id', () => {
+    const surveyScoped = compiledRuleOf({
+      id: 'rul_x' as never,
+      kind: 'display' as never,
+      target: { type: 'survey' },
+      condition: { n: 0, k: 'lit', t: 'bool', v: true } as never,
+      effect: { action: 'show' } as never,
+      evaluation: 'on_entry' as never,
+      authored_in: 'dsl',
+      order_key: 7,
+    });
+
+    expect(surveyScoped.target_type).toBe('survey');
+    expect('target_id' in surveyScoped).toBe(false);
+  });
+
+  it('the emitted rules stay in canonical order', () => {
+    // Every index in the structure is positional and fixed by this order (ArtifactLogic's header).
+    const { artifactLogic } = compileFixture();
+    const keys = artifactLogic.rules.map((r) => r.order_key);
+
+    expect([...keys].sort((a, b) => a - b)).toEqual(keys);
+  });
+});
+
 describe('the sparse base_* encodings', () => {
   it('emits base_visible only for nodes that are not visible by default', () => {
     const { artifactLogic, ids } = compileFixture();
