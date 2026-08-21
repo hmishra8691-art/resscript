@@ -1,8 +1,9 @@
 # ResScript database
 
 Milestone M0.2 (migration tooling and the RLS test harness), the database half of
-P1-01 (tenancy and the isolation guarantee), and the database half of P1-03 (the
-version-scoped content model and the survey tree).
+P1-01 (tenancy and the isolation guarantee), the database half of P1-03 (the
+version-scoped content model and the survey tree), and the database half of P1-06
+(logic rules, and the authoring surface each one was written in).
 
 Authoritative design, in precedence order: **Deliverable K** (`11-canonical-registries.md`)
 beats everything; then the ADRs (`00-decisions-adr.md`, especially ADR-002 immutability and
@@ -278,6 +279,7 @@ ones written years from now).
 | `0005_job_ownership_and_readers` | Integration fixes found by wiring `apps/worker` and `apps/studio`: the job transitions (`heartbeat_job`, `complete_job`, `fail_job`) become **worker-scoped**, compare-and-setting on `locked_by` so a stalled worker cannot complete a reassigned job; `claim_job` now **requires** a worker identity; `enqueue_job` returns `(id, created)` and takes `p_delay_ms`; `fail_job` gains `p_retry_after_ms`; `app.get_job(app.ulid)` gives the studio a tenant-scoped, payload-free read of `ops.jobs`; `app.resolve_invitation(bytea)` resolves an invitation by token hash for a caller who is not yet a member. |
 | `0006_revoke_public_execute` | `ops.functions_executable_by_public()` — the third catalog assertion — plus a catalog-driven sweep revoking `PUBLIC EXECUTE` across all six schemas, and the one re-grant that needs (`app.gen_ulid` to `authoring`, because it is a column `DEFAULT`). See "`PUBLIC EXECUTE` is not closed by default privileges" above. |
 | `0007_content_model` | P1-03, the version-scoped authoring model: `content.nodes` (one table, `node_kind` discriminator, kind-shape CHECK, the partial `ref` index), `content.question_items`, `content.question_cells`, `content.variables` (incl. `variables_export_col_key` and the `vars_derived_expr` **carve-out**), `content.languages`, `content.i18n_strings`, `content.reserved_variable_names` + the trigger B §4.3 asks for; the `content.questions`/`pages`/`blocks` views (`security_invoker = true`); `app.can_see_version` / `app.version_is_draft` and 24 per-command RLS policies; `content.next_sort_key`, `move_node`, `next_item_sort_key`, `move_question_item`, `rebalance_items`, `tree_rows` (one recursive CTE), `clone_version` (copy-on-write, **no reference remapping**); a **redefinition of `content.rebalance_siblings`**, whose 0001 body could never run; and `ops.test_seed_content()`. |
+| `0008_authored_in` | The database half of P1-06: `content.logic_rules` per B §4.4 — `content.rule_kind` and `content.rule_target_kind`, the three polymorphic target FKs plus `rules_one_target`, the dependency-closure arrays with their two GIN indexes, `rules_target_node_idx`, four per-command policies and the draft trigger — carrying **`authored_in`** (C §7: the stored fact the DSL round-trip fidelity report reads) and **`trivia`** (D §6.4). There is deliberately **no `source` column**: the author's text is *printed* from `(ast, trivia)`, never stored, and two `hasnt_column` assertions keep it that way. Also **redefines `content.clone_version`** to copy rules, because a content table missing from its enumerated list loses its rows on every publish-then-edit with no error at all. |
 
 ### Deviations from Deliverable B, and why
 
@@ -330,6 +332,30 @@ ones written years from now).
   a separate statement, in `id` order. The two tests this invalidated (0001's
   "raises `undefined_table`" and 0006's "`authoring` cannot execute it") are maintained in
   0001's and 0006's `test.sql`, per the rule above.
+- **`content.logic_rules.rules_one_target` is B §4.4's CHECK widened by exactly one arm**,
+  and `content.rule_target_kind` is the discriminator that makes the widening expressible.
+  B §4.4 requires *exactly one* of `target_node_id` / `target_item_id` /
+  `target_variable_id` to be non-NULL; C §7's target union has a sixth arm,
+  `{"type":"survey"}`, that carries no id at all — a `terminate` rule is scoped to the
+  session, not to a node — and `packages/schema`'s `RuleTarget` ships it, as does
+  `packages/logic-parity`'s parity scenario. Under B's form as written, the first
+  `TERMINATE AS SCREENOUT IF AGE < 18` cannot be saved. The constraint is restated as three
+  biconditionals against `target_kind`, which says *more* than B's sum rather than less: it
+  pins which id goes with which kind, so a variable-targeted rule cannot carry a node id.
+  `rule_target_kind` has four labels and not C §7's six, for the reason B §4.1 gives for one
+  node table: question/page/block are already discriminated by `content.nodes.node_kind` and
+  option/row/column by `question_items.item_kind`, so a second copy of those distinctions
+  here would be a second copy that can disagree — and a `CHECK` cannot read another table to
+  stop it.
+- **`content.clone_version` is redefined in 0008**, to copy `content.logic_rules`. The
+  function enumerates its tables by name, so a content table it does not know about is a
+  table whose rows are dropped on the copy-on-write that ADR-002 makes the *only* way to
+  edit a published survey — publish, click Edit, and every display rule and screener
+  termination is gone, with no error, because dropping rows nobody selected is not an error.
+  The signature is unchanged, so 0007's `has_function` assertion stays there; its two
+  behavioural assertions compare the returned per-table count map by `jsonb` equality and
+  were maintained in 0007's `test.sql` in the same commit, per the rule above. **Every future
+  content table has to be added to that function and to its count map.**
 
 ### What is stubbed
 
@@ -346,9 +372,17 @@ ones written years from now).
 - No `runtime.*` or `export.*` tables exist yet, and no `billing` tables. The
   two `ops.rls_exemptions` rows for `billing.plans` / `billing.plan_features` are pre-seeded
   per B §12.1 and are inert until those tables appear. The `content.*` tables that P1-03 owns
-  exist as of 0007; `logic_rules` (P1-06), `flow_nodes` (P2), the `quota_*` set (P1-12),
-  `vendors`, `redirects`, `designs`, `code_assets` and `version_theme` arrive with the
-  milestones that use them, each with its own RLS block and draft trigger.
+  exist as of 0007 and `logic_rules` (P1-06) as of 0008; `flow_nodes` (P2), the `quota_*` set
+  (P1-12), `vendors`, `redirects`, `designs`, `code_assets` and `version_theme` arrive with
+  the milestones that use them, each with its own RLS block, draft trigger and
+  `content.clone_version` branch.
+- `content.logic_rules` has **no `on_unknown` column** yet. D §4.1's rule shape carries
+  `on_unknown: 'default' | 'fire'` — the author's override of D §2.5's unknown-collapse,
+  written `IF Q9 > 3 ON UNKNOWN SHOW THEN SHOW Q12` — but `packages/schema`'s `LogicRule`,
+  which is what C §7 defines and the API validates against, does not have it, and a column
+  nothing writes is the table equivalent of a grant with no consumer. It cannot round-trip
+  until both halves exist; 0008's header records the note, and whichever half lands first
+  should name the other.
 - The Deliverable K generator (`packages/schema/src/registries.ts` →
   `generated/registries.sql`) lands in P1-02. Until then `0002_registry_types/up.sql`
   *is* the generated output and must stay byte-compatible with `registries.ts` when it
@@ -457,6 +491,13 @@ CREATE TRIGGER widgets_draft_only
 ```
 
 …and scope the row to `survey_version_id`, not `survey_id` (B §0 ground rule 3).
+
+…and add it to **`content.clone_version`**, which enumerates its tables by name. The linter
+cannot see this omission and neither can the catalog assertions: a content table the clone
+does not know about simply loses its rows on the copy-on-write that ADR-002 makes the only
+way to edit a published survey, with no error, because dropping rows nobody selected is not
+an error. The only mechanical protection is the returned count map, which each suite compares
+by `jsonb` equality — so a missing table shows up as a missing key.
 
 Then `db/migrations/0005_widgets/test.sql`:
 

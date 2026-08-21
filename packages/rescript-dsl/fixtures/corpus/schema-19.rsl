@@ -1,0 +1,12 @@
+-- schema §19's worked example: "The equivalent ResScript source, which compiles to exactly this
+-- and pretty-prints back from it."
+QUESTION S1
+  TYPE SINGLE
+  LABEL "Do you drink coffee?"
+  REQUIRED
+  OPTIONS
+    1 "Yes"
+    2 "No"
+END
+
+IF S1 = 1 THEN SHOW Q12

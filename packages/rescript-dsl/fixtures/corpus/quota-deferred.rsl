@@ -1,0 +1,19 @@
+-- P2-06. The parser must reject this with a clear diagnostic rather than mis-parsing it, and it
+-- must not delete it: `ON UNAVAILABLE FAIL CLOSED` contains keywords the rule grammar uses, so a
+-- parser that recovered by scanning for the next statement keyword would emit a cascade of
+-- nonsense diagnostics against perfectly good P2 syntax.
+QUOTA MAIN INTERLOCKED {
+  DIMENSION GENDER ON S2 {
+    M = S2 = 1
+    F = S2 = 2
+  }
+  DIMENSION AGE_BAND ON AGE {
+    18_24 = AGE BETWEEN 18 AND 24
+    25_34 = AGE BETWEEN 25 AND 34
+  }
+  CELL [M, 18_24] TARGET 100 HARD
+  CELL [F, 18_24] TARGET 100 HARD
+  OVERFLOW SCREENOUT
+  TTL 5400
+  ON UNAVAILABLE FAIL CLOSED
+}

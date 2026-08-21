@@ -46,6 +46,7 @@ import type {
   PageResult,
   ProjectRepo,
   ProjectRow,
+  RegistryRepo,
   Repos,
   SurveyRepo,
   SurveyRow,
@@ -55,6 +56,7 @@ import type {
   UpdateProjectInput,
   UpdateSurveyInput,
   UpdateVersionInput,
+  VersionRegistryRows,
 } from './types.js';
 
 /**
@@ -125,6 +127,15 @@ export class MemoryDataset {
   readonly jobs: JobRow[] = [];
   readonly audit: AuditRow[] = [];
   readonly idempotency: IdempotencyRecord[] = [];
+  /**
+   * `content.variables` + `content.nodes` + `content.question_items`, per version.
+   *
+   * Held as the projected rows the `RegistryRepo` returns rather than as three full tables: the
+   * content model's own routes are P1-03's, not this milestone's, and a half-modelled
+   * `content.nodes` here would be a second definition of the tree that P1-03 then has to
+   * reconcile. What the DSL endpoints need is the registry, and this is exactly that.
+   */
+  readonly registries: VersionRegistryRows[] = [];
 
   /**
    * Monotonic clock so `created_at DESC, id DESC` ordering is deterministic in tests.
@@ -303,6 +314,14 @@ export class MemoryDataset {
     };
     this.versions.push(row);
     return row;
+  }
+
+  /** Attach a variable registry to a version, for the `/v1/dsl/*` suite. */
+  seedRegistry(rows: VersionRegistryRows): VersionRegistryRows {
+    const index = this.registries.findIndex((r) => r.survey_version_id === rows.survey_version_id);
+    if (index >= 0) this.registries[index] = rows;
+    else this.registries.push(rows);
+    return rows;
   }
 
   seedJob(input: Partial<JobRow> & { id: string; org_id: string; kind: string }): JobRow {
@@ -938,6 +957,26 @@ class InMemoryRepos implements Repos {
       // is application code here by necessity — and therefore explicit rather than implied.
       if (found === undefined || found.org_id !== this.actor.activeOrgId) return null;
       return found;
+    },
+  };
+
+  /* --- the variable registry -------------------------------------------- */
+
+  readonly registry: RegistryRepo = {
+    forVersion: async (versionId: string): Promise<VersionRegistryRows | null> => {
+      // The org check goes through the VERSION, exactly as the real policy does: `content.*` rows
+      // carry `org_id` and their policies join `app.survey_versions`, so a registry is visible
+      // only when its version is. A version in another org is `null` (a 404 upstream), never an
+      // empty registry — an empty registry would type-check the caller's source against nothing
+      // and answer `ok: true`, which is a cross-tenant information leak dressed as a success.
+      const version = this.data.versions.find((v) => v.id === versionId);
+      if (version === undefined || version.org_id !== this.actor.activeOrgId) return null;
+      return this.data.registries.find((r) => r.survey_version_id === versionId) ?? {
+        survey_version_id: versionId,
+        variables: [],
+        nodes: [],
+        items: [],
+      };
     },
   };
 

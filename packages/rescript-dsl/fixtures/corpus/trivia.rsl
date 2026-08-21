@@ -1,0 +1,19 @@
+# The three comment markers the lexer accepts, and why there are three: D §6.2 declares `--` and
+# `/* … */`; 09-ui §7.4 registers Monaco with `lineComment: '#'`, which is what the editor's
+# toggle-comment command inserts. All three round-trip verbatim.
+-- A `--` line comment, per D §6.2.
+/* A block comment, per D §6.2. */
+
+# Two blank lines above this statement collapse to two; a run of nine would also collapse to two
+# (D §6.4 caps blank_before at 0..2).
+IF S1 = 1 THEN SHOW Q12                        # a trailing comment
+
+-- The author's parentheses are preserved even though they change nothing: `(A AND B) OR C` and
+-- `A AND B OR C` are the same AST, and stripping them from a rule about to be reviewed with a
+-- client is hostile (D §6.4).
+IF (S1 = 1 AND Q6 > 10) OR AGE >= 65 THEN SHOW Q12
+
+-- Symbolic and numeric option references are both the author's choice, and both survive.
+IF Q5 CONTAINS Q5.Apple THEN SHOW Q12
+IF Q5 CONTAINS 1 THEN SHOW Q12
+IF Q5 ANY OF [Q5.Apple, 3] THEN SHOW Q12

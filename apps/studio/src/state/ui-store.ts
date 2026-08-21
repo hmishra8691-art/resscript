@@ -45,6 +45,24 @@ export interface UiState {
   treeFilter: string;
   expandedNodeIds: ReadonlySet<string>;
 
+  /* --- the code editor (UI §7.3/§7.4) ------------------------------------ */
+  /**
+   * §7.4: "Monaco's `accessibilitySupport` is exposed as a studio setting rather than left on
+   * `auto`, because `auto` guesses wrong with some screen readers and a code editor that is
+   * silently inaccessible is worse than one that asks."
+   */
+  codeEditorAccessibility: 'auto' | 'on' | 'off';
+  /**
+   * Rules whose trivia-loss warning the author has already accepted (§7.3: "warns once per rule").
+   *
+   * Session-scoped on purpose, and it is not the durable record: the durable record is
+   * `content.logic_rules.authored_in`, which migration 0008 flips to `'visual'` (clearing trivia)
+   * when the builder saves the rule. This set only stops the warning repeating between the accept
+   * and that save — a second store of the same fact with its own staleness model is what §4.1
+   * forbids.
+   */
+  triviaWarningAcknowledged: ReadonlySet<string>;
+
   /* --- transient chrome -------------------------------------------------- */
   commandPaletteOpen: boolean;
 
@@ -57,6 +75,8 @@ export interface UiState {
   setTreeFilter: (filter: string) => void;
   toggleExpanded: (nodeId: string) => void;
   setCommandPaletteOpen: (open: boolean) => void;
+  setCodeEditorAccessibility: (setting: 'auto' | 'on' | 'off') => void;
+  acknowledgeTriviaWarning: (ruleId: string) => void;
 }
 
 const MIN_RAIL = 200;
@@ -72,6 +92,8 @@ export const useUiStore = create<UiState>((set) => ({
   treeFilter: '',
   expandedNodeIds: new Set<string>(),
   commandPaletteOpen: false,
+  codeEditorAccessibility: 'on',
+  triviaWarningAcknowledged: new Set<string>(),
 
   toggleRail: () => set((state) => ({ railCollapsed: !state.railCollapsed })),
   setRailWidth: (width) => set({ railWidth: Math.min(MAX_RAIL, Math.max(MIN_RAIL, width)) }),
@@ -88,4 +110,12 @@ export const useUiStore = create<UiState>((set) => ({
       return { expandedNodeIds: next };
     }),
   setCommandPaletteOpen: (commandPaletteOpen) => set({ commandPaletteOpen }),
+  setCodeEditorAccessibility: (codeEditorAccessibility) => set({ codeEditorAccessibility }),
+  acknowledgeTriviaWarning: (ruleId) =>
+    set((state) => {
+      if (state.triviaWarningAcknowledged.has(ruleId)) return state;
+      const next = new Set(state.triviaWarningAcknowledged);
+      next.add(ruleId);
+      return { triviaWarningAcknowledged: next };
+    }),
 }));

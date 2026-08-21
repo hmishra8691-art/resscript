@@ -1,0 +1,17 @@
+-- BLOCK / PAGE definitions and a PRIORITY GROUP. D §6.2 names `block_def` and `page_def` in its
+-- statement production and never defines either; this is the shape this milestone implements.
+BLOCK MAIN
+  LABEL "Main questionnaire"
+  RANDOMIZE CHILDREN SUBSET 2 EVENLY
+
+  PAGE P2
+    LABEL "Brand battery"
+    IF S1 = 1 THEN SHOW Q12
+  END
+END
+
+-- D §4.6's single LGC-CONFLICT exemption: last-writer-wins is the author's stated intent.
+PRIORITY GROUP segment_overrides {
+  SET SEGMENT = "young"
+  IF AGE >= 65 THEN SET SEGMENT = "senior"
+}

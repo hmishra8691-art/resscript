@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The DSL round-trip properties run at their full case count nightly, not per PR — see the
+  # `properties` job below and R1 in the roadmap's risk register.
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -155,6 +160,33 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+  # ---------------------------------------------------------------------------
+  # The DSL round-trip properties, at the case count the P1-07 acceptance criterion states.
+  #
+  # Every PR runs these properties at a modest case count as part of `pnpm test`; this job runs
+  # them at 10,000, which is what the roadmap requires ("the eight DSL round-trip properties green
+  # at 10,000 cases" — Phase 1 exit). Split out rather than folded into `test` because R1's
+  # mitigation is explicit that a suite slow enough to be skipped is a suite nobody runs, and the
+  # per-PR signal has to stay fast enough that nobody is tempted to skip it.
+  # ---------------------------------------------------------------------------
+  properties:
+    name: DSL round-trip properties (10,000 cases)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: P1-P8 at 10,000 cases
+        env:
+          RESSCRIPT_PROPERTY_RUNS: '10000'
+        run: pnpm --filter @resscript/rescript-dsl test
 
   # ---------------------------------------------------------------------------
   # Release ordering: migrations apply BEFORE application code deploys, and a failing

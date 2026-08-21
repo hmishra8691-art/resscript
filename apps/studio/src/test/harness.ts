@@ -16,6 +16,7 @@ import { claimsFrom } from '@/server/auth';
 import { setContextResolver, type RequestContext, type TokenMinter } from '@/server/context';
 import { createInMemoryRepos, MemoryDataset } from '@/server/repo/memory';
 import type { Repos } from '@/server/repo/types';
+import { registryRowsFor } from '@/test/registry-fixture';
 
 export interface ActorSpec {
   readonly userId: string;
@@ -105,6 +106,11 @@ export function createHarness(): Harness {
     name: 'Survey B',
     createdBy: ownerB,
   });
+
+  // P1-07: the variable registry the `/v1/dsl/*` endpoints type-check against. Org A's draft
+  // only, so "another org's version" is a real case rather than an empty registry that would
+  // answer `ok: true` for source referencing nothing.
+  data.seedRegistry(registryRowsFor(surveyA.draft.id));
 
   const jobA = data.seedJob({
     id: 'job_01JC8KX9Q2M4V7ZB3F0T5N6R8W',

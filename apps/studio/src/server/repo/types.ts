@@ -448,8 +448,76 @@ export interface IdempotencyStore {
   put(record: IdempotencyRecord): Promise<void>;
 }
 
+/* -------------------------------------------------------------------------- */
+/* The variable registry — the type environment for the DSL endpoints          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `content.variables`, projected to what a type environment needs (D §3.2: "the checker is
+ * parameterized by the registry from schema §4 — nothing else").
+ *
+ * Columns are 0007's, verbatim. `enum_domain` is a per-variable copy of `[{code, label_key}]`,
+ * which is why the mapper in `src/server/dsl/registry.ts` has to synthesize a domain *identity*
+ * from the emitting question — see that file.
+ */
+export interface RegistryVariableRow {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: 'response' | 'hidden' | 'derived' | 'system' | 'quota' | 'design';
+  readonly vtype: 'enum' | 'boolean' | 'number' | 'text' | 'date' | 'set' | 'object';
+  readonly enum_domain: readonly { readonly code: number; readonly label_key: string }[] | null;
+  readonly source_question_id: string | null;
+  readonly source_item_id: string | null;
+  readonly source_part: JsonObject | null;
+  readonly pii: boolean;
+  readonly persist: boolean;
+  readonly sort_key: string;
+}
+
+/** `content.nodes`, projected: only what a ref → id lookup and a question decl need. */
+export interface RegistryNodeRow {
+  readonly id: string;
+  readonly node_kind: 'block' | 'page' | 'question' | 'text';
+  readonly parent_id: string | null;
+  readonly ref: string | null;
+  readonly required: boolean | null;
+  readonly emits: readonly string[];
+  readonly sort_key: string;
+}
+
+/** `content.question_items`, projected. */
+export interface RegistryItemRow {
+  readonly id: string;
+  readonly question_id: string;
+  readonly item_kind: 'option' | 'row' | 'column';
+  readonly ref: string;
+  readonly code: number;
+  readonly label_key: string | null;
+  readonly sort_key: string;
+}
+
+export interface VersionRegistryRows {
+  readonly survey_version_id: string;
+  readonly variables: readonly RegistryVariableRow[];
+  readonly nodes: readonly RegistryNodeRow[];
+  readonly items: readonly RegistryItemRow[];
+}
+
+/**
+ * Reads one version's registry.
+ *
+ * One method, one shape: the DSL endpoints (API §5) need `ref → id` resolution and type inference
+ * in a single request, and issuing three round trips per keystroke-driven `POST /v1/dsl/compile`
+ * would make the editor's own API the slowest thing in the loop. No `orgId` argument, per the
+ * header rule of this file — RLS on `content.*` scopes it to the caller's active org.
+ */
+export interface RegistryRepo {
+  forVersion(versionId: string): Promise<VersionRegistryRows | null>;
+}
+
 /** The bundle a route handler receives. One object so adding a repo is not 40 signatures. */
 export interface Repos {
+  readonly registry: RegistryRepo;
   readonly orgs: OrgRepo;
   readonly members: MemberRepo;
   readonly invitations: InvitationRepo;

@@ -117,3 +117,58 @@ export const createVersionSchema = z
 
 /** `status` is NOT writable here: publishing is `POST /versions/{id}/publish` (API §2.4). */
 export const updateVersionSchema = z.object({ notes: z.string().max(2000).optional() }).strict();
+
+/* -------------------------------------------------------------------------- */
+/* The ResScript DSL endpoints (API §5)                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `scope.survey_version_id` is required, and that is API §5.1's decision, not a convenience:
+ * "there is no context-free compile of a survey rule, and pretending otherwise would let a CI job
+ * produce ASTs with dangling references". The version supplies the variable registry, which *is*
+ * the type environment (D §3.2).
+ */
+const dslScopeSchema = z.object({ survey_version_id: ulidIdSchema }).strict();
+
+export const dslCompileSchema = z
+  .object({
+    // 200 KB. Generous for a rule pane and small enough that a runaway paste cannot make the
+    // parser the slowest thing in the request.
+    source: z.string().max(200_000),
+    scope: dslScopeSchema,
+    mode: z.enum(['rules', 'survey', 'expression']).optional(),
+    options: z.object({ keep_trivia: z.boolean().optional() }).strict().optional(),
+  })
+  .strict();
+
+/**
+ * `statements` is `unknown[]` at the schema boundary, deliberately.
+ *
+ * Every other request body here is `.strict()`-validated field by field, because an ignored typo
+ * is a survey that quietly lacks a quota (API §1.1). An AST is the exception: its shape is defined
+ * by `packages/logic` (58 node kinds, five statement kinds, trivia), and restating it as a Zod
+ * schema would be precisely the second definition ADR-010 exists to prevent — one that would
+ * accept or reject a *different* language than the printer implements. So the validation is the
+ * printer itself: an unknown node kind is a thrown `LogicInvariant` (printer.ts's exhaustive
+ * `switch`), which the route turns into a `validation_failed` naming the offending index.
+ */
+export const dslPrintSchema = z
+  .object({
+    statements: z.array(z.unknown()).max(5000),
+    scope: dslScopeSchema,
+    options: z
+      .object({
+        width: z.number().int().min(20).max(400).optional(),
+        indent: z.string().max(8).optional(),
+        /**
+         * API §5.2's example passes this. Only `true` is implementable: D §6.4 T2 forbids the
+         * printer changing "the author's choice of symbolic (`Q1.Yes`) vs numeric (`1`) option
+         * references", so the choice comes from the AST's trivia and not from a request field.
+         * `false` is refused with that explanation rather than accepted and ignored.
+         */
+        symbolic_option_refs: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();

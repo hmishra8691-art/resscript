@@ -957,8 +957,8 @@ SELECT pg_temp.act_as(pg_temp.tid('user_a')::uuid, pg_temp.tid('org_a'));
 SELECT is(
   content.clone_version(pg_temp.tid('ver_b_content_frozen')::app.ulid,
                         pg_temp.tid('ver_a_clone_target')::app.ulid),
-  '{"nodes": 0, "languages": 0, "variables": 0, "i18n_strings": 0, "question_cells": 0, '
-  '"question_items": 0}'::jsonb,
+  '{"nodes": 0, "languages": 0, "variables": 0, "logic_rules": 0, "i18n_strings": 0, '
+  '"question_cells": 0, "question_items": 0}'::jsonb,
   'cloning ANOTHER TENANT''S version copies exactly zero rows from every content table');
 SELECT is_empty($$
   SELECT 1 FROM content.nodes
@@ -968,8 +968,13 @@ $$, 'and org A''s draft is still empty afterwards');
 SELECT is(
   content.clone_version(pg_temp.tid('ver_a_content_frozen')::app.ulid,
                         pg_temp.tid('ver_a_clone_target')::app.ulid),
-  '{"nodes": 4, "languages": 2, "variables": 4, "i18n_strings": 2, "question_cells": 1, '
-  '"question_items": 61}'::jsonb,
+  -- "logic_rules": 0 because THIS suite's fixture predates content.logic_rules (added, with
+  -- the clone_version branch that reports it, in 0008_authored_in). Zero is still a real
+  -- assertion: the key has to be PRESENT, so a future content table dropped from
+  -- clone_version's enumerated list shows up here as a missing key rather than as rows
+  -- silently not copied. 0008's own suite clones a version that HAS rules.
+  '{"nodes": 4, "languages": 2, "variables": 4, "logic_rules": 0, "i18n_strings": 2, '
+  '"question_cells": 1, "question_items": 61}'::jsonb,
   'cloning a FROZEN version into a fresh draft copies every content table in one '
   'INSERT ... SELECT each, as `authoring`: the source is read through a policy that permits '
   'reading a frozen version and the target through the draft-only write policies');

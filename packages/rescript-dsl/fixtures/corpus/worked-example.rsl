@@ -1,0 +1,11 @@
+-- Deliverable D §9.2, the worked example, with the label-match bug already fixed:
+-- `Q5 CONTAINS Q5.Apple`, never `Q5 CONTAINS "apple"` (D §9.1 — labels are translated, so
+-- matching on them breaks in every non-base language).
+IF Q5 CONTAINS Q5.Apple
+   AND Q6 > 10
+   AND ( S1 = 1
+         OR ( COUNT(Q5) >= 3 AND Q5 NONE OF [99] ) )
+   AND NOT (AGE < 18)
+  THEN SHOW Q12
+   AND SET HEAVY_BUYER = TRUE
+  ELSE HIDE Q12

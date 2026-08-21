@@ -8,7 +8,17 @@ import type { NextConfig } from 'next';
  */
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  transpilePackages: ['@resscript/schema', '@resscript/observability'],
+  transpilePackages: [
+    '@resscript/schema',
+    '@resscript/observability',
+    // P1-07: same story — `@resscript/rescript-dsl` and `@resscript/logic` publish `src/*.ts` and
+    // import siblings as `./printer.js`. Listed explicitly rather than relying on the fact that a
+    // pnpm symlink resolves outside `node_modules` and therefore happens to hit the app's own SWC
+    // loader: that is an accident of the install layout, and the failure mode when it changes is a
+    // build error nobody can attribute.
+    '@resscript/rescript-dsl',
+    '@resscript/logic',
+  ],
   /**
    * WHY `extensionAlias`: those packages are ESM-correct TypeScript — they import siblings as
    * `./registries.js` because that is what the emitted ESM must say, while the file on disk is

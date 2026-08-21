@@ -7,13 +7,21 @@ The architecture is designed before the code, and the design is the authority: s
 `architecture/` docs in the ResScript project (`00-decisions-adr.md` first). Every
 non-obvious choice in this repository cites the ADR or deliverable section it comes from.
 
-**Status: Milestone 0 and milestones P1-01 … P1-04, P1-06 of Phase 1.** Nothing is deployed.
-What exists is the foundation, the tenancy layer, the canonical survey model, the content
-model, the question-plugin contract and the logic engine — plus the CI guard rails that
-protect the decisions the rest of Phase 1 depends on.
+**Status: Milestone 0 and milestones P1-01 … P1-04, P1-06, P1-07 of Phase 1.** Nothing is
+deployed. What exists is the foundation, the tenancy layer, the canonical survey model, the
+content model, the question-plugin contract, the logic engine and the ResScript DSL with its
+code editor — plus the CI guard rails that protect the decisions the rest of Phase 1 depends on.
 
-`pnpm verify` is green: 1,879 unit tests, 537 pgTAP assertions across 7 migrations, 6 import-graph
+`pnpm verify` is green: 2,195 unit tests, 597 pgTAP assertions across 8 migrations, 6 import-graph
 negative controls and 11 migration-linter fixtures all rejecting as designed.
+
+**Read the self-test output, not just the exit code.** `pnpm lint:graph:test` must say
+`6 rule(s), all fired as expected`. If it reports fewer rules firing on a checkout whose code is
+unchanged, suspect the install layout before the rules: this repository's `.npmrc` pins
+`node-linker=isolated` precisely because a hoisted or partially-npm-installed `node_modules`
+changes what resolves from where, and bug #5 below is that failure twice over. Delete
+`node_modules`, delete any stray lockfile or `node_modules` in a *parent* directory, and
+`pnpm install` again before debugging the config.
 
 ---
 
@@ -43,7 +51,7 @@ packages/
   logic/          AST, three-valued semantics, type checker, evaluator       [P1-06 — built]
   logic-parity/   differential test: Node vs QuickJS-WASM, same verdicts     [P1-06 — built]
   question-kit/   the QuestionTypePlugin contract, registry, test kit        [P1-04 — built]
-  rescript-dsl/   lexer, parser, resolver, pretty-printer                    [P1-07]
+  rescript-dsl/   lexer, parser, resolver, pretty-printer                    [P1-07 — built]
   compiler/       authoring model -> immutable artifact + the static gate    [P1-08]
   runtime-core/   page state machine, seeded PRNG, piping, validation        [P1-09]
   design/         MaxDiff and conjoint design generation                     [P4-01]
@@ -78,6 +86,9 @@ fail — a rule that never fires satisfies the linter perfectly while protecting
 | No function executable by `PUBLIC` | Migration 0006. `ALTER DEFAULT PRIVILEGES ... REVOKE ALL ON FUNCTIONS FROM PUBLIC` is a **no-op on PG16** — new functions keep `proacl = NULL`, whose default for a function is `EXECUTE TO PUBLIC`. 17 functions were world-executable, two of them `SECURITY DEFINER` writers that bypass RLS. | `ops.functions_executable_by_public()`, asserted empty |
 | Cross-tenant reads return **zero rows**, not an error | ADR-009. Forging `active_org_id` in a JWT must yield nothing. | the pgTAP suite |
 | No `Math.random` in the runtime | ADR-006: every random decision is `f(seed, salt)`, so a session can be replayed exactly for QA. | ESLint rule (lands with P1-09) |
+| Every `AST_KINDS` entry has a parser production **and** a printer | D §7.2's three-way closure. ADR-003's round trip holds only while the language is closed; a kind with no printer is a rule the code pane silently deletes. The renderer leg lands with P1-12. | `packages/rescript-dsl` closure test (58 kinds × 2 legs) |
+| The Monarch keyword list is exactly the lexer's | UI §7.4: colouring is never authority, but a keyword nobody coloured looks like a typo to the author. Derived from `@resscript/rescript-dsl`, not retyped, and negative-controlled. | `apps/studio` keyword-parity test |
+| The parser never throws, on any input | D §6.4 P8. Monaco calls it on every keystroke, forever, on syntactically invalid text. A parser that throws is a broken editor, not a failed parse. | P8 property test under single-character mutation |
 
 ---
 
@@ -200,3 +211,40 @@ quietly in code.
   take a live survey down over ordinary missing data.
 - **`app.ref`'s pattern rejects the numeric option refs in Deliverable C §5.1's example**
   (`"ref": "1"`). The DDL is right and the doc example is wrong; worth correcting the doc.
+
+P1-07 added twenty-one more, listed in full in `packages/rescript-dsl/README.md` and at each
+implementation site. The ones that block later milestones or change a stored contract:
+
+- **The DSL has three comment markers because the docs specify two different ones.** D §6.2
+  declares `--` and `/* */`; UI §7.4 registers `lineComment: '#'`. All three lex and the author's
+  marker is preserved verbatim, because rewriting it would break T2. Honouring only one breaks
+  either `⌘/` in the studio or every example in D §6.3. Someone should pick.
+- **T2 contradicts itself on parentheses.** It permits the printer to drop redundant parentheses
+  *and* requires `paren_hints` to preserve the ones the author wrote. Author parens win, so P3
+  (source normalization) deliberately does not re-parenthesize.
+- **`FLAG <ident>` has no effect kind.** D §6.3 uses it; D §4.2's `Effect` union has no `flag`.
+  Parsed as a writable boolean variable; the compiler must desugar it to `set_variable = TRUE`
+  or the union must grow an arm.
+- **`on_unknown` has no counterpart in `packages/schema`'s `LogicRule`.** So `IF … ON UNKNOWN
+  SHOW` parses, prints and round-trips in the DSL but cannot be persisted. Migration 0008
+  deliberately did *not* add a column nothing writes; whichever half lands first should name the
+  other. **Publish-blocking for any survey using the construct.**
+- **Deliverable C §7's `{type:'survey'}` rule target cannot be stored under B §4.4's
+  `rules_one_target` CHECK**, which requires exactly one of three ids to be non-NULL — and a
+  survey-scoped `TERMINATE` has none. Migration 0008 resolves it with `content.rule_target_kind`
+  and three biconditionals, which also pins which id belongs to which kind. B §4.4's CHECK as
+  written rejects the first screener rule anyone writes.
+- **Rule source text is not stored, by decision.** `trivia` is a column (D §6.4: trivia rides on
+  the statement, not inside the expression tree) and the text is recovered by `print(ast, trivia)`.
+  A stored source string embeds `ref`s while the AST embeds ids, so it and C §3's rename guarantee
+  cannot both hold.
+- **Enum domain identity has no column.** `content.variables.enum_domain` is a per-variable copy,
+  so the resolver synthesizes a nominal domain id per emitting question. Two questions built from
+  one shared option template therefore get two domains, and a legitimate cross-question mask
+  reports `LGC-T021`. Not papered over with a codes-match heuristic, which would admit exactly the
+  comparison the check exists to reject.
+- **`EnumDomain.ordinal` still has no source** (D §11 note 2), so `Q9 > 3` on a Likert scale is
+  `LGC-T009` until a plugin declares ordinality. Safe direction, real false positive.
+- **Nothing mounts the code pane yet.** The editor, its adapters and both `/v1/dsl/*` routes are
+  built and tested; the version-editor shell route that would host them is P1-12. Flagged rather
+  than wired to fake data.

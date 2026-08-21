@@ -1,0 +1,47 @@
+-- One statement per bug found while building P1-07. R1's mitigation: "Add every bug-producing
+-- survey to fixtures/corpus/ permanently." Each of these round-trips today and each of them did
+-- not at some point, so each is a guard against a specific regression rather than a general
+-- smoke test.
+
+-- Found by P5: both operands are literals, so neither can supply the other's domain. Printing bare
+-- codes here re-parsed as `num` and silently changed the comparison's type.
+IF [Q5.Apple] CONTAINS 1 THEN SHOW Q12
+
+-- Found by P6: a COALESCE takes its type from the same expectation its arms do, so the resolver has
+-- to look through it when deciding which side of a comparison to resolve first.
+IF COALESCE(AGE_BAND.1, AGE_BAND.2) = 1 THEN SHOW Q12
+
+-- Found by P1: `and`/`or` are n-ary (D §2.3) and nested same-operator nodes are flattened by the
+-- compiler's optimizer (D §10.1), not by the parser. Without the parentheses the reparse flattens
+-- three operands into one node and T1 fails.
+IF S1 = 1 OR (Q6 > 1 OR AGE > 2) THEN SHOW Q12
+
+-- Found by P1: `--` is a comment marker, so an unparenthesized double negation turned the rest of
+-- the line into a comment and the statement lost its condition.
+IF -(-Q6) > 0 THEN SHOW Q12
+
+-- Found by P1: a bare action's trailing IF has to be on the same line, or the action swallows the
+-- IF of the rule below it. Both statements here are separate.
+HIDE Q12 IF S1 = 1
+IF S1 = 2 THEN SHOW Q12
+
+-- Found by P1: a scalar question emits a variable with its own name (schema §1), so `ANSWERED(Q12)`
+-- is ambiguous between the variable and the question. The bare form is the variable.
+IF ANSWERED(QUESTION Q12) AND ANSWERED(Q12) THEN SHOW Q12
+
+-- Found by P3: `==` is accepted as an assignment operator, because a programmer arriving from
+-- JavaScript types it and the printer normalizes it to `=` anyway.
+SET HEAVY_BUYER = TRUE
+
+-- Found by P1: a derived enum variable has a domain and no question, so there is no `Q5.Apple`
+-- spelling for its codes. `AGE_BAND.2` is how a code in that domain is written.
+SET AGE_BAND = AGE_BAND.2
+
+-- Found by P6: `MIN_OF` over a matrix's rows is `enum<scale>`, not `num` (D §3.3: `agg(min|max) : τ`
+-- where τ is the element type). The projection is what makes it numeric.
+IF MIN_OF(ROWS OF Q7 SELECT item.code) >= 3 THEN SHOW Q12
+
+-- An unresolvable reference prints back as itself rather than as NULL: a formatter that rewrote a
+-- typo would be deleting the author's work. This statement therefore carries an LGC-T001, on
+-- purpose, and is excluded from the corpus test's "no errors" assertion.
+IF NOT_A_VARIABLE = 1 THEN SHOW Q12

@@ -43,6 +43,10 @@ import type {
   PageResult,
   ProjectRepo,
   ProjectRow,
+  RegistryItemRow,
+  RegistryNodeRow,
+  RegistryRepo,
+  RegistryVariableRow,
   Repos,
   SurveyRepo,
   SurveyRow,
@@ -52,6 +56,7 @@ import type {
   UpdateProjectInput,
   UpdateSurveyInput,
   UpdateVersionInput,
+  VersionRegistryRows,
 } from './types.js';
 
 export interface SupabaseRepoContext {
@@ -70,6 +75,7 @@ export interface SupabaseRepoContext {
 }
 
 const APP = 'app';
+const CONTENT = 'content';
 
 /**
  * PostgREST errors → the same `StoreConstraintError` the in-memory store raises, so the HTTP
@@ -581,6 +587,53 @@ class SupabaseRepos implements Repos {
       if (error !== null) raise(error, 'jobs_select');
       const row = (data as JobRow[] | null)?.[0];
       return row ?? null;
+    },
+  };
+
+  /**
+   * The variable registry for one version — the type environment the `/v1/dsl/*` endpoints need
+   * (API §5.1: "`scope.survey_version_id` is required … because `ref → id` resolution and type
+   * inference need the variable registry").
+   *
+   * Three reads, in parallel, all under `content.*`'s policies: a version in another org yields
+   * three empty sets, which is why the version row is checked first and a miss is `null` rather
+   * than an empty registry. Deleted rows are excluded here rather than by the policy —
+   * `deleted_at` is the editor's undo buffer (B §4.1) and a soft-deleted question must not
+   * resolve a `ref`, or a rule would type-check against a question the author has deleted.
+   *
+   * Deployment note, same class as the `app` one above: PostgREST must expose `content`.
+   */
+  readonly registry: RegistryRepo = {
+    forVersion: async (versionId: string): Promise<VersionRegistryRows | null> => {
+      const version = await this.surveys.getVersion(versionId);
+      if (version === null) return null;
+      const content = (name: string) => this.ctx.client.schema(CONTENT).from(name);
+      const [variables, nodes, items] = await Promise.all([
+        content('variables')
+          .select('id, name, kind, vtype, enum_domain, source_question_id, source_item_id, source_part, pii, persist, sort_key')
+          .eq('survey_version_id', versionId)
+          .is('deleted_at', null)
+          .order('sort_key', { ascending: true }),
+        content('nodes')
+          .select('id, node_kind, parent_id, ref, required, emits, sort_key')
+          .eq('survey_version_id', versionId)
+          .is('deleted_at', null)
+          .order('sort_key', { ascending: true }),
+        content('question_items')
+          .select('id, question_id, item_kind, ref, code, label_key, sort_key')
+          .eq('survey_version_id', versionId)
+          .is('deleted_at', null)
+          .order('sort_key', { ascending: true }),
+      ]);
+      if (variables.error !== null) raise(variables.error, 'variables_select');
+      if (nodes.error !== null) raise(nodes.error, 'nodes_select');
+      if (items.error !== null) raise(items.error, 'question_items_select');
+      return {
+        survey_version_id: versionId,
+        variables: (variables.data ?? []) as RegistryVariableRow[],
+        nodes: (nodes.data ?? []) as RegistryNodeRow[],
+        items: (items.data ?? []) as RegistryItemRow[],
+      };
     },
   };
 
