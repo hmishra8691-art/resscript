@@ -232,7 +232,7 @@ function evaluateAndRender(
   logic: RehydratedLogic,
   labels: { readonly [key: string]: string } | undefined,
   escapeContext: EscapeContext,
-): { rendered: RenderedPage; evaluated: EvaluatedPage } {
+): { rendered: RenderedPage; evaluated: EvaluatedPage; debug?: Record<string, unknown> } {
   const submitted = new Set(
     session.history.filter(v => v.submitted_at !== null).map(v => String(v.page_id)),
   );
@@ -255,7 +255,28 @@ function evaluateAndRender(
     ...evaluated.renderHooks,
   });
 
-  return { rendered, evaluated };
+  if (!session.is_test) return { rendered, evaluated };
+
+  // TEST MODE: the full node-level trace, E §14.1's rightmost column. Same code path, same
+  // artifact, same machine — the trace is CAPTURED here, never branched on, because divergent
+  // code paths for test are how "works in test, breaks in production" ships. The engine
+  // produces the trace on every evaluation either way (D §5.3's changes list drives it); test
+  // mode is merely allowed to see it.
+  const verdict = evaluated.verdict as { trace?: unknown; cells?: unknown[] };
+  return {
+    rendered,
+    evaluated,
+    debug: {
+      seed: session.random_seed,
+      artifact_hash: session.artifact_hash,
+      orders: evaluated.orders,
+      digest: rendered.digest,
+      cells_evaluated: Array.isArray(verdict.cells) ? verdict.cells.length : 0,
+      trace: verdict.trace ?? [],
+      validations: evaluated.validations,
+      termination: evaluated.termination ?? null,
+    },
+  };
 }
 
 /**
@@ -283,6 +304,8 @@ export interface Interpreted {
   readonly page: RenderedPage | null;
   readonly disposition: string | null;
   readonly events: readonly { kind: string; [k: string]: unknown }[];
+  /** Present only for test sessions: the E §14.2 trace for the page that was rendered. */
+  readonly debug?: Record<string, unknown>;
 }
 
 /** Fetch one page of the session's artifact in the session's language. */
@@ -313,6 +336,7 @@ export async function interpret(
   let current = session;
   let page: RenderedPage | null = null;
   let disposition: string | null = null;
+  let lastDebug: Record<string, unknown> | undefined;
   const events: { kind: string; [k: string]: unknown }[] = [];
 
   for (const cmd of cmds) {
@@ -323,13 +347,14 @@ export async function interpret(
           events.push({ kind: 'render.missing_page', page_id: cmd.page_id });
           break;
         }
-        const { rendered, evaluated } = evaluateAndRender(
+        const { rendered, evaluated, debug } = evaluateAndRender(
           source,
           current,
           opts.logic,
           opts.labels,
           opts.escapeContext,
         );
+        if (debug) lastDebug = debug;
         page = rendered;
         current = stampDigest(current, cmd.page_id, rendered.digest);
         for (const e of rendered.events) events.push({ ...e });
@@ -407,7 +432,7 @@ export async function interpret(
     }
   }
 
-  return { session: current, page, disposition, events };
+  return { session: current, page, disposition, events, ...(lastDebug ? { debug: lastDebug } : {}) };
 }
 
 /* ------------------------------------------------------------------ *
@@ -452,7 +477,12 @@ function pageFetcher(ctx: Ctx, hash: string, language: string): PageFetcher {
   };
 }
 
-function pageBody(rendered: RenderedPage, session: SessionState, requestId: string) {
+function pageBody(
+  rendered: RenderedPage,
+  session: SessionState,
+  requestId: string,
+  debug?: Record<string, unknown>,
+) {
   return {
     session_id: session.session_id,
     page: {
@@ -464,6 +494,9 @@ function pageBody(rendered: RenderedPage, session: SessionState, requestId: stri
       visited: session.history.length,
       revision: session.revision,
     },
+    // Test sessions only (E §14.1): the full trace, retained in the response rather than a
+    // store — 30-day trace retention is the studio's concern, not the data plane's.
+    ...(debug ? { debug } : {}),
     request_id: requestId,
   };
 }
@@ -608,7 +641,7 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     return;
   }
   json(res, 200, {
-    ...pageBody(out.page, out.session, ctx.requestId),
+    ...pageBody(out.page, out.session, ctx.requestId, out.debug),
     // For the client to carry in the page URL. The server keeps only the hash.
     resume_token: resumeToken,
   });
@@ -669,7 +702,7 @@ async function handlePageRender(
     return;
   }
 
-  const { rendered } = evaluateAndRender(
+  const { rendered, debug } = evaluateAndRender(
     source as unknown as RenderPage,
     session,
     logicFor(pinned.head),
@@ -681,7 +714,7 @@ async function handlePageRender(
   const stamped = stampDigest(session, pageId, rendered.digest);
   await ctx.deps.sessions.save(stamped);
 
-  json(res, 200, pageBody(rendered, stamped, ctx.requestId));
+  json(res, 200, pageBody(rendered, stamped, ctx.requestId, debug));
 }
 
 /**
@@ -829,7 +862,7 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
         json(res, 500, { error: { code: 'no_page' }, request_id: ctx.requestId });
         return;
       }
-      json(res, 200, pageBody(out.page, out.session, ctx.requestId));
+      json(res, 200, pageBody(out.page, out.session, ctx.requestId, out.debug));
       return;
     }
   }

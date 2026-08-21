@@ -864,6 +864,48 @@ describe('resume, back, telemetry (E §7)', () => {
   });
 });
 
+describe('test mode (E §14.1)', () => {
+  const testDeps = () =>
+    deps({ tokens: createStaticTokenResolver([token({ status: 'test', is_test: true })]) });
+
+  it('a test session gets the full trace; a production session gets nothing', async () => {
+    const prod = await call(deps(), { path: `/s/${TOKEN}` });
+    expect(prod.body.debug).toBeUndefined();
+
+    const test = await call(testDeps(), { path: `/s/${TOKEN}` });
+    expect(test.body.debug).toBeDefined();
+    expect(test.body.debug.seed).toMatch(/^[0-9a-f]{32}$/);
+    expect(test.body.debug.artifact_hash).toBe(HASH);
+    expect(test.body.debug.digest).toMatch(/^[0-9a-f]{32}$/);
+    expect(Array.isArray(test.body.debug.trace)).toBe(true);
+  });
+
+  it('the trace rides through a submit to the next page', async () => {
+    const d = testDeps();
+    const entry = await call(d, { path: `/s/${TOKEN}` });
+    const r = await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/submit?session=${entry.body.session_id}`,
+      body: { page_id: 'pg_1', values: { var_q1: 1 } },
+    });
+
+    expect(r.body.page.page_id).toBe('pg_2');
+    expect(r.body.debug).toBeDefined();
+  });
+
+  it('same code path: the trace is captured, not branched on', async () => {
+    // The two sessions must walk identical pages in identical order — divergent code paths
+    // for test mode are how "works in test, breaks in production" ships (E §14.1).
+    const prod = await call(deps(), { path: `/s/${TOKEN}` });
+    const test = await call(testDeps(), { path: `/s/${TOKEN}` });
+
+    expect(test.body.page.page_id).toBe(prod.body.page.page_id);
+    expect(test.body.page.questions.map((q: { id: string }) => q.id)).toEqual(
+      prod.body.page.questions.map((q: { id: string }) => q.id),
+    );
+  });
+});
+
 describe('deferred routes', () => {
   it('preview is 501', async () => {
     const r = await call(deps(), { method: 'POST', path: '/preview/abc' });
