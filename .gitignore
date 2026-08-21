@@ -10,3 +10,6 @@ coverage/
 .DS_Store
 *.log
 .pnpm-store/
+
+# Redis persistence artifact from local dev servers
+dump.rdb
