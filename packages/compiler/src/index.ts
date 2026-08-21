@@ -89,8 +89,6 @@ export type { PluginResolution } from './analyses/plugins.js';
 /* ---- the emitters ------------------------------------------------------- */
 
 export {
-  BASE_OPTION_DEFAULT,
-  BASE_VISIBLE_DEFAULT,
   HASH_PREAMBLE,
   MASK_AXES,
   OPT_PROPS,
@@ -103,12 +101,9 @@ export {
   buildManifest,
   buildPages,
   cellIndexOf,
-  cellsWrittenBy,
   compiledRuleOf,
   designsOf,
   pagePath,
-  rehydrate,
-  ruleOf,
   scriptsOf,
   stringResolver,
   treeHash,
@@ -120,6 +115,5 @@ export type {
   ManifestInput,
   PagesInput,
   PagesResult,
-  RehydratedLogic,
   StringResolver,
 } from './emit/index.js';

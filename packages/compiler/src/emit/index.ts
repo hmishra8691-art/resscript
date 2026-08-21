@@ -34,17 +34,11 @@ export { buildArtifactGraph } from './graph.js';
 export { artifactLanguages, buildI18n, stringResolver, type StringResolver } from './i18n.js';
 
 export {
-  BASE_OPTION_DEFAULT,
-  BASE_VISIBLE_DEFAULT,
   MASK_AXES,
   OPT_PROPS,
   buildArtifactLogic,
-  cellsWrittenBy,
   compiledRuleOf,
-  rehydrate,
-  ruleOf,
   type EmitLogicInput,
-  type RehydratedLogic,
 } from './logic.js';
 
 export {

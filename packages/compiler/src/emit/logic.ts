@@ -53,15 +53,19 @@
  * trace, the runtime, a debugging tool printing one rule — to carry `nodes` alongside a rule in
  * order to know what it says. Contract kept, condition inlined.
  *
- * ## `rehydrate` is here, and it is here on purpose
+ * ## `rehydrate` used to be here, and has moved
  *
- * The runtime is P1-09 and does not exist yet, so nothing consumes `ArtifactLogic` today. That
- * makes a serializer untestable in the only way that matters: losslessness. `rehydrate` is the
- * inverse, in the same module so the two cannot drift into separate files with separate ideas of
- * the format, and `logic.test.ts` asserts the round trip over `cells`, `topo`, `dependents`,
- * `writers` and `triggers`. It reconstructs the typed arrays and the maps; it does **not**
- * reconstruct `schema` or `maskItems`, which are views of the type environment rather than
- * compiled state and belong to whatever the runtime builds from a compiled page.
+ * It was here because "the runtime is P1-09 and does not exist yet", which made the serializer
+ * untestable in the only way that matters: losslessness. The runtime now exists, and keeping the
+ * deserializer here would force `packages/runtime-core` to import this package in order to evaluate
+ * logic — pulling the solver, nine analyses and `node:crypto` into a package that has to load in a
+ * browser and in QuickJS. E §1 makes the runtime's dependency tree the largest lever on cold-start
+ * latency, so it lives in `packages/runtime-core/src/artifact-logic.ts` now.
+ *
+ * `logic.test.ts` still asserts the round trip, importing `rehydrate` from there as a dev
+ * dependency, so the two halves of the format cannot drift apart unnoticed. The sparse-encoding
+ * defaults moved further still — to `@resscript/schema`, next to `ArtifactLogic` — because they are
+ * the wire contract rather than either side's implementation.
  */
 
 import type {
@@ -72,7 +76,12 @@ import type {
   Expr,
   JsonObject,
 } from '@resscript/schema';
-import { flattenContent, type Survey } from '@resscript/schema';
+import {
+  BASE_OPTION_DEFAULT,
+  BASE_VISIBLE_DEFAULT,
+  flattenContent,
+  type Survey,
+} from '@resscript/schema';
 import { pageOfQuestion, blockPathOf } from '../flow.js';
 import {
   asQuestionId,
@@ -116,25 +125,9 @@ export const OPT_PROPS: readonly OptProp[] = [
   'required',
 ];
 
-/**
- * schema §5.1's literal option defaults: visible and enabled, nothing else.
- *
- * Exported because it is the other half of the sparse encoding — an `optionKey` absent from
- * `base_option` means *this*, and a reader that guesses `false` would render every option hidden.
- * It restates `compileLogic`'s private `defaultOptionState`; the duplication is deliberate, since
- * the alternative is either exporting an internal from `packages/logic` or shipping 300 redundant
- * entries per question to avoid writing five lines.
- */
-export const BASE_OPTION_DEFAULT: { readonly [K in OptProp]: boolean } = {
-  visible: true,
-  enabled: true,
-  preselected: false,
-  auto_select: false,
-  required: false,
-};
-
-/** `base_visible`'s default. Absent ⇒ the node is visible. */
-export const BASE_VISIBLE_DEFAULT = true;
+// `BASE_OPTION_DEFAULT` and `BASE_VISIBLE_DEFAULT` are imported from `@resscript/schema`. The sparse
+// encoding's defaults are the wire contract — shared with the reader that restores them — not a
+// property of this emitter, and a second copy here could disagree with the one the runtime reads.
 
 /* ========================================================================== */
 /* 2. Serialization                                                            */
@@ -326,44 +319,6 @@ export function compiledRuleOf(rule: Rule): CompiledRule {
   };
 }
 
-/**
- * `CompiledRule` → `Rule`: the inverse, and the reason the fields above are serialized.
- *
- * The branded-id casts are the whole difficulty. An id's brand is erased by JSON, and this is the
- * parse boundary, so re-attaching it is exactly what a cast is for — the ids came from a `Rule` that
- * the compiler had already validated, and the artifact is content-addressed, so a tampered id is a
- * different artifact under a different hash.
- */
-export function ruleOf(compiled: CompiledRule): Rule {
-  const target =
-    compiled.target_type === 'survey'
-      ? ({ type: 'survey' } as Target)
-      : ({ type: compiled.target_type, id: compiled.target_id } as unknown as Target);
-
-  const base = {
-    id: compiled.id as Rule['id'],
-    kind: compiled.kind as Rule['kind'],
-    target,
-    condition: compiled.condition as unknown as Rule['condition'],
-    effect: compiled.effect as unknown as Rule['effect'],
-    evaluation: compiled.evaluation as Rule['evaluation'],
-    authored_in: compiled.authored_in,
-    order_key: compiled.order_key,
-  };
-
-  // Built by conditional spread rather than by assigning `undefined`: under
-  // `exactOptionalPropertyTypes` an absent optional and one set to `undefined` are different types,
-  // and only the absent form round-trips through JSON unchanged.
-  return {
-    ...base,
-    ...(compiled.on_unknown === undefined ? {} : { on_unknown: compiled.on_unknown }),
-    ...(compiled.priority_group === undefined ? {} : { priority_group: compiled.priority_group }),
-    ...(compiled.flow_node_id == null
-      ? {}
-      : { flow_node_id: compiled.flow_node_id as NonNullable<Rule['flow_node_id']> }),
-    ...(compiled.label === undefined ? {} : { label: compiled.label }),
-  };
-}
 
 /**
  * `Map` → object with keys in code-point order.
@@ -521,147 +476,3 @@ function asSchemaExpr(expr: LogicExpr): Expr {
 /* 4. Rehydration — the inverse, and the only proof the above is lossless      */
 /* ========================================================================== */
 
-/**
- * What a runtime gets back from `ArtifactLogic`.
- *
- * A subset of `CompiledLogic` on purpose: `schema` and `maskItems` are views of the *type
- * environment* rather than compiled state (`buildEvalSchema` reads `env.questions()`), and
- * `diagnostics` belong to the compile that produced the artifact rather than to the artifact.
- * Everything positional is here, because everything positional is what has to survive the trip.
- */
-export interface RehydratedLogic {
-  readonly cells: readonly Cell[];
-  readonly cellKeys: readonly string[];
-  readonly topo: Int32Array;
-  readonly topoPos: Int32Array;
-  readonly dependents: readonly Int32Array[];
-  readonly inputs: readonly Int32Array[];
-  readonly writers: readonly Int32Array[];
-  readonly triggers: ReadonlyMap<VariableId, Int32Array>;
-  readonly validCells: ReadonlyMap<string, Int32Array>;
-  /** Executable rules, not the serialized form: `evaluate` needs `Rule`, not `CompiledRule`. */
-  readonly rules: readonly Rule[];
-  readonly nodes: readonly LogicExpr[];
-  readonly derived: ReadonlyMap<CellIdx, LogicExpr>;
-  readonly baseVisible: (nodeId: string) => boolean;
-  readonly baseItems: (questionId: QuestionId, axis: MaskAxis) => readonly number[];
-  readonly baseOption: (optionId: string, prop: OptProp) => boolean;
-  /** Cell key → index, the inverse of `cells`. The runtime's only string-keyed cell lookup. */
-  readonly indexOf: (key: string) => CellIdx | undefined;
-  /**
-   * The type environment `evaluate()` needs, rebuilt from `ArtifactLogic.schema`.
-   *
-   * `EMPTY_SCHEMA` when the artifact carries no `schema` section — an artifact compiled before the
-   * section existed. Every probe then answers "nothing", which makes a page-scoped or
-   * question-scoped condition evaluate as if the survey had no structure. That is why the section
-   * is emitted rather than optional in practice: an artifact without it needs a republish, not a
-   * fallback.
-   */
-  readonly schema: EvalSchema;
-}
-
-export function rehydrate(artifact: ArtifactLogic): RehydratedLogic {
-  const cells = artifact.cells.map((entry) => entry.cell as unknown as Cell);
-  const cellKeys = artifact.cells.map((entry) => entry.key);
-  const byKey = new Map<string, CellIdx>();
-  cellKeys.forEach((key, index) => {
-    if (!byKey.has(key)) byKey.set(key, index);
-  });
-
-  const nodes = artifact.nodes.map((node) => node as unknown as LogicExpr);
-  const derived = new Map<CellIdx, LogicExpr>();
-  for (const [cellIndex, nodeIndex] of Object.entries(artifact.derived)) {
-    const node = nodes[nodeIndex];
-    if (node !== undefined) derived.set(Number(cellIndex), node);
-  }
-
-  const triggers = new Map<VariableId, Int32Array>();
-  for (const [variableId, indices] of Object.entries(artifact.by_trigger_variable)) {
-    triggers.set(variableId as VariableId, Int32Array.from(indices));
-  }
-  const validCells = new Map<string, Int32Array>();
-  for (const [target, indices] of Object.entries(artifact.valid_by_target)) {
-    validCells.set(target, Int32Array.from(indices));
-  }
-
-  const baseVisibleMap = artifact.base_visible;
-  const baseItemsMap = artifact.base_items;
-  const baseOptionMap = artifact.base_option;
-
-  return {
-    cells,
-    cellKeys,
-    schema: rehydrateSchema(artifact, baseVisibleMap),
-    topo: Int32Array.from(artifact.topo),
-    topoPos: Int32Array.from(artifact.topo_pos),
-    dependents: artifact.dependents.map((edges) => Int32Array.from(edges)),
-    inputs: artifact.inputs.map((edges) => Int32Array.from(edges)),
-    writers: artifact.writers.map((rules) => Int32Array.from(rules)),
-    triggers,
-    validCells,
-    rules: artifact.rules.map(ruleOf),
-    nodes,
-    derived,
-    // The three sparse defaults, applied on the read side. This is the only place that knows the
-    // encoding is sparse, which is why the constants above are exported rather than inlined.
-    baseVisible: (nodeId) => baseVisibleMap[nodeId] ?? BASE_VISIBLE_DEFAULT,
-    baseItems: (questionId, axis) => baseItemsMap[itemsKey(questionId, axis)] ?? [],
-    baseOption: (optionId, prop) => baseOptionMap[optionKey(optionId, prop)] ?? BASE_OPTION_DEFAULT[prop],
-    indexOf: (key) => byKey.get(key),
-  };
-}
-
-/**
- * `ArtifactLogicSchema` → `EvalSchema`.
- *
- * `ownerQuestion` is inverted from `question_variables` rather than read from a second map, so the
- * two cannot disagree: a variable listed under two questions would be a contradiction the artifact
- * could otherwise carry, and the inversion makes it unrepresentable — the last writer simply wins,
- * deterministically, because the emitted keys are sorted.
- *
- * `declaredVisible` reads the same `base_visible` record `RehydratedLogic.baseVisible` does, with
- * the same sparse default. Two closures over one record rather than two records, because a
- * disagreement between "the node is visible by default" and "the node is declared visible" is not a
- * distinction the model has.
- */
-function rehydrateSchema(
-  artifact: ArtifactLogic,
-  baseVisibleMap: { readonly [nodeId: string]: boolean },
-): EvalSchema {
-  const schema = artifact.schema;
-  if (schema === undefined) return EMPTY_SCHEMA;
-
-  const owner = new Map<string, string>();
-  for (const questionId of Object.keys(schema.question_variables).sort()) {
-    for (const variableId of schema.question_variables[questionId] ?? []) {
-      owner.set(variableId, questionId);
-    }
-  }
-
-  return {
-    labelKey: (domain: DomainId, code: number) => schema.label_keys[domain]?.[String(code)],
-    questionVariables: (id) => (schema.question_variables[id] ?? []) as never,
-    pageQuestions: (id) => (schema.page_questions[id] ?? []) as never,
-    ownerQuestion: (id) => owner.get(id) as never,
-    pageOf: (nodeId) => schema.page_of[nodeId] as never,
-    declaredVisible: (nodeId) => baseVisibleMap[nodeId] ?? BASE_VISIBLE_DEFAULT,
-  };
-}
-
-/**
- * The cells a serialized rule writes, recovered from the artifact.
- *
- * `writesOf` needs a `Rule`, and a `CompiledRule` is not one — the effect is a `JsonObject` and the
- * target is a bare id string. Rather than reconstructing a `Rule` (which would need the branded-id
- * casts and the `Target` arm, neither of which the artifact records) this reads the `writers` index
- * backwards, which is the authoritative answer anyway: it is what the graph builder recorded, in
- * application order. Exported because the round-trip test is the only thing that can currently
- * check `writers` from the *rule* side, and P1-09's trace will want the same lookup.
- */
-export function cellsWrittenBy(logic: RehydratedLogic, ruleIndex: number): readonly CellIdx[] {
-  const out: CellIdx[] = [];
-  logic.writers.forEach((rules, cellIndex) => {
-    if (rules.includes(ruleIndex)) out.push(cellIndex);
-  });
-  return out;
-}

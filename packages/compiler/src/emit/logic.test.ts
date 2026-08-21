@@ -22,7 +22,18 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { stableStringify, type ArtifactLogic } from '@resscript/schema';
+// `rehydrate` and its helpers live in `packages/runtime-core` now: the deserializer belongs to the
+// reader, and keeping it here would force runtime-core to import this package (and with it the
+// solver and node:crypto) in order to evaluate logic. Imported as a dev dependency so losslessness
+// stays asserted against the serializer it has to keep in step with.
+import { cellsWrittenBy, rehydrate, toCompiledLogic } from '@resscript/runtime-core';
+import { evaluate, varStateOf } from '@resscript/logic';
+import {
+  BASE_OPTION_DEFAULT,
+  BASE_VISIBLE_DEFAULT,
+  stableStringify,
+  type ArtifactLogic,
+} from '@resscript/schema';
 import {
   asQuestionId,
   cellKey,
@@ -35,14 +46,10 @@ import {
 
 import { compileFixture, type Fixture } from './__fixtures__/artifact.js';
 import {
-  BASE_OPTION_DEFAULT,
-  BASE_VISIBLE_DEFAULT,
   MASK_AXES,
   OPT_PROPS,
   buildArtifactLogic,
-  cellsWrittenBy,
   compiledRuleOf,
-  rehydrate,
 } from './logic.js';
 
 /** The artifact as it would come back off disk: canonical bytes, parsed. */
@@ -337,6 +344,94 @@ describe('the logic schema section', () => {
     // And the questions inside it are still mapped, so nothing was dropped wholesale.
     expect(schema?.page_of[ids.q1]).toBe(ids.page1);
     expect(schema?.page_of[ids.q7]).toBe(ids.page2);
+  });
+});
+
+describe('a rehydrated artifact is runnable', () => {
+  /**
+   * THE ASSERTION THE ROUND-TRIP TESTS COULD NOT MAKE.
+   *
+   * Everything above compares an artifact against the `CompiledLogic` it came from, field by field.
+   * That is necessary and it is not sufficient: every one of those assertions passed while the
+   * serialized rules were missing `target`, `evaluation`, `authored_in` and `order_key`, and while
+   * there was no type environment at all — because the comparisons were against the *artifact* side
+   * of each field, not against what the evaluator needs.
+   *
+   * C §17 claims the artifact is self-contained: "given it and a session's variable state, the next
+   * page is computable with no database read except the session itself." This is that claim, run.
+   * The only way it can pass is if the bytes really do carry an executable program.
+   */
+  function runFromArtifact() {
+    const { artifactLogic } = compileFixture();
+    const back = rehydrate(throughJson(artifactLogic));
+    // `maskItems` is the one view the artifact cannot carry — it is scoped to the question being
+    // rendered — so the caller supplies it. Empty here because this fixture has no per-item mask
+    // condition; a real render passes the compiled page's items.
+    const program = toCompiledLogic(back, () => []);
+    return evaluate(program, varStateOf({}), {
+      now: new Date('2026-01-01T00:00:00.000Z').toISOString(),
+    } as never);
+  }
+
+  it('evaluate() runs on bytes that made the whole round trip', () => {
+    const verdict = runFromArtifact();
+
+    // One entry per cell: the program was walked, not skipped.
+    expect(verdict.cells.length).toBeGreaterThan(0);
+    expect(verdict.trace).toHaveLength(verdict.cells.length);
+  });
+
+  it('produces a verdict the renderer can read', () => {
+    // These four are exactly the hooks `renderPage` takes, so this is the shape of the seam.
+    const verdict = runFromArtifact();
+
+    expect(typeof verdict.visible).toBe('function');
+    expect(typeof verdict.items).toBe('function');
+    expect(typeof verdict.option).toBe('function');
+    expect(typeof verdict.value).toBe('function');
+  });
+
+  it('answers a visibility probe consistently with base_visible', () => {
+    const { artifactLogic, ids } = compileFixture();
+    const back = rehydrate(throughJson(artifactLogic));
+    const verdict = evaluate(toCompiledLogic(back, () => []), varStateOf({}), {
+      now: new Date('2026-01-01T00:00:00.000Z').toISOString(),
+    } as never);
+
+    // Q7 is declared hidden in the fixture (`declaredVisible: { [ids.q7]: false }`), and with no
+    // answers no rule fires to reveal it. A verdict disagreeing with `base_visible` here would mean
+    // the sparse default was lost on the read side.
+    expect(verdict.visible(ids.q7)).toBe(back.baseVisible(ids.q7));
+  });
+
+  it('is deterministic across two independent rehydrations', () => {
+    // Two respondents on one artifact must evaluate rules in the same order — the property
+    // ArtifactLogic's positional indices exist to pin.
+    const a = runFromArtifact();
+    const b = runFromArtifact();
+
+    expect(a.cells).toEqual(b.cells);
+    expect(a.trace.map((t) => t.cell)).toEqual(b.trace.map((t) => t.cell));
+  });
+
+  it('derives nodeCount from the dense nodes array rather than trusting a copy', () => {
+    const { artifactLogic, logic } = compileFixture();
+    const program = toCompiledLogic(rehydrate(throughJson(artifactLogic)), () => []);
+
+    expect(program.nodeCount).toBe(logic.nodeCount);
+  });
+
+  it('inverts the four cell-index maps from `cells`', () => {
+    // Shipped nowhere: `cells` already carries the tagged union, and a second copy could disagree.
+    const { artifactLogic, logic } = compileFixture();
+    const program = toCompiledLogic(rehydrate(throughJson(artifactLogic)), () => []);
+
+    expect([...program.valueCell.entries()].sort()).toEqual([...logic.valueCell.entries()].sort());
+    expect([...program.visibleCell.entries()].sort()).toEqual(
+      [...logic.visibleCell.entries()].sort(),
+    );
+    expect([...program.itemsCell.entries()].sort()).toEqual([...logic.itemsCell.entries()].sort());
+    expect([...program.optCell.entries()].sort()).toEqual([...logic.optCell.entries()].sort());
   });
 });
 

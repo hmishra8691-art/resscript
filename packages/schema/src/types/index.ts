@@ -15,6 +15,9 @@ export type * from './i18n.js';
 export type * from './settings.js';
 export type * from './survey.js';
 export type * from './artifact.js';
+// Values, not types: the sparse-encoding defaults are part of the wire contract and both the
+// compiler that writes them and the runtime that reads them import the same table.
+export { BASE_OPTION_DEFAULT, BASE_VISIBLE_DEFAULT } from './artifact.js';
 
 // Value exports (the `as const` enum lists) are re-exported separately because
 // `verbatimModuleSyntax` forbids mixing them into a `export type *`.

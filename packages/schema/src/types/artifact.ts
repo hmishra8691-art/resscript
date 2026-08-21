@@ -181,6 +181,25 @@ export interface ArtifactLogicCell {
 }
 
 /**
+ * `base_option`'s defaults — schema §5.1's literals: an option is visible and enabled, nothing else.
+ *
+ * Part of the **wire contract**, not of either side's implementation, which is why it lives here
+ * rather than in the compiler that writes the sparse encoding or the runtime that reads it. An
+ * `optionKey` absent from `base_option` means *this*; a reader that guessed `false` would render
+ * every option hidden.
+ */
+export const BASE_OPTION_DEFAULT = {
+  visible: true,
+  enabled: true,
+  preselected: false,
+  auto_select: false,
+  required: false,
+} as const;
+
+/** `base_visible`'s default. Absent ⇒ the node is visible. Same wire-contract argument. */
+export const BASE_VISIBLE_DEFAULT = true;
+
+/**
  * The type-environment views the evaluator needs, materialized at publish.
  *
  * **Added in artifact schema version 1.** `packages/logic`'s `EvalSchema` is a set of closures over

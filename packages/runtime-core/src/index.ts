@@ -19,6 +19,16 @@ export {
 } from './prng.js';
 
 export {
+  rehydrate,
+  ruleOf,
+  schemaOf,
+  cellsWrittenBy,
+  toCompiledLogic,
+  type MaskItemsFn,
+  type RehydratedLogic,
+} from './artifact-logic.js';
+
+export {
   renderPage,
   type Axis,
   type MaskFallback,
