@@ -18,3 +18,16 @@ export {
   type RandomizationMode,
   type RandomizationConfig,
 } from './randomize.js';
+
+export {
+  applyMasking,
+  testIncludeMasking,
+  testExcludeMasking,
+  testSelectedInMasking,
+  testFallbackWhenEmpty,
+  type Mask,
+  type MaskMode,
+  type MaskSource,
+  type FallbackKind,
+  type MaskResult,
+} from './masking.js';
