@@ -33,6 +33,21 @@ export {
 } from './masking.js';
 
 export {
+  step,
+  pagesForTarget,
+  type Cmd,
+  type Disposition,
+  type FlowNodeLike,
+  type FlowBranchLike,
+  type Input,
+  type MachineArtifact,
+  type MachineSession,
+  type MachineStateTag,
+  type MachineVisit,
+  type PureCtx,
+} from './machine.js';
+
+export {
   pipe,
   escape,
   testBasicPiping,
