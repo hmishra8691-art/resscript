@@ -6,7 +6,29 @@
  * across Node, browser, and QuickJS.
  */
 
-export { deriveKey, permute, sfc32Counter, testDistributionUniformity, testPermuteDeterminism } from './prng.js';
+export {
+  deriveKey,
+  hashString,
+  permute,
+  randomAt,
+  sfc32Counter,
+  testCounterVariesOutput,
+  testDistributionUniformity,
+  testPermutationCoverage,
+  testPermuteDeterminism,
+} from './prng.js';
+
+export {
+  renderPage,
+  type OptionState,
+  type RenderCtx,
+  type RenderItem,
+  type RenderPage,
+  type RenderQuestion,
+  type RenderedAxis,
+  type RenderedPage,
+  type RenderedQuestion,
+} from './render.js';
 
 export {
   randomize,
