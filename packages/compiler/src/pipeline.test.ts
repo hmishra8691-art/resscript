@@ -1021,9 +1021,10 @@ describe('the compile budget', () => {
     if (!result.ok) {
       throw new Error(`compile failed: ${JSON.stringify(codes(result))}`);
     }
-    // 50 pages in 5 languages: 250 page files, plus the manifest, graph, logic and five bundles.
+    // 50 pages in 5 languages: 250 page files, plus the manifest, graph, logic, redirects and
+    // five bundles.
     expect(Object.keys(result.bundle.artifact.pages).length).toBe(50);
-    expect(result.bundle.files.length).toBe(258);
+    expect(result.bundle.files.length).toBe(259);
     expect(result.bundle.artifact.manifest.variable_manifest.length).toBe(500);
     // Printed rather than silently passed: a regression should show the number it regressed to,
     // since a test that only says "over 5000 ms" hides whether it was 5.1 s or 40 s.

@@ -100,7 +100,36 @@ export function buildDeps(): RuntimeDeps {
     newId: generateULID,
     newSeed: generateSeed,
     domain: RUNTIME_DOMAIN,
+    // Security §12.3's org redirect-host inventory, environment-shaped until the control-plane
+    // feature exists. Empty means "structural URL checks only", which respondFinal documents.
+    redirectHosts: (process.env['REDIRECT_HOST_ALLOWLIST'] ?? '')
+      .split(',')
+      .map(h => h.trim())
+      .filter(h => h.length > 0),
+    // Vendor HMAC secrets (E §11.2). A JSON object of `vendor_ref → secret`, read once at
+    // boot. The control-plane secret store replaces this in P2-04; an env var is honest about
+    // what exists today and keeps secrets out of artifacts either way.
+    vendorSecret: makeVendorSecretLookup(process.env['RUNTIME_VENDOR_SECRETS']),
   };
+}
+
+function makeVendorSecretLookup(raw: string | undefined): (ref: string) => string | null {
+  let table: Record<string, string> = {};
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v === 'string') table[k] = v;
+        }
+      }
+    } catch {
+      // A malformed table must not take the runtime down at boot; it degrades to "no HMAC",
+      // which respondFinal logs per finalization — visible, recoverable, not fatal.
+      table = {};
+    }
+  }
+  return (ref: string) => table[ref] ?? null;
 }
 
 /**

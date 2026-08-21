@@ -293,6 +293,9 @@ export function compileSurvey(input: CompileInput): CompileResult {
     i18n,
     compiledAt: input.compiledAt,
     ...(survey.quotas === undefined || survey.quotas === null ? {} : { quotas: survey.quotas }),
+    ...(survey.redirects === undefined || survey.redirects === null
+      ? {}
+      : { redirects: survey.redirects }),
     ...(designs === undefined ? {} : { designs }),
     ...(scripts === undefined ? {} : { scripts }),
     ...(input.themeCss === undefined || input.themeCss === null

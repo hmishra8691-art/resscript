@@ -40,7 +40,12 @@ import { createSession, generateULID } from './entry.js';
 import { rebuildSession, type RuntimeWriter } from './session/durable.js';
 import type { QuotaClient } from './quota/index.js';
 import { handleSubmitCore, type SubmitBody } from './submit.js';
-import { renderHtmlPage, renderTerminalPage } from './render/html.js';
+import {
+  renderHtmlPage,
+  renderRedirectInterstitial,
+  renderTerminalPage,
+} from './render/html.js';
+import { resolveRedirect, type RedirectOutcome } from './redirect/index.js';
 import { makeCtx, step } from './machine/index.js';
 import type { SessionStore } from './session/store.js';
 import type { PageVisit, SessionState } from './session/types.js';
@@ -72,6 +77,13 @@ export interface RuntimeDeps {
   readonly newSeed: () => string;
   /** The public domain survey origins live under, for ADR-005 hostname validation. */
   readonly domain: string;
+  /**
+   * The org redirect-host allowlist (security §12.3 check 7). Empty or absent skips the host
+   * check (structural checks still run) until the control-plane inventory exists.
+   */
+  readonly redirectHosts?: readonly string[];
+  /** Vendor HMAC secret lookup (E §11.2), injected so the secret source stays out of here. */
+  readonly vendorSecret?: (vendorRef: string) => string | null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -561,17 +573,122 @@ function pageBody(
   };
 }
 
-function finalBody(session: SessionState, disposition: string, requestId: string) {
+function finalBody(
+  session: SessionState,
+  disposition: string,
+  requestId: string,
+  redirectUrl: string | null = null,
+) {
   return {
     session_id: session.session_id,
     disposition,
     ...(session.custom_key ? { custom_key: session.custom_key } : {}),
-    // The redirect target is resolved from `content.redirects` (E §11), which has no authoring
-    // path yet — see the P1-08 note about `CMP-0300`. Reported as null rather than omitted so a
-    // client can tell "no redirect configured" from "field absent".
-    redirect_url: null,
+    // Reported as null rather than omitted when no redirect is configured, so a client can
+    // tell "no redirect configured" from "field absent".
+    redirect_url: redirectUrl,
     request_id: requestId,
   };
+}
+
+/**
+ * The one exit door: every finalized response — entry that terminated immediately, submit
+ * that completed, a GET of an already-finalized session — goes through here, so E §11's
+ * behaviour cannot drift between paths.
+ *
+ * Ordering per E §11.3: by the time this runs the disposition is already durable (the submit
+ * pipeline persisted before responding) — this function only decides what the respondent
+ * *sees*. Which is also why every failure here fails SOFT to the terminal page: an
+ * unreachable redirects.json or a rejected URL must not turn a recorded COMPLETE into a 500;
+ * the interview is done and safe, only the hand-off degraded.
+ *
+ * Production HTML gets the 302/303 with `Referrer-Policy: no-referrer` (security §12.3 — the
+ * vendor learns the parameters we chose to send, never the session URL). Test sessions get
+ * the E §14.1 interstitial: the resolved URL and every interpolated parameter, with a
+ * follow-it-anyway link and no auto-redirect, because QA's job is to look at it.
+ */
+async function respondFinal(
+  ctx: Ctx,
+  res: ServerResponse,
+  session: SessionState,
+  disposition: string,
+  opts: { htmlMode: boolean; redirectStatus: 302 | 303 },
+): Promise<void> {
+  let outcome: RedirectOutcome = { kind: 'none' };
+  try {
+    const [redirects, head] = await Promise.all([
+      ctx.deps.artifacts.redirects(session.artifact_hash),
+      ctx.deps.artifacts.head(session.artifact_hash),
+    ]);
+    outcome = resolveRedirect({
+      redirects,
+      manifest: head.manifest,
+      vars: session.vars,
+      disposition,
+      customKey: session.custom_key,
+      vendorRef: session.vendor_ref,
+      language: session.language,
+      hostAllowlist: ctx.deps.redirectHosts ?? [],
+      ...(ctx.deps.vendorSecret ? { vendorSecret: ctx.deps.vendorSecret } : {}),
+    });
+  } catch (err) {
+    log.warn('redirect_resolution_failed', {
+      request_id: ctx.requestId, session_id: session.session_id, err: String(err),
+    });
+  }
+
+  if (outcome.kind === 'rejected') {
+    // The template pointed somewhere the runtime refuses to send a respondent. Loud in the
+    // log (this is an authoring or allowlist defect someone must fix), terminal page for the
+    // respondent — never the URL.
+    log.warn('redirect_rejected', {
+      request_id: ctx.requestId, session_id: session.session_id,
+      reason: outcome.reason, template: outcome.template,
+    });
+    outcome = { kind: 'none' };
+  }
+
+  if (outcome.kind === 'none') {
+    if (opts.htmlMode) {
+      html(res, 200, renderTerminalPage(disposition));
+      return;
+    }
+    json(res, 200, finalBody(session, disposition, ctx.requestId));
+    return;
+  }
+
+  if (outcome.blockedPii.length > 0 || outcome.hmacUnavailable) {
+    log.warn('redirect_degraded', {
+      request_id: ctx.requestId, session_id: session.session_id,
+      blocked_pii: outcome.blockedPii, hmac_unavailable: outcome.hmacUnavailable,
+    });
+  }
+
+  if (session.is_test) {
+    if (opts.htmlMode) {
+      html(res, 200, renderRedirectInterstitial({
+        url: outcome.url, disposition, params: outcome.params,
+      }));
+      return;
+    }
+    json(res, 200, {
+      ...finalBody(session, disposition, ctx.requestId, outcome.url),
+      redirect_params: outcome.params,
+      test_interstitial: true,
+    });
+    return;
+  }
+
+  if (opts.htmlMode) {
+    res.writeHead(opts.redirectStatus, {
+      ...SECURITY_HEADERS,
+      location: outcome.url,
+      'referrer-policy': 'no-referrer',
+      'cache-control': 'no-store',
+    });
+    res.end();
+    return;
+  }
+  json(res, 200, finalBody(session, disposition, ctx.requestId, outcome.url));
 }
 
 /**
@@ -691,11 +808,9 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
   });
 
   if (out.disposition) {
-    if (ctx.wantsHtml) {
-      html(res, 200, renderTerminalPage(out.disposition));
-      return;
-    }
-    json(res, 200, finalBody(out.session, out.disposition, ctx.requestId));
+    await respondFinal(ctx, res, out.session, out.disposition, {
+      htmlMode: ctx.wantsHtml, redirectStatus: 302,
+    });
     return;
   }
   if (!out.page) {
@@ -755,7 +870,9 @@ async function handlePageRender(
   }
 
   if (session.machine_state.state === 'FINALIZED') {
-    json(res, 200, finalBody(session, session.disposition ?? 'TERMINATE', ctx.requestId));
+    await respondFinal(ctx, res, session, session.disposition ?? 'TERMINATE', {
+      htmlMode: ctx.wantsHtml, redirectStatus: 302,
+    });
     return;
   }
 
@@ -979,11 +1096,10 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
         });
       }
       await ctx.deps.sessions.save(outcome.session);
-      if (htmlMode) {
-        html(res, 200, renderTerminalPage(outcome.disposition));
-        return;
-      }
-      json(res, 200, finalBody(outcome.session, outcome.disposition, ctx.requestId));
+      // 303, not 302: this is the response to a POST, and PRG demands the follow-up be a GET.
+      await respondFinal(ctx, res, outcome.session, outcome.disposition, {
+        htmlMode, redirectStatus: 303,
+      });
       return;
     }
 
@@ -997,11 +1113,9 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
       });
       await ctx.deps.sessions.save(out.session);
       if (out.disposition) {
-        if (htmlMode) {
-          html(res, 200, renderTerminalPage(out.disposition));
-          return;
-        }
-        json(res, 200, finalBody(out.session, out.disposition, ctx.requestId));
+        await respondFinal(ctx, res, out.session, out.disposition, {
+          htmlMode, redirectStatus: 303,
+        });
         return;
       }
       if (!out.page) {

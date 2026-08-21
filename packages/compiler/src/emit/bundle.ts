@@ -66,6 +66,7 @@ import {
   stableStringify,
   type ArtifactGraph,
   type ArtifactLogic,
+  type Redirects,
   type ArtifactManifest,
   type CompiledArtifact,
   type CompiledPage,
@@ -99,6 +100,7 @@ export interface BundleParts {
   /** Filled into `artifact.manifest.compiled_at`; never into the stored bytes. */
   readonly compiledAt: Iso8601;
   readonly quotas?: QuotaConfig | null;
+  readonly redirects?: Redirects | null;
   readonly designs?: { readonly [designRef: string]: JsonObject };
   readonly themeCss?: string | null;
   readonly scripts?: { readonly [ref: string]: string };
@@ -132,6 +134,15 @@ export function buildBundle(parts: BundleParts): ArtifactBundle {
 
   const quotas = parts.quotas;
   if (quotas !== undefined && quotas !== null) files.push(jsonFile('quotas.json', quotas));
+
+  // Redirects, same optional-file shape as quotas. In the artifact because the RUNTIME resolves
+  // them at finalization (E §11) and ADR-001 forbids it reading content.redirects — the same
+  // argument as every other section. Absent when the survey declares none, which CMP-0300
+  // already makes unpublishable for any survey whose flow can reach COMPLETE.
+  const redirects = parts.redirects;
+  if (redirects !== undefined && redirects !== null) {
+    files.push(jsonFile('redirects.json', redirects));
+  }
 
   const designs = parts.designs;
   if (designs !== undefined) {
@@ -168,6 +179,7 @@ export function buildBundle(parts: BundleParts): ArtifactBundle {
     pages: parts.pages[parts.baseLanguage] ?? {},
     logic: parts.logic,
     ...(quotas === undefined || quotas === null ? {} : { quotas }),
+    ...(redirects === undefined || redirects === null ? {} : { redirects }),
     ...(designs === undefined ? {} : { designs }),
     i18n: parts.i18n,
     ...(themeCss === undefined || themeCss === null ? {} : { theme_css: themeCss }),

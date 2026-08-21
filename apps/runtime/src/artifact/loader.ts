@@ -17,6 +17,7 @@
  *   pages/<language>/<page id>.json     <- per language, which is why `page()` takes one
  *   i18n/<language>.json
  *   quotas.json                          (optional)
+ *   redirects.json                       (optional)
  *   designs/<ref>.json                   (optional)
  *
  * Artifacts are immutable and content-addressed (ADR-002), so cache keys are hashes and there is
@@ -31,6 +32,7 @@ import type {
   ArtifactLogic,
   ArtifactManifest,
   CompiledPage,
+  Redirects,
 } from '@resscript/schema';
 
 const log = createLogger({ service: 'runtime-artifacts' });
@@ -55,6 +57,12 @@ export interface ArtifactLoader {
   head(hash: string): Promise<ArtifactHead>;
   /** One page in one language, or null when the artifact has no such page. */
   page(hash: string, language: string, pageId: string): Promise<CompiledPage | null>;
+  /**
+   * The artifact's redirect maps, or null when the survey declares none. NOT part of `head()`:
+   * redirects are read once per session at finalization, and folding them into the head would
+   * put an extra fetch on the entry path of every session to save one on the exit path.
+   */
+  redirects(hash: string): Promise<Redirects | null>;
   /** Best-effort pre-warm of the head. Never throws. */
   warm(hash: string): Promise<void>;
 }
@@ -162,6 +170,9 @@ export interface LoaderOptions {
 export function createLoader(opts: LoaderOptions): ArtifactLoader {
   const heads = new LruCache<ArtifactHead>(opts.maxHeads ?? 64);
   const pages = new LruCache<CompiledPage | null>(opts.maxPages ?? 512);
+  // Sized like heads: one entry per active survey. Nulls are cached — "this survey has no
+  // redirects" is as immutable as any other fact about a content-addressed artifact.
+  const redirects = new LruCache<Redirects | null>(opts.maxHeads ?? 64);
 
   if (opts.sources.length === 0) {
     throw new Error('createLoader: at least one artifact source is required');
@@ -245,6 +256,14 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
       // contract does not allow.
       pages.set(key, page);
       return page;
+    },
+
+    async redirects(hash: string): Promise<Redirects | null> {
+      const cached = redirects.get(hash);
+      if (cached !== undefined) return cached;
+      const loaded = await fetchJson<Redirects>(hash, 'redirects.json');
+      redirects.set(hash, loaded);
+      return loaded;
     },
 
     async warm(hash: string): Promise<void> {

@@ -19,6 +19,7 @@ import type { ContentNodeId, PageId, QuestionId, VariableId } from '../ids.js';
 import type { Expr, Iso8601, JsonObject, RandomizationSpec } from './common.js';
 import type { FlowNode } from './flow.js';
 import type { QuotaConfig } from './quotas.js';
+import type { Redirects } from './vendors.js';
 import type { StringBundle } from './i18n.js';
 import type { EnumDomainEntry, VariableKind, VariableType } from './variables.js';
 import type { Mask } from './masks.js';
@@ -308,6 +309,12 @@ export interface CompiledArtifact {
   readonly pages: { readonly [pageId: string]: CompiledPage };
   readonly logic: ArtifactLogic;
   readonly quotas?: QuotaConfig | null;
+  /**
+   * Disposition → URL template maps (E §11). In the artifact for the same reason as `quotas`:
+   * the runtime resolves the exit redirect at finalization and ADR-001 bars it from
+   * `content.redirects`. Absent when the survey declares none.
+   */
+  readonly redirects?: Redirects | null;
   readonly designs?: { readonly [designRef: string]: JsonObject };
   readonly i18n: { readonly [languageCode: string]: StringBundle };
   readonly theme_css?: string | null;

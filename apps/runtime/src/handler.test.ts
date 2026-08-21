@@ -19,6 +19,7 @@ import {
 } from './handler.js';
 import { createMemorySessionStore } from './session/store.js';
 import { createStaticTokenResolver, type ResolvedToken } from './token.js';
+import type { Redirects } from '@resscript/schema';
 import { ArtifactNotFound, type ArtifactHead, type ArtifactLoader } from './artifact/loader.js';
 import { createSession } from './entry.js';
 import { rehydrate } from '@resscript/runtime-core';
@@ -145,6 +146,7 @@ const REHYDRATED = rehydrate(EMPTY_LOGIC as never);
  * these tests able to catch a loader that fetches too much.
  */
 interface FakeArtifact {
+  readonly redirects?: Redirects;
   head: ArtifactHead;
   pages: Record<string, Record<string, unknown>>;
 }
@@ -251,6 +253,9 @@ function loaderFor(artifacts: Record<string, FakeArtifact>): ArtifactLoader {
       const a = artifacts[hash];
       if (!a) throw new ArtifactNotFound(hash, 'manifest.json');
       return a.head;
+    },
+    async redirects(hash: string) {
+      return artifacts[hash]?.redirects ?? null;
     },
     async page(hash: string, language: string, pageId: string) {
       pageFetches.push(`${hash}/${language}/${pageId}`);
@@ -1216,5 +1221,140 @@ describe('interpret', () => {
     });
 
     expect(out.page?.questions[0]?.label).toBe('Hi &lt;script&gt;');
+  });
+});
+
+/* ---------------------------------------------------------------- *
+ * Redirect resolution at finalization (E §11)
+ * ---------------------------------------------------------------- */
+
+describe('redirects — the exit door (E §11)', () => {
+  function redirectArtifact(redirects: Redirects): FakeArtifact {
+    return { ...linearArtifact(), redirects };
+  }
+  const COMPLETE_URL = 'https://cb.vendor.example/done?q1={{Q1}}';
+
+  async function complete(d: RuntimeDeps, headers: Record<string, string> = {}) {
+    const entry = await call(d, { path: `/s/${TOKEN}`, headers });
+    const sessionId = entry.body?.session_id
+      ?? /data-session="([^"]+)"/.exec(entry.raw)?.[1];
+    await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/submit?session=${sessionId}`,
+      body: { page_id: 'pg_1', values: { var_q1: 2 } },
+    });
+    return { sessionId: sessionId as string };
+  }
+
+  it('a JSON COMPLETE carries the interpolated redirect_url', async () => {
+    const d = deps({
+      artifacts: loaderFor({
+        [HASH]: redirectArtifact({ default: { COMPLETE: COMPLETE_URL } }),
+      }),
+    });
+    const { sessionId } = await complete(d);
+    const r = await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/submit?session=${sessionId}`,
+      body: { page_id: 'pg_2', values: {} },
+    });
+
+    expect(r.status).toBe(200);
+    expect(r.body.disposition).toBe('COMPLETE');
+    // {{Q1}} piped from the STORED answer, percent-encoded, per E §11.2.
+    expect(r.body.redirect_url).toBe('https://cb.vendor.example/done?q1=2');
+  });
+
+  it('a production HTML COMPLETE is a 303 with Referrer-Policy: no-referrer', async () => {
+    // 303 because it answers a POST (PRG); no-referrer because the vendor must learn the
+    // parameters we chose to send and nothing else (security §12.3).
+    const d = deps({
+      artifacts: loaderFor({
+        [HASH]: redirectArtifact({ default: { COMPLETE: COMPLETE_URL } }),
+      }),
+    });
+    const { sessionId } = await complete(d);
+    const r = await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/submit?session=${sessionId}&html=1`,
+      rawBody: '__page_id=pg_2',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'text/html' },
+    });
+
+    expect(r.status).toBe(303);
+    expect(r.headers['location']).toBe('https://cb.vendor.example/done?q1=2');
+    expect(r.headers['referrer-policy']).toBe('no-referrer');
+  });
+
+  it('a TEST session gets the interstitial, never the redirect (E §14.1)', async () => {
+    const d = deps({
+      tokens: createStaticTokenResolver([token({ status: 'test', is_test: true })]),
+      artifacts: loaderFor({
+        [HASH]: redirectArtifact({ default: { COMPLETE: COMPLETE_URL } }),
+      }),
+    });
+    const { sessionId } = await complete(d);
+    const r = await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/submit?session=${sessionId}&html=1`,
+      rawBody: '__page_id=pg_2',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'text/html' },
+    });
+
+    expect(r.status).toBe(200); // NOT a redirect
+    expect(r.raw).toContain('TEST MODE');
+    expect(r.raw).toContain('https://cb.vendor.example/done?q1=2');
+    expect(r.raw).toContain('Follow it anyway');
+  });
+
+  it('a disallowed host is REFUSED: terminal page, redirect_url null', async () => {
+    const d = deps({
+      artifacts: loaderFor({
+        [HASH]: redirectArtifact({ default: { COMPLETE: COMPLETE_URL } }),
+      }),
+      redirectHosts: ['*.acme.example'], // cb.vendor.example is not on the list
+    });
+    const { sessionId } = await complete(d);
+    const r = await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/submit?session=${sessionId}`,
+      body: { page_id: 'pg_2', values: {} },
+    });
+
+    expect(r.status).toBe(200);
+    expect(r.body.disposition).toBe('COMPLETE'); // the interview is still recorded
+    expect(r.body.redirect_url).toBeNull();      // the destination is not
+  });
+
+  it('a GET of an already-finalized session re-resolves the same exit', async () => {
+    // A respondent who bookmarks the last page or double-clicks lands here; they should get
+    // the same hand-off, not a dead end.
+    const d = deps({
+      artifacts: loaderFor({
+        [HASH]: redirectArtifact({ default: { COMPLETE: COMPLETE_URL } }),
+      }),
+    });
+    const { sessionId } = await complete(d);
+    await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/submit?session=${sessionId}`,
+      body: { page_id: 'pg_2', values: {} },
+    });
+    const r = await call(d, { path: `/s/${TOKEN}/p/pg_2?session=${sessionId}` });
+
+    expect(r.status).toBe(200);
+    expect(r.body.redirect_url).toBe('https://cb.vendor.example/done?q1=2');
+  });
+
+  it('no redirects section -> the terminal page, exactly as before (E §11.1 step 6)', async () => {
+    const d = deps(); // linearArtifact has no redirects
+    const { sessionId } = await complete(d);
+    const r = await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/submit?session=${sessionId}`,
+      body: { page_id: 'pg_2', values: {} },
+    });
+
+    expect(r.body.redirect_url).toBeNull();
   });
 });

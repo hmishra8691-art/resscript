@@ -135,6 +135,40 @@ ${
 </html>`;
 }
 
+/**
+ * The test-mode redirect interstitial (E §14.1): the resolved URL, the disposition, and every
+ * interpolated parameter, with a "follow it anyway" link and deliberately NO auto-redirect —
+ * QA's job is to look at what would have been sent, and an auto-follow would take the page
+ * away before they can.
+ */
+export function renderRedirectInterstitial(input: {
+  readonly url: string;
+  readonly disposition: string;
+  readonly params: Record<string, string>;
+}): string {
+  const rows = Object.entries(input.params)
+    .map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`)
+    .join('\n');
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Test redirect</title>
+<style>
+  body{font:15px/1.5 system-ui,sans-serif;margin:0 auto;max-width:720px;padding:2rem 1rem}
+  .badge{display:inline-block;background:#fde68a;padding:.2rem .6rem;border-radius:4px;font-weight:600}
+  code{word-break:break-all;background:#f3f4f6;padding:.2rem .4rem;border-radius:3px}
+  table{border-collapse:collapse;margin:1rem 0}
+  td{border:1px solid #ddd;padding:.3rem .6rem}
+  a.follow{display:inline-block;margin-top:1rem;padding:.6rem 1.5rem;background:#111;color:#fff;text-decoration:none;border-radius:4px}
+</style>
+</head><body><main>
+<p><span class="badge">TEST MODE</span></p>
+<p>Disposition: <strong>${esc(input.disposition)}</strong></p>
+<p>A production respondent would be redirected to:</p>
+<p><code>${esc(input.url)}</code></p>
+${rows ? `<table><thead><tr><td><strong>parameter</strong></td><td><strong>value</strong></td></tr></thead><tbody>${rows}</tbody></table>` : ''}
+<a class="follow" href="${esc(input.url)}" rel="noreferrer">Follow it anyway</a>
+</main></body></html>`;
+}
+
 /** The terminal page: a disposition with no redirect configured yet (E §11 step 6). */
 export function renderTerminalPage(disposition: string): string {
   const messages: Record<string, string> = {
