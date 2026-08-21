@@ -20,7 +20,7 @@ import {
   type RenderItem,
   type RenderPage,
 } from './render.js';
-import type { RandomizationSpec } from './randomize.js';
+import { randomize, type RandomizationSpec } from './randomize.js';
 
 /* ---------------------------------------------------------------- *
  * Fixtures
@@ -542,6 +542,122 @@ describe('randomization', () => {
 /* ---------------------------------------------------------------- *
  * THE ORDER (E §9.2)
  * ---------------------------------------------------------------- */
+
+describe('order is independent of the mask', () => {
+  /**
+   * The property `EvalContext.orders` requires: the display order of an axis is a function of
+   * `(seed, question, axis)` alone, computed before the engine knows which items survive.
+   *
+   * Randomizing the survivors instead — which this module used to do — makes the order depend on
+   * the mask, so the same respondent on the same seed sees a different order once an earlier answer
+   * masks one brand away, and the order the engine was handed disagrees with the order rendered.
+   */
+  const shuffled: RandomizationSpec = { mode: 'shuffle' };
+  const withSpec = () =>
+    page({
+      questions: [
+        {
+          id: 'qst_1',
+          ref: 'Q1',
+          question_type: 'multi_select',
+          options: BRANDS,
+          randomize_options: shuffled,
+        },
+      ],
+    });
+
+  it('a masked render is a subsequence of the unmasked one', () => {
+    const full = codesOf(renderPage(withSpec(), SEED, ctx()));
+    const masked = codesOf(renderPage(withSpec(), SEED, ctx({ itemsFor: () => [1, 3] })));
+
+    expect(masked).toEqual(full.filter(c => c === 1 || c === 3));
+  });
+
+  it('holds for every subset of the item list, over many seeds', () => {
+    // Stated as the invariant rather than by example: for any mask and any seed, the masked order
+    // must be the unmasked order filtered.
+    const subsets = [[1], [1, 2], [2, 4], [1, 3, 4], [2, 3], [1, 2, 3, 4]];
+    for (let i = 0; i < 40; i++) {
+      const seed = `s${i}`.padEnd(32, '0');
+      const full = codesOf(renderPage(withSpec(), seed, ctx()));
+      for (const subset of subsets) {
+        const masked = codesOf(
+          renderPage(withSpec(), seed, ctx({ itemsFor: () => subset })),
+        );
+        expect(masked).toEqual(full.filter(c => subset.includes(c)));
+      }
+    }
+  });
+
+  it('randomizing the survivors would fail the above', () => {
+    // Guards the implementation choice. Shuffling a filtered list gives an order that is not the
+    // full order filtered — demonstrated by finding a seed where the two disagree.
+    const items = BRANDS.filter(b => b.code !== 2);
+    let disagreements = 0;
+    for (let i = 0; i < 40; i++) {
+      const seed = `s${i}`.padEnd(32, '0');
+      const fullThenFilter = codesOf(
+        renderPage(withSpec(), seed, ctx({ itemsFor: () => [1, 3, 4] })),
+      );
+      const filterThenShuffle = randomize(items, shuffled, seed, {
+        axis_key: 'qst_1.options',
+      }).items.map(x => x.code);
+      if (fullThenFilter.join() !== filterThenShuffle.join()) disagreements++;
+    }
+    expect(disagreements).toBeGreaterThan(0);
+  });
+
+  it('a show_all fallback reverts to the ordered list, not the declared one', () => {
+    // The respondent still sees the order this session's seed produced.
+    const full = codesOf(renderPage(withSpec(), SEED, ctx()));
+    const reverted = codesOf(
+      renderPage(withSpec(), SEED, ctx({ itemsFor: () => [], emptyFallbackFor: () => 'show_all' })),
+    );
+
+    expect(reverted).toEqual(full);
+  });
+
+  it('subset takes n of the SURVIVORS, so the respondent always sees n', () => {
+    // Taking n from the full list and then masking could leave fewer than n. "Show them n of
+    // these" is the authored intent, so the limit is applied after the verdict.
+    const p = page({
+      questions: [
+        {
+          id: 'qst_1',
+          ref: 'Q1',
+          question_type: 'multi_select',
+          options: BRANDS,
+          randomize_options: { mode: 'subset', n: 2 },
+        },
+      ],
+    });
+    const r = renderPage(p, SEED, ctx({ itemsFor: () => [1, 2, 3] }));
+
+    expect(codesOf(r)).toHaveLength(2);
+    expect(codesOf(r).every(c => [1, 2, 3].includes(c))).toBe(true);
+    expect(r.design_writes[0]?.codes).toEqual(codesOf(r));
+  });
+
+  it('a subset order is still the full order filtered', () => {
+    const p = (n: number) =>
+      page({
+        questions: [
+          {
+            id: 'qst_1',
+            ref: 'Q1',
+            question_type: 'multi_select',
+            options: BRANDS,
+            randomize_options: { mode: 'subset', n },
+          },
+        ],
+      });
+    // With n >= the item count, subset is the whole shuffled list.
+    const full = codesOf(renderPage(p(4), SEED, ctx()));
+    const limited = codesOf(renderPage(p(2), SEED, ctx()));
+
+    expect(limited).toEqual(full.slice(0, 2));
+  });
+});
 
 describe('stage order', () => {
   it('masks before randomizing, so a shared group survives differing masks', () => {

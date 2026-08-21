@@ -1,14 +1,17 @@
 /**
  * P1-09 page render, per Deliverable E §9.
  *
- * The stage order E §9.2 fixes:
+ * E §9.2 lists the stages as: base items, masking, fallback, option state, randomization, piping.
+ * The order this module actually runs, and why, is below — the two differ on where randomization
+ * sits, because `packages/logic` needs the display order as an *input*.
  *
  *   1. base items    — the question's options / rows / columns from the artifact
- *   2. masking       — which items exist at all
- *   3. fallback      — when masking emptied the set
- *   4. option state  — logic's per-item verdicts, over the SURVIVING items only
- *   5. randomization — order the survivors
- *   6. piping        — interpolate label and instruction text
+ *   2. order          — randomize the DECLARED list; this is `EvalContext.orders`
+ *   3. masking       — filter to `Verdict.items`, preserving that order
+ *   4. fallback      — when masking emptied the set
+ *   5. option state  — logic's per-item verdicts, over the survivors only
+ *   6. subset limit  — take n of what survived, and record which n
+ *   7. piping        — interpolate label and instruction text
  *
  * ## Steps 2–4 belong to `packages/logic`, not to this module
  *
@@ -30,12 +33,22 @@
  * seam: today the runtime passes nothing and every item survives; once the engine is wired it
  * passes `Verdict.items`. The renderer's shape does not change either way.
  *
- * ## Masking before randomization is still load-bearing
+ * ## The order is computed from the FULL list, then filtered
  *
- * Randomizing first and filtering after would destroy the shared-group guarantee (E §8.3): two
- * questions in a battery would stop agreeing on brand order the moment their masks differed. That
- * is why `itemsFor` is applied to the base list *before* `randomize` sees it, rather than being
- * used to filter the ordered result.
+ * `EvalContext.orders` in `packages/logic` is documented as "item display orders **already
+ * computed** by runtime-core's seeded PRNG, keyed by `orderScope(question, axis)`, each value the
+ * item codes in display order. **The engine never shuffles.**" So the order is an input to
+ * evaluation, produced before the engine knows which items a mask leaves standing — which fixes
+ * the sequence: randomize the declared list, then filter by the verdict.
+ *
+ * This is what makes an order a function of `(seed, question, axis)` alone. Randomizing the
+ * *surviving* items instead would make it depend on the mask, so the same seed would produce a
+ * different order for a respondent whose earlier answers masked one brand away, the engine's
+ * `orders` and the rendered order would disagree, and E §8.3's shared-group guarantee would hold
+ * only for questions whose masks happened to match.
+ *
+ * It is also why E §8.3 says to permute a group's *canonical* list and filter afterwards. That is
+ * the same rule stated for the shared-group case; here it is applied universally.
  *
  * ## The digest
  *
@@ -212,24 +225,49 @@ function renderAxis(
 ): AxisOutcome {
   const events: { kind: string; question_id: string; detail?: string }[] = [];
 
+  // ---- 5 (first): the display order of the DECLARED list ---------------
+  //
+  // Computed before masking is applied, because this is the value `EvalContext.orders` carries into
+  // logic evaluation and it must be a function of (seed, question, axis) alone. See the header.
+  const spec = axisSpec(q, axis);
+  let ordered: readonly RenderItem[] = base;
+  let subsetLimit: number | null = null;
+
+  if (spec) {
+    const group = spec.group_ref ? ctx.groupFor?.(spec.group_ref) : undefined;
+    // `subset` is deferred: taking the first n here and then masking could leave fewer than n
+    // items, and "show them n of these" is the authored intent. The limit is applied after the
+    // verdict instead, and `n` is carried down.
+    const orderSpec: RandomizationSpec =
+      spec.mode === 'subset' ? { ...spec, mode: 'shuffle' } : spec;
+    const r = randomize(base, orderSpec, seed, {
+      axis_key: `${q.id}.${axis}`,
+      ...(group ? { group } : {}),
+    });
+    ordered = r.items;
+    if (r.event) events.push({ kind: r.event, question_id: q.id, detail: axis });
+    if (spec.mode === 'subset') subsetLimit = spec.n ?? base.length;
+  }
+
   // ---- 2/3: the masked item set, from logic, and its fallback ----------
   const allowed = ctx.itemsFor?.(q.id, axis) ?? null;
   let masked: readonly RenderItem[];
 
   if (allowed === null) {
-    masked = base;
+    masked = ordered;
   } else {
     const keep = new Set(allowed);
-    // Filter the base list rather than reordering it to `allowed`: order is randomization's job
-    // (E §8.3), and taking it from the verdict would make a battery's shared order depend on
-    // cell-graph evaluation order instead of the seed.
-    masked = base.filter(item => keep.has(item.code));
+    // Filter the ordered list rather than reordering it to `allowed`: the verdict is a set, and
+    // taking order from it would make the display order depend on cell-graph evaluation order.
+    masked = ordered.filter(item => keep.has(item.code));
   }
 
-  if (masked.length === 0 && base.length > 0) {
+  if (masked.length === 0 && ordered.length > 0) {
     const fallback = ctx.emptyFallbackFor?.(q.id, axis) ?? 'skip_question';
     if (fallback === 'show_all') {
-      masked = base;
+      // Reverts to the ordered declared list, not to `base`: the respondent still sees the order
+      // this session's seed produced.
+      masked = ordered;
       events.push({ kind: 'mask.fallback_show_all', question_id: q.id, detail: axis });
     } else if (fallback === 'terminate') {
       return { axis: null, skip_question: false, terminate: true, events, design_codes: null };
@@ -259,9 +297,8 @@ function renderAxis(
     };
   }
 
-  // ---- 5: randomization ----------------------------------------------
-  const spec = axisSpec(q, axis);
-  if (!spec) {
+  // ---- 5 (second): apply a `subset` limit to the survivors ------------
+  if (subsetLimit === null) {
     return {
       axis: { items: surviving, disabled_codes: disabled },
       skip_question: false,
@@ -271,20 +308,15 @@ function renderAxis(
     };
   }
 
-  const group = spec.group_ref ? ctx.groupFor?.(spec.group_ref) : undefined;
-  const ordered = randomize(surviving, spec, seed, {
-    axis_key: `${q.id}.${axis}`,
-    ...(group ? { group } : {}),
-  });
-
-  if (ordered.event) events.push({ kind: ordered.event, question_id: q.id, detail: axis });
-
+  const kept = surviving.slice(0, Math.max(0, Math.min(subsetLimit, surviving.length)));
   return {
-    axis: { items: ordered.items, disabled_codes: disabled },
+    axis: { items: kept, disabled_codes: disabled },
     skip_question: false,
     terminate: false,
     events,
-    design_codes: ordered.subset_codes ?? null,
+    // "Which subset did they see" is required for analysis (E §8.4) and is not recoverable once
+    // the item list or the mask changes, so it is persisted as a `design` variable.
+    design_codes: kept.map(i => i.code),
   };
 }
 
