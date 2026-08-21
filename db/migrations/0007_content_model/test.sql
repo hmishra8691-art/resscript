@@ -799,15 +799,24 @@ $$, '23514', NULL,
 -- ---------------------------------------------------------------------------
 -- 8. Items and cells (B §4.2, C §5.1, C §5.2)
 -- ---------------------------------------------------------------------------
+-- MAINTAINED IN 0010, per db/README.md's rule for a later migration that changes an earlier
+-- one's objects. The ids below used to read row_… and col_…, matching 0007's claim that
+-- content.question_items.id carries a kind-dependent prefix; 0010 §4 withdrew that claim —
+-- Deliverable C §5.1 gives options, rows and columns ONE shape and one `opt_` prefix, which is
+-- what packages/schema has always branded them, and the divergence made every matrix question
+-- unpublishable — and added qitems_id_prefix. Only the literal strings changed: every assertion
+-- here is about ref and code uniqueness being scoped by item_kind, and item_kind is still the
+-- column that carries the kind. The prefix rule itself is asserted in 0010's test.sql, which is
+-- where the constraint now lives.
 SELECT lives_ok($$
   INSERT INTO content.question_items (survey_version_id, id, org_id, question_id, item_kind,
                                       ref, code, sort_key)
   VALUES ((current_setting('rs.ids')::jsonb ->> 'ver_a_content_draft')::app.ulid,
-          'row_0A010000000000000000000000',
+          'opt_0AZ10000000000000000000000',
           (current_setting('rs.ids')::jsonb ->> 'org_a')::app.ulid,
           (current_setting('rs.ids')::jsonb ->> 'q2_a')::app.ulid, 'row', 'r1', 1, '0100'),
          ((current_setting('rs.ids')::jsonb ->> 'ver_a_content_draft')::app.ulid,
-          'col_0A010000000000000000000000',
+          'opt_0AZ20000000000000000000000',
           (current_setting('rs.ids')::jsonb ->> 'org_a')::app.ulid,
           (current_setting('rs.ids')::jsonb ->> 'q2_a')::app.ulid, 'column', 'r1', 1, '0100')
 $$, 'a matrix may have a row `r1` AND a column `r1` with the same code: uniqueness is scoped '
@@ -816,7 +825,7 @@ SELECT throws_ok($$
   INSERT INTO content.question_items (survey_version_id, id, org_id, question_id, item_kind,
                                       ref, code, sort_key)
   VALUES ((current_setting('rs.ids')::jsonb ->> 'ver_a_content_draft')::app.ulid,
-          'row_0A020000000000000000000000',
+          'opt_0AZ30000000000000000000000',
           (current_setting('rs.ids')::jsonb ->> 'org_a')::app.ulid,
           (current_setting('rs.ids')::jsonb ->> 'q2_a')::app.ulid, 'row', 'r2', 1, '0200')
 $$, '23505', NULL,
@@ -829,7 +838,7 @@ SELECT lives_ok($$
           'cel_0A010000000000000000000000',
           (current_setting('rs.ids')::jsonb ->> 'org_a')::app.ulid,
           (current_setting('rs.ids')::jsonb ->> 'q2_a')::app.ulid,
-          'row_0A010000000000000000000000', 'numeric', '{"min":0,"max":100}')
+          'opt_0AZ10000000000000000000000', 'numeric', '{"min":0,"max":100}')
 $$, 'C §5.2 mixed matrix: a per-row control override is a thin (question_type, config) pair, '
     'so row A can be numeric while row B is text with no new engine and no new table');
 SELECT throws_ok($$
@@ -839,7 +848,7 @@ SELECT throws_ok($$
           'cel_0A020000000000000000000000',
           (current_setting('rs.ids')::jsonb ->> 'org_a')::app.ulid,
           (current_setting('rs.ids')::jsonb ->> 'q2_a')::app.ulid,
-          'row_0A010000000000000000000000', 'text', '{}')
+          'opt_0AZ10000000000000000000000', 'text', '{}')
 $$, '23505', NULL,
   'one override per (question, row, column): two overrides for one cell is not "last one '
   'wins", it is a survey whose exported data TYPE depends on row order');
@@ -850,7 +859,7 @@ SELECT throws_ok($$
           'cel_0A030000000000000000000000',
           (current_setting('rs.ids')::jsonb ->> 'org_a')::app.ulid,
           (current_setting('rs.ids')::jsonb ->> 'q2_a')::app.ulid,
-          'row_0A010000000000000000000000', 'col_0A010000000000000000000000',
+          'opt_0AZ10000000000000000000000', 'opt_0AZ20000000000000000000000',
           'single_select', true)
 $$, '23514', NULL,
   'use_columns ("this control ranges over the matrix''s columns") is meaningless on an '
@@ -957,8 +966,8 @@ SELECT pg_temp.act_as(pg_temp.tid('user_a')::uuid, pg_temp.tid('org_a'));
 SELECT is(
   content.clone_version(pg_temp.tid('ver_b_content_frozen')::app.ulid,
                         pg_temp.tid('ver_a_clone_target')::app.ulid),
-  '{"nodes": 0, "languages": 0, "variables": 0, "logic_rules": 0, "i18n_strings": 0, '
-  '"question_cells": 0, "question_items": 0}'::jsonb,
+  '{"nodes": 0, "redirects": 0, "languages": 0, "variables": 0, "logic_rules": 0, '
+  '"i18n_strings": 0, "question_cells": 0, "question_items": 0}'::jsonb,
   'cloning ANOTHER TENANT''S version copies exactly zero rows from every content table');
 SELECT is_empty($$
   SELECT 1 FROM content.nodes
@@ -973,8 +982,12 @@ SELECT is(
   -- assertion: the key has to be PRESENT, so a future content table dropped from
   -- clone_version's enumerated list shows up here as a missing key rather than as rows
   -- silently not copied. 0008's own suite clones a version that HAS rules.
-  '{"nodes": 4, "languages": 2, "variables": 4, "logic_rules": 0, "i18n_strings": 2, '
-  '"question_cells": 1, "question_items": 61}'::jsonb,
+  --
+  -- "redirects": 2 was added when 0010 created content.redirects and extended both
+  -- clone_version and ops.test_seed_content — which is this map doing exactly the job the
+  -- comment above claims for it, one migration later.
+  '{"nodes": 4, "redirects": 2, "languages": 2, "variables": 4, "logic_rules": 0, '
+  '"i18n_strings": 2, "question_cells": 1, "question_items": 61}'::jsonb,
   'cloning a FROZEN version into a fresh draft copies every content table in one '
   'INSERT ... SELECT each, as `authoring`: the source is read through a policy that permits '
   'reading a frozen version and the target through the draft-only write policies');

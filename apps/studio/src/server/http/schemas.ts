@@ -119,6 +119,51 @@ export const createVersionSchema = z
 export const updateVersionSchema = z.object({ notes: z.string().max(2000).optional() }).strict();
 
 /* -------------------------------------------------------------------------- */
+/* Publish and rollback (API §2.4, roadmap P1-08)                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One acknowledged compile warning.
+ *
+ * `key` and NOT `{code, node_id}`, which is what H §2.4's example shows, and the deviation is
+ * deliberate: the compiler computes the acknowledgement identity itself
+ * (`acknowledgementKey()` = code + JSON pointer + sorted detail) precisely so that an
+ * acknowledgement dies when the thing it was given for moves. A code plus a node id is a
+ * DIFFERENT identity — coarser, and stable across edits that change what the warning is about —
+ * so accepting that shape would mean the API computing a second definition of "the same warning"
+ * and disagreeing with the gate that blocks the publish. The client echoes back the key the
+ * compile result gave it.
+ *
+ * `reason` is 03 §17's recorded note: "publishing over a warning is allowed but the
+ * acknowledgement is recorded and audited, so 'who signed off on shipping this' is answerable
+ * months later". Optional here rather than required because the studio's dialog can legitimately
+ * offer "acknowledge all" for a batch of the same code, and a required field would be satisfied
+ * with a space.
+ */
+const acknowledgedWarningSchema = z
+  .object({ key: z.string().min(1).max(512), reason: z.string().max(2000).optional() })
+  .strict();
+
+/**
+ * `target` accepts staging and production ONLY.
+ *
+ * H §2.4 lists `'review'` as a third option and `app.publish_version` refuses it — "draft and
+ * review are authoring states; archived is reached by app.rollback_version" — so accepting it here
+ * would queue a job whose only possible outcome is an `insufficient_privilege` the user cannot act
+ * on. Rejected at the boundary with that explanation instead. Moving a version to `review` is a
+ * status transition with no compile behind it and belongs to its own endpoint.
+ */
+export const publishVersionSchema = z
+  .object({
+    target: z.enum(['staging', 'production']),
+    acknowledge_warnings: z.array(acknowledgedWarningSchema).max(1000).optional(),
+  })
+  .strict();
+
+/** `app.rollback_version` takes only the target; the survey and the incumbent come from it. */
+export const rollbackSurveySchema = z.object({ to_version_id: ulidIdSchema }).strict();
+
+/* -------------------------------------------------------------------------- */
 /* The ResScript DSL endpoints (API §5)                                       */
 /* -------------------------------------------------------------------------- */
 

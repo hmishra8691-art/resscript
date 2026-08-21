@@ -48,7 +48,10 @@ describe('JobRegistry', () => {
   });
 
   it('buildRegistry registers every shipped kind', () => {
-    expect(buildRegistry().kinds()).toEqual(['noop']);
+    // The list `registry.kinds()` returns is what the consumer passes to `ops.claim_job`, so a
+    // kind missing here is a queue that silently never drains. `compile` is present even with no
+    // environment supplied — see `kinds/registry.ts` for why that is deliberate.
+    expect(buildRegistry().kinds()).toEqual(['noop', 'compile']);
   });
 });
 

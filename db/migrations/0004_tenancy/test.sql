@@ -414,7 +414,11 @@ SELECT throws_ok($$ CREATE TABLE content.pwned (id int) $$, '42501', NULL,
 SELECT lives_ok($$ SELECT * FROM runtime.resolve_token(repeat('a', 26)) $$,
   'runtime_writer CAN execute the named RPCs — its entire capability surface');
 SELECT is_empty($$ SELECT * FROM runtime.resolve_token(repeat('a', 26)) $$,
-  'resolve_token is a placeholder returning no rows until P1-08');
+  'and an unknown token resolves to NO ROWS rather than an error. This assertion was written '
+  'against the P1-01 placeholder and is maintained here per db/README.md: 0009 replaced the '
+  'body with one that reads runtime.survey_tokens, the signature is unchanged, so the '
+  'privilege assertions stay here and the behaviour asserted is now the real thing — zero '
+  'rows for a token nobody issued, because an error would be an oracle');
 SELECT lives_ok($$ SELECT runtime.load_session('ses_0A000000000000000000000000') $$,
   'runtime_writer can execute runtime.load_session');
 

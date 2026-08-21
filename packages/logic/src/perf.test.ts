@@ -15,6 +15,10 @@
  * D §10.2's own measurements on an M2 are 0.44 ms for a full 640-rule evaluation and 0.048 ms for
  * the worst observed incremental cascade, so a 10× margin is expected and the thresholds below are
  * the *budget*, not the target.
+ *
+ * The budgets are additionally scaled by `machineScale()` — see its comment. The median handles
+ * noise *within* a run; the calibration handles a host that is uniformly slower than the one the
+ * numbers were written on, which is what a parallel workspace test run produces.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -47,9 +51,43 @@ function time(runs: number, body: () => void): number {
   return median(samples);
 }
 
+/**
+ * How much slower this machine is, right now, than the machine the budgets were written for.
+ *
+ * WHY THIS EXISTS. The budgets above are absolute wall-clock numbers, and the median of 25 runs
+ * is stable to a few percent — on an idle machine. Turborepo runs the whole workspace's test
+ * tasks in parallel, so by P1-08 this file executes alongside eighteen other vitest processes on
+ * a shared container, and then an absolute millisecond threshold is measuring the host's run
+ * queue rather than the evaluator. That failure is real (it appeared the moment `packages/compiler`
+ * became the nineteenth task) and it is the worst kind: it fails on a machine nobody can
+ * reproduce, so the next person raises the threshold or deletes the test, and the quadratic
+ * propagation the file exists to catch then ships unnoticed.
+ *
+ * So the budget is scaled by a calibration measured in this same process moments before: a fixed
+ * arithmetic loop whose cost is pure CPU and allocation-free, timed the same way. Contention slows
+ * the calibration and the evaluator together, and the ratio is what the assertion is really about.
+ *
+ * The scale is CLAMPED at 8x. Above that the machine is so loaded that the measurement means
+ * nothing either way, and an unbounded scale would turn the budget into a tautology — the one
+ * thing worse than a flaky perf test is one that cannot fail.
+ */
+const CALIBRATION_BASELINE_MS = 0.35;
+const MAX_MACHINE_SCALE = 8;
+
+function machineScale(): number {
+  const elapsed = time(25, () => {
+    let acc = 0;
+    for (let i = 1; i < 200_000; i += 1) acc += i % 7;
+    if (acc === -1) throw new Error('unreachable, and keeps the loop from being elided');
+  });
+  const scale = elapsed / CALIBRATION_BASELINE_MS;
+  return Math.min(Math.max(scale, 1), MAX_MACHINE_SCALE);
+}
+
 describe('performance budget', () => {
   const t = tracker(500);
   const program = compileLogic(t.rules, t.env);
+  const scale = machineScale();
 
   it('compiles 500 rules without diagnostics', () => {
     expect(errorsOnly(program.diagnostics)).toEqual([]);
@@ -62,7 +100,7 @@ describe('performance budget', () => {
     const elapsed = time(25, () => {
       evaluate(program, vars, {});
     });
-    expect(elapsed).toBeLessThan(5);
+    expect(elapsed).toBeLessThan(5 * scale);
   });
 
   it('propagates a single-variable change in under 1 ms', () => {
@@ -81,7 +119,7 @@ describe('performance budget', () => {
       answers[target] = num(flip % 2 === 0 ? 9 : 1);
       onAnswerChange(program, [target], vars, {}, state);
     });
-    expect(elapsed).toBeLessThan(1);
+    expect(elapsed).toBeLessThan(1 * scale);
   });
 
   it('a pruned change is far cheaper than a propagating one', () => {
@@ -111,6 +149,6 @@ describe('performance budget', () => {
     const elapsed = time(5, () => {
       compileLogic(t.rules, t.env);
     });
-    expect(elapsed).toBeLessThan(1000);
+    expect(elapsed).toBeLessThan(1000 * scale);
   });
 });

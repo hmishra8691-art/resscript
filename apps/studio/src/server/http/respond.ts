@@ -105,6 +105,30 @@ const CONSTRAINT_ERRORS: Readonly<Record<string, (message: string) => AppError>>
     new AppError('already_exists', 'this survey already has a draft version', {
       details: [{ path: null, code: 'one_draft', message: 'edit the existing draft' }],
     }),
+  // `app.rollback_version`'s four refusals. The first is deliberately indistinguishable from a
+  // missing row — it is raised for "no such version", "not your org" and "not permitted" alike,
+  // because telling them apart is an existence oracle across tenants — so it maps to `not_found`
+  // via NOT_FOUND_CONSTRAINTS below rather than to `forbidden`. The other three are states the
+  // caller can see and act on, so they say what is wrong.
+  rollback_target_not_archived: (message) =>
+    new AppError('illegal_transition', 'rollback is archived to production', {
+      details: [
+        { path: 'to_version_id', code: 'not_archived', message },
+        // Promoting a draft is a publish, not a rollback — the same distinction
+        // app.rollback_version's HINT makes.
+        { path: null, code: 'use_instead', message: 'POST /api/v1/versions/{id}/publish' },
+      ],
+    }),
+  rollback_target_no_artifact: (message) =>
+    new AppError('illegal_transition', 'the rollback target has no usable artifact', {
+      details: [{ path: 'to_version_id', code: 'compile_state', message }],
+    }),
+  rollback_nothing_live: () =>
+    new AppError('illegal_transition', 'this survey has no production version to roll back from', {
+      details: [
+        { path: null, code: 'nothing_live', message: 'POST /api/v1/versions/{id}/publish' },
+      ],
+    }),
 };
 
 function clientMustBeScoped(): AppError {
@@ -136,6 +160,10 @@ const NOT_FOUND_CONSTRAINTS: readonly string[] = [
   'invitations_insert',
   'invitations_update',
   'surveys_project_fkey',
+  'jobs_insert',
+  // See the comment on `rollback_target_not_archived`: one message for "no such version", "not
+  // yours" and "not permitted", and `not_found` is the only one of the three that leaks nothing.
+  'rollback_not_permitted',
 ];
 
 export function toAppError(err: unknown): AppError {

@@ -13,6 +13,7 @@
     "lint": "eslint src e2e --max-warnings 0"
   },
   "dependencies": {
+    "@resscript/compiler": "workspace:*",
     "@resscript/logic": "workspace:*",
     "@resscript/observability": "workspace:*",
     "@resscript/rescript-dsl": "workspace:*",

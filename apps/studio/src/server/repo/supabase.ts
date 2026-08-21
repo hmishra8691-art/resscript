@@ -21,6 +21,8 @@ import type {
   AuditEventInput,
   AuditRepo,
   AuditRow,
+  EnqueueJobInput,
+  EnqueuedJob,
   CreateInvitationInput,
   CreateOrganizationInput,
   CreateProjectInput,
@@ -48,6 +50,7 @@ import type {
   RegistryRepo,
   RegistryVariableRow,
   Repos,
+  RollbackResult,
   SurveyRepo,
   SurveyRow,
   SurveyVersionRow,
@@ -565,6 +568,27 @@ class SupabaseRepos implements Repos {
       if (current === null) throw new StoreConstraintError('sv_update', 'no rows updated');
       return null;
     },
+
+    rollback: async (toVersionId: string, requestId: string): Promise<RollbackResult> => {
+      // One RPC, no client-side transaction. 0009 owns the ordering (demote before promote, or
+      // `sv_one_production` refuses with a message about an index), the token write in schema
+      // `runtime` — which `authoring` cannot reach at all — and the audit row. A route that did
+      // this as two `PATCH`es would be a route that can be killed between them.
+      const { data, error } = await this.ctx.client.schema(APP).rpc('rollback_version', {
+        p_to_version_id: toVersionId,
+        p_request_id: requestId,
+      });
+      if (error !== null) raise(error, 'rollback_version');
+      const row = data as Record<string, unknown> | null;
+      if (row === null) throw new StoreConstraintError('rollback_version', 'no result');
+      return {
+        token: String(row['token'] ?? ''),
+        survey_id: String(row['survey_id'] ?? ''),
+        from_version_id: String(row['from_version_id'] ?? ''),
+        to_version_id: String(row['to_version_id'] ?? ''),
+        artifact_hash: String(row['artifact_hash'] ?? ''),
+      };
+    },
   };
 
   readonly jobs: JobRepo = {
@@ -587,6 +611,44 @@ class SupabaseRepos implements Repos {
       if (error !== null) raise(error, 'jobs_select');
       const row = (data as JobRow[] | null)?.[0];
       return row ?? null;
+    },
+
+    /**
+     * `app.enqueue_job`, added by migration 0010 — the object this call was written against
+     * before it existed, and the reason the comment here used to say so in capitals.
+     *
+     * `ops.enqueue_job` is unreachable from `authoring` for the same reason `ops.get_job` was
+     * ("permission denied for schema ops": EXECUTE without schema USAGE is inert), and 0005 fixed
+     * the read side with a wrapper in schema `app` and left the write side alone — so the studio
+     * could not queue its own publish job at all. 0010 §1 is that wrapper, and it delegates to
+     * `ops.enqueue_job` so 0003's `jobs_idem_key` contract has one implementation.
+     *
+     * A service-role INSERT was never an acceptable stand-in: it leaves `created_by` NULL and
+     * 0009's publish transaction then refuses the job with `insufficient_privilege` — correctly,
+     * since "the system published this" is not an answer anyone accepts six months later.
+     *
+     * Argument names mirror `ops.enqueue_job`'s except for ONE omission: there is no `p_org_id`,
+     * and there must not be. The wrapper derives it from `app.current_org()` and `created_by`
+     * from `app.current_user_id()`, which is this file's standing rule (see `types.ts`'s header: a
+     * method that cannot express "this org" makes a `?org_id=`-style injection unrepresentable)
+     * and is also what makes the enqueued job's `org_id` the same value the publish capability
+     * check will read. `p_delay_ms` is left to its default of 0; nothing in the studio defers a
+     * job yet, and the wrapper's signature carries the parameter so that when something does
+     * (P3-06's reminder emails) it is not a re-signing.
+     */
+    enqueue: async (input: EnqueueJobInput): Promise<EnqueuedJob> => {
+      const { data, error } = await this.ctx.client.schema(APP).rpc('enqueue_job', {
+        p_kind: input.kind,
+        p_payload: input.payload,
+        p_idempotency_key: input.idempotency_key ?? null,
+        p_project_id: input.project_id ?? null,
+        p_survey_version_id: input.survey_version_id ?? null,
+        p_max_attempts: input.max_attempts ?? 3,
+      });
+      if (error !== null) raise(error, 'enqueue_job');
+      const row = (data as { id: string; created: boolean }[] | null)?.[0];
+      if (row === undefined) throw new StoreConstraintError('enqueue_job', 'no row returned');
+      return { id: row.id, created: row.created };
     },
   };
 

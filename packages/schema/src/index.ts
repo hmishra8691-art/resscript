@@ -145,6 +145,7 @@ export type {
   ArtifactManifest,
   ArtifactGraph,
   ArtifactLogic,
+  ArtifactLogicCell,
   CompiledPage,
   CompiledQuestion,
   CompiledItem,

@@ -19,11 +19,14 @@
  */
 
 import { prefixedId } from '@resscript/observability';
-import type { JsonObject, OrgRole } from '@resscript/schema';
+import { roleRank } from '@resscript/schema';
+import type { JsonObject, OrgRole, VersionStatus } from '@resscript/schema';
 import type {
   AuditEventInput,
   AuditRepo,
   AuditRow,
+  EnqueueJobInput,
+  EnqueuedJob,
   CreateInvitationInput,
   CreateOrganizationInput,
   CreateProjectInput,
@@ -48,6 +51,7 @@ import type {
   ProjectRow,
   RegistryRepo,
   Repos,
+  RollbackResult,
   SurveyRepo,
   SurveyRow,
   SurveyVersionRow,
@@ -78,6 +82,18 @@ export interface Actor {
   readonly userId: string;
   /** From `app_metadata.active_org_id`. Never from a request parameter. */
   readonly activeOrgId: string | null;
+}
+
+/** One live row of `runtime.survey_tokens`. `tokens_live_key`: one per (survey, is_test). */
+export interface MemoryTokenRow {
+  token: string;
+  org_id: string;
+  survey_id: string;
+  survey_version_id: string;
+  artifact_hash: string;
+  status: VersionStatus;
+  is_test: boolean;
+  revoked_at: string | null;
 }
 
 interface MemberRecord {
@@ -125,6 +141,16 @@ export class MemoryDataset {
   readonly surveys: SurveyRow[] = [];
   readonly versions: SurveyVersionRow[] = [];
   readonly jobs: JobRow[] = [];
+  /**
+   * `runtime.survey_tokens`, reduced to what the control plane can observe.
+   *
+   * Modelled here even though `authoring` cannot read the real table (ADR-001's plane boundary:
+   * schema `runtime` carries no USAGE for it), because `app.rollback_version` writes it in the
+   * same transaction as the status flip and a rollback that moved the status without repointing
+   * the URL is the exact bug 0009 exists to make impossible. A store that dropped the token would
+   * let a route test assert the visible half of rollback and miss the half a respondent sees.
+   */
+  readonly tokens: MemoryTokenRow[] = [];
   readonly audit: AuditRow[] = [];
   readonly idempotency: IdempotencyRecord[] = [];
   /**
@@ -316,6 +342,92 @@ export class MemoryDataset {
     return row;
   }
 
+  /**
+   * A version in a NON-draft state, for the publish and rollback suites.
+   *
+   * Separate from `insertVersion` because that one reproduces `sv_insert`'s WITH CHECK ("a new
+   * version is always born a draft") and `sv_one_draft`, both of which are correct and both of
+   * which make an already-published version unrepresentable. A fixture needs one: rollback is
+   * `archived → production`, so it cannot be reached from a draft by any legal transition
+   * (`app.tg_version_guard` permits draft→review, draft→staging, review→staging,
+   * staging→production, staging→archived, review→archived, production→archived and
+   * archived→production, and nothing else). Enforces `sv_one_production` and
+   * `sv_compiled_needs_artifact` so a fixture cannot seed a state the database refuses.
+   */
+  seedVersionAt(input: {
+    orgId: string;
+    surveyId: string;
+    versionNo: number;
+    createdBy: string;
+    status: VersionStatus;
+    compileState?: 'none' | 'compiling' | 'compiled' | 'failed';
+    artifactHash?: string;
+    artifactBytes?: number;
+    id?: string;
+  }): SurveyVersionRow {
+    const compileState = input.compileState ?? (input.status === 'draft' ? 'none' : 'compiled');
+    const hash = input.artifactHash ?? (compileState === 'compiled' ? sha256Fixture(input.versionNo) : null);
+    if (compileState === 'compiled' && hash === null) {
+      throw new StoreConstraintError('sv_compiled_needs_artifact', 'compiled without an artifact');
+    }
+    if (
+      input.status === 'production' &&
+      this.versions.some((v) => v.survey_id === input.surveyId && v.status === 'production')
+    ) {
+      throw new StoreConstraintError('sv_one_production', 'a production version already exists');
+    }
+    const at = this.now();
+    const row: SurveyVersionRow = {
+      id: input.id ?? this.id('ver'),
+      org_id: input.orgId,
+      survey_id: input.surveyId,
+      version_no: input.versionNo,
+      status: input.status,
+      compile_state: compileState,
+      artifact_hash: hash,
+      artifact_bytes: input.artifactBytes ?? (hash === null ? null : 4096),
+      schema_version: 1,
+      revision: 1,
+      compile_diagnostics: [],
+      acknowledged_warnings: [],
+      entitlement_reqs: [],
+      notes: null,
+      created_by: input.createdBy,
+      created_at: at,
+      updated_at: at,
+      frozen_at: input.status === 'draft' ? null : at,
+      published_at: input.status === 'production' ? at : null,
+      archived_at: null,
+      cloned_from_version_id: null,
+    };
+    this.versions.push(row);
+    return row;
+  }
+
+  /** A live token, as `runtime.upsert_survey_token` would have written it at publish time. */
+  seedToken(input: {
+    token: string;
+    orgId: string;
+    surveyId: string;
+    versionId: string;
+    artifactHash: string;
+    status: VersionStatus;
+    isTest?: boolean;
+  }): MemoryTokenRow {
+    const row: MemoryTokenRow = {
+      token: input.token,
+      org_id: input.orgId,
+      survey_id: input.surveyId,
+      survey_version_id: input.versionId,
+      artifact_hash: input.artifactHash,
+      status: input.status,
+      is_test: input.isTest ?? false,
+      revoked_at: null,
+    };
+    this.tokens.push(row);
+    return row;
+  }
+
   /** Attach a variable registry to a version, for the `/v1/dsl/*` suite. */
   seedRegistry(rows: VersionRegistryRows): VersionRegistryRows {
     const index = this.registries.findIndex((r) => r.survey_version_id === rows.survey_version_id);
@@ -360,6 +472,18 @@ export class MemoryDataset {
       );
     }
   }
+}
+
+/**
+ * A deterministic, distinct sha256-shaped string per version number.
+ *
+ * Deterministic because the rollback assertion is a HASH COMPARISON — "the runtime serves
+ * byte-identical bytes to what was live before, verified by hash comparison in the test" — and a
+ * random fixture hash would make that assertion pass for the wrong reason on a store that
+ * recomputed it.
+ */
+function sha256Fixture(versionNo: number): string {
+  return String(versionNo).padStart(4, '0').repeat(16);
 }
 
 function toMemberRow(record: MemberRecord): MemberRow {
@@ -449,6 +573,19 @@ class InMemoryRepos implements Repos {
     if (m === undefined) return false;
     if (m.role === 'client') return m.project_ids.includes(projectId);
     return m.project_ids.length === 0 || m.project_ids.includes(projectId);
+  }
+
+  /**
+   * `app.has_role()`, reading the MEMBERSHIP ROW.
+   *
+   * The store's own check, not the route's. `requireRole` in `src/server/auth.ts` is the API's
+   * message-producing guard; this is the one the definer functions make, and having both is the
+   * point — 0009's `publish_version` and `rollback_version` refuse a caller the API let through,
+   * so a store that trusted the route would let a test prove a floor the database does not have.
+   */
+  private hasRole(minimum: OrgRole): boolean {
+    const m = this.membership();
+    return m !== undefined && roleRank(m.role) >= roleRank(minimum);
   }
 
   private orgScoped<T extends { org_id: string }>(rows: readonly T[]): readonly T[] {
@@ -946,6 +1083,83 @@ class InMemoryRepos implements Repos {
       this.data.versions[index] = next;
       return next;
     },
+
+    /**
+     * `app.rollback_version`, reproduced closely enough that its refusals are testable.
+     *
+     * Every check below is one the function makes, in the order it makes them, and the ORDER of
+     * the two status writes is the one part that is not merely fidelity: 0009 demotes before it
+     * promotes because `sv_one_production` is a partial unique index checked at statement end, so
+     * promoting first raises `23505` and "the rollback fails with a message about an index". A
+     * store that promoted first would pass a test written against the outcome and hide the
+     * constraint the real function is ordered around.
+     */
+    rollback: async (toVersionId: string, _requestId: string): Promise<RollbackResult> => {
+      const target = await this.surveys.getVersion(toVersionId);
+      // ONE message for "no such version", "not yours" and "not permitted": distinguishing them
+      // is an existence oracle across tenants, which is why the function raises one exception for
+      // all three. `project_manager`, not `programmer`: rollback changes what respondents see.
+      if (target === null || !this.hasRole('project_manager')) {
+        throw new StoreConstraintError('rollback_not_permitted', 'not a rollback target');
+      }
+      if (target.status !== 'archived') {
+        throw new StoreConstraintError('rollback_target_not_archived', target.status);
+      }
+      if (target.compile_state !== 'compiled' || target.artifact_hash === null) {
+        throw new StoreConstraintError('rollback_target_no_artifact', target.compile_state);
+      }
+      const incumbentIndex = this.data.versions.findIndex(
+        (v) => v.survey_id === target.survey_id && v.status === 'production',
+      );
+      const incumbent = incumbentIndex === -1 ? undefined : this.data.versions[incumbentIndex];
+      if (incumbent === undefined) {
+        throw new StoreConstraintError('rollback_nothing_live', 'no production version');
+      }
+
+      // Demote, THEN promote.
+      this.data.versions[incumbentIndex] = {
+        ...incumbent,
+        status: 'archived',
+        revision: incumbent.revision + 1,
+        updated_at: this.data.now(),
+      };
+      const targetIndex = this.data.versions.findIndex((v) => v.id === target.id);
+      this.data.versions[targetIndex] = {
+        ...target,
+        status: 'production',
+        revision: target.revision + 1,
+        updated_at: this.data.now(),
+      };
+
+      // `runtime.upsert_survey_token`: REPOINT an existing live token rather than mint a new one,
+      // because a token is a URL already in the field (K §5) and rotating it breaks every vendor
+      // link. `artifact_hash` is not rewritten on any version — this row is the only thing that
+      // moves, which is the whole of B §3.1's "rollback repoints artifact_hash" in this schema.
+      const live = this.data.tokens.find(
+        (t) => t.survey_id === target.survey_id && !t.is_test && t.revoked_at === null,
+      );
+      const token =
+        live ??
+        this.data.seedToken({
+          token: 'r'.repeat(26),
+          orgId: target.org_id,
+          surveyId: target.survey_id,
+          versionId: target.id,
+          artifactHash: target.artifact_hash,
+          status: 'production',
+        });
+      token.survey_version_id = target.id;
+      token.artifact_hash = target.artifact_hash;
+      token.status = 'production';
+
+      return {
+        token: token.token,
+        survey_id: target.survey_id,
+        from_version_id: incumbent.id,
+        to_version_id: target.id,
+        artifact_hash: target.artifact_hash,
+      };
+    },
   };
 
   /* --- jobs ------------------------------------------------------------- */
@@ -957,6 +1171,40 @@ class InMemoryRepos implements Repos {
       // is application code here by necessity — and therefore explicit rather than implied.
       if (found === undefined || found.org_id !== this.actor.activeOrgId) return null;
       return found;
+    },
+
+    enqueue: async (input: EnqueueJobInput): Promise<EnqueuedJob> => {
+      const org = this.actor.activeOrgId;
+      if (org === null) throw new StoreConstraintError('jobs_insert', 'no rows inserted');
+      const key = input.idempotency_key;
+      if (key !== undefined) {
+        // `jobs_idem_key`, and `ON CONFLICT … DO NOTHING` rather than `DO UPDATE`: migration 0005
+        // says why — "the existing job may already be running, and overwriting its payload
+        // mid-flight would make the worker's own input change underneath it". So a replay returns
+        // the EXISTING row unchanged, which is what makes `created: false` mean something.
+        const existing = this.data.jobs.find(
+          (j) => j.kind === input.kind && j.idempotency_key === key,
+        );
+        if (existing !== undefined) return { id: existing.id, created: false };
+      }
+      const row = this.data.seedJob({
+        id: this.data.id('job'),
+        org_id: org,
+        kind: input.kind,
+        status: 'queued',
+        attempts: 0,
+        started_at: null,
+        heartbeat_at: null,
+        // Derived from the SESSION, never from the input. See `EnqueueJobInput`.
+        created_by: this.actor.userId,
+        ...(key === undefined ? {} : { idempotency_key: key }),
+        ...(input.project_id === undefined ? {} : { project_id: input.project_id }),
+        ...(input.survey_version_id === undefined
+          ? {}
+          : { survey_version_id: input.survey_version_id }),
+        ...(input.max_attempts === undefined ? {} : { max_attempts: input.max_attempts }),
+      });
+      return { id: row.id, created: true };
     },
   };
 

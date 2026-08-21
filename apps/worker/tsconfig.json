@@ -8,5 +8,9 @@
     "types": ["node"]
   },
   "include": ["src/**/*"],
-  "references": [{ "path": "../../packages/observability" }]
+  "references": [
+    { "path": "../../packages/observability" },
+    { "path": "../../packages/schema" },
+    { "path": "../../packages/compiler" }
+  ]
 }

@@ -30,12 +30,15 @@ import {
 // `request_id` propagates into every handler without being threaded through signatures.
 import '@resscript/observability/node';
 
+import { FsArtifactStore } from './artifact-store.js';
 import { Consumer } from './consumer.js';
 import { createHealthServer } from './health.js';
 import type { JobStore, PayloadMap } from './index.js';
+import type { CompileEnvironment } from './kinds/compile.js';
 import { buildRegistry } from './kinds/registry.js';
 import { MemoryJobStore } from './memory-job-store.js';
 import { PgJobStore, type SqlClient } from './pg-job-store.js';
+import { PgPublishStore, poolSessions, type PoolLike } from './publish-store.js';
 
 const SERVICE = 'worker';
 
@@ -57,10 +60,20 @@ function intEnv(name: string, fallback: number): number {
  * does not open a connection pool as a side effect, and so a worker configured without a
  * database can still start in-memory for a smoke test.
  */
-async function createStore(): Promise<{ store: JobStore; backend: 'postgres' | 'memory' }> {
+async function createStore(): Promise<{
+  store: JobStore;
+  backend: 'postgres' | 'memory';
+  /**
+   * The pool, when there is one. Exposed because the `compile` job needs a CONNECTION and not a
+   * connection pool's `query()`: migration 0009's calling convention has it assume the enqueuing
+   * user's identity with `SET LOCAL ROLE`, which is meaningless outside a transaction, and a pool
+   * hands out a different connection per `query()`. See `publish-store.ts`.
+   */
+  pool: PoolLike | null;
+}> {
   const url = env('DATABASE_URL');
   if (url === undefined || url === '') {
-    return { store: new MemoryJobStore(), backend: 'memory' };
+    return { store: new MemoryJobStore(), backend: 'memory', pool: null };
   }
   const pg = await import('pg');
   const pool = new pg.default.Pool({
@@ -68,10 +81,36 @@ async function createStore(): Promise<{ store: JobStore; backend: 'postgres' | '
     // A worker with `concurrency` slots needs at most concurrency + 1 connections (one spare
     // for heartbeats and the sweeper). Sizing it from the same number avoids the classic
     // "worker exhausts the pool and heartbeats time out, so every job is requeued" failure.
-    max: intEnv('WORKER_CONCURRENCY', 4) + 2,
+    // Publish takes a second connection for the duration of its transaction, so the compile
+    // slots are counted twice.
+    max: intEnv('WORKER_CONCURRENCY', 4) * 2 + 2,
     application_name: 'resscript-worker',
   });
-  return { store: new PgJobStore(pool as unknown as SqlClient), backend: 'postgres' };
+  return {
+    store: new PgJobStore(pool as unknown as SqlClient),
+    backend: 'postgres',
+    pool: pool as unknown as PoolLike,
+  };
+}
+
+/**
+ * The `compile` job's environment, or nothing.
+ *
+ * `ARTIFACT_DIR` and not a Supabase bucket: `artifact-store.ts`'s header says why the shipped
+ * implementation is a filesystem tree and where the Supabase adapter plugs in. A deployment that
+ * wants the bucket constructs its client here and passes `client.storage.from(bucket)` to
+ * `SupabaseArtifactStore`; that is the only line that changes, and it is deliberately not written
+ * against an SDK this app does not depend on.
+ */
+function createCompileEnvironment(pool: PoolLike | null): CompileEnvironment | undefined {
+  if (pool === null) return undefined;
+  return {
+    store: new PgPublishStore(poolSessions(pool)),
+    artifacts: new FsArtifactStore(env('ARTIFACT_DIR') ?? '/var/lib/resscript/artifacts'),
+    // No entitlements and no theme: `billing` holds no plans table yet and the theme compiler is
+    // P2-12. `CompileInput` distinguishes "no plan to check" from "a plan granting nothing", so
+    // omitting it skips the check instead of failing every survey. See `kinds/compile.ts`.
+  };
 }
 
 export async function main(): Promise<number> {
@@ -87,8 +126,9 @@ export async function main(): Promise<number> {
   // worker can afford a real client library later; `setMetricSink` is the only line that changes.
   setMetricSink(new LogMetricSink((line) => process.stdout.write(`${line}\n`), SERVICE));
 
-  const { store, backend } = await createStore();
-  const registry = buildRegistry();
+  const { store, backend, pool } = await createStore();
+  const compile = createCompileEnvironment(pool);
+  const registry = buildRegistry(compile === undefined ? {} : { compile });
 
   const consumer = new Consumer({
     store,

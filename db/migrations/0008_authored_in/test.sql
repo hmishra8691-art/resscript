@@ -409,8 +409,10 @@ SELECT is(
 SELECT is(
   content.clone_version(pg_temp.tid('ver_a_content_draft')::app.ulid,
                         pg_temp.tid('ver_a_clone_target')::app.ulid),
-  '{"nodes": 4, "languages": 2, "variables": 4, "logic_rules": 5, "i18n_strings": 2, '
-  '"question_cells": 1, "question_items": 61}'::jsonb,
+  -- "redirects": 2 arrived with 0010, which created content.redirects and had to extend this
+  -- function for it — the omission this map exists to catch, caught one migration later.
+  '{"nodes": 4, "redirects": 2, "languages": 2, "variables": 4, "logic_rules": 5, '
+  '"i18n_strings": 2, "question_cells": 1, "question_items": 61}'::jsonb,
   'content.clone_version() reports logic_rules alongside every other content table: five '
   'rules in, five rules out. The count map is the mechanical protection against a future '
   'content table being left out of the enumerated list');

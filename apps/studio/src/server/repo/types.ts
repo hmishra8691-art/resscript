@@ -400,10 +400,83 @@ export interface SurveyRepo {
     expectedRevision: number,
     input: UpdateVersionInput,
   ): Promise<SurveyVersionRow | null>;
+  /**
+   * `app.rollback_version(p_to_version_id, p_request_id)` — `archived → production` plus
+   * repointing the survey's token, in one transaction.
+   *
+   * A repo method and not two updates, because 0009 makes it a `SECURITY DEFINER` function for
+   * three reasons the API cannot reproduce: it writes `runtime.survey_tokens`, which `authoring`
+   * cannot reach at all; it must demote before it promotes, in that order, or `sv_one_production`
+   * refuses the second row with a message about an index; and it is the project_manager
+   * capability. Note what it does NOT do: rewrite any version's `artifact_hash`. The target still
+   * names the artifact it named while it was live, and ADR-002 addresses an artifact by the sha256
+   * of its own content — which is what makes "the runtime serves byte-identical bytes to what was
+   * live before" follow from the hash never having been touched rather than from copying bytes.
+   */
+  rollback(toVersionId: string, requestId: string): Promise<RollbackResult>;
+}
+
+/** `app.rollback_version`'s jsonb return, mapped. */
+export interface RollbackResult {
+  readonly token: string;
+  readonly survey_id: string;
+  readonly from_version_id: string;
+  readonly to_version_id: string;
+  readonly artifact_hash: string;
+}
+
+/**
+ * What `ops.enqueue_job` takes, minus the two things a caller must not choose.
+ *
+ * No `org_id` (the header rule of this file) and no `created_by`: migration 0005 dropped the
+ * latter from the function's signature and said why — "a nullable 'who did this' that can be
+ * spoofed by the caller is worse than one derived from the session". That is not a detail here.
+ * Migration 0009's calling convention has the compile worker ASSUME the enqueuing user's identity
+ * from `ops.jobs.org_id` / `created_by` before it calls `app.publish_version`, so those two
+ * columns are the publish capability check's only input. A request body that could set them would
+ * be a way to publish as somebody else.
+ */
+export interface EnqueueJobInput {
+  readonly kind: string;
+  readonly payload: JsonObject;
+  /**
+   * `jobs_idem_key`. API §4: "double-clicking Publish returns the running job", answered as
+   * `200` rather than `201` — which is why the result carries `created`.
+   */
+  readonly idempotency_key?: string;
+  readonly project_id?: string;
+  readonly survey_version_id?: string;
+  readonly max_attempts?: number;
+}
+
+export interface EnqueuedJob {
+  readonly id: string;
+  /** False when an existing row under the same `(kind, idempotency_key)` was returned. */
+  readonly created: boolean;
 }
 
 export interface JobRepo {
   get(id: string): Promise<JobRow | null>;
+  /**
+   * Enqueue one job, through `app.enqueue_job` (migration 0010).
+   *
+   * This entry used to read "MISSING DATABASE OBJECT", and the gap it named was fatal rather than
+   * cosmetic: `ops.enqueue_job` is `SECURITY DEFINER` and 0005's comment says "the API enqueues
+   * through this function and cannot touch the table", but `authoring` holds no USAGE on schema
+   * `ops` (0001, asserted by 0001's and 0003's suites), and EXECUTE without schema USAGE is inert
+   * — so `GRANT EXECUTE ON FUNCTION ops.enqueue_job` would still have failed with "permission
+   * denied for schema ops" and the studio could not queue its own publish job. 0005 had solved
+   * exactly this on the READ side by putting `app.get_job` in schema `app` (see the comment on
+   * `SupabaseRepo.jobs.get`); 0010 §1 does the same for the write side, granted to `authoring`
+   * only, deriving `org_id` and `created_by` inside the definer, and delegating to
+   * `ops.enqueue_job` so the idempotency contract has one implementation.
+   *
+   * The alternative that was rejected then and is recorded here because it will be proposed
+   * again: a service-role write leaves `created_by` NULL, and a compile job with no creating user
+   * is refused by `app.publish_version` with `insufficient_privilege`, which 0009 calls correct.
+   * It does not merely skip a check — it produces a job that can never succeed.
+   */
+  enqueue(input: EnqueueJobInput): Promise<EnqueuedJob>;
 }
 
 export interface AuditRepo {

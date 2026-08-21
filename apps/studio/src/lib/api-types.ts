@@ -7,8 +7,9 @@
  */
 
 import type { CompileState, OrgRole, VersionStatus } from '@resscript/schema';
+import type { CompileDiagnostic } from '@resscript/compiler/diagnostics';
 
-export type { CompileState, OrgRole, VersionStatus };
+export type { CompileState, OrgRole, VersionStatus, CompileDiagnostic };
 
 export interface OrgMembershipView {
   readonly org_id: string;
@@ -79,6 +80,73 @@ export interface VersionView {
 
 export interface SurveyDetailView extends SurveyView {
   readonly versions: readonly Pick<VersionView, 'id' | 'version_no' | 'status' | 'compile_state' | 'revision'>[];
+}
+
+/**
+ * `GET /versions/:id/diagnostics`.
+ *
+ * `diagnostics` is typed as `CompileDiagnostic[]` here and is `jsonb` on the wire:
+ * `survey_versions.compile_diagnostics` is `readonly JsonValue[]` all the way through the route,
+ * which returns the stored array unchanged. The narrowing therefore happens exactly once, in the
+ * container that fetches this, and it is a cast rather than a parse on purpose — the array was
+ * written by `packages/compiler` through `sortCompileDiagnostics`, and a client-side re-validation
+ * would be a second opinion about a shape the gate owns. What the client must NOT do is infer
+ * anything from it that `compile_state` already answers: an empty array on `compile_state: 'none'`
+ * means "never compiled", not "clean".
+ */
+export interface DiagnosticsView {
+  readonly survey_version_id: string;
+  readonly status: VersionStatus;
+  readonly compile_state: CompileState;
+  readonly artifact_hash: string | null;
+  readonly artifact_bytes: number | null;
+  readonly revision: number;
+  /** `acknowledgementKey()` values signed by an earlier publish, sealed with the version. */
+  readonly acknowledged_warnings: readonly string[];
+  readonly diagnostics: readonly CompileDiagnostic[];
+  readonly summary: { readonly total: number; readonly errors: number; readonly warnings: number };
+}
+
+/**
+ * One row of `GET /surveys/:id/history`.
+ *
+ * `can_roll_back` is computed SERVER-SIDE (it is exactly `app.rollback_version`'s refusals) and is
+ * the only authority on whether the control is offered — a client that re-derived it would
+ * eventually offer a button the database refuses. It carries no reason, so a UI that wants to
+ * explain a `false` has only the row's own visible fields to go on.
+ */
+export interface VersionHistoryEntryView {
+  readonly id: string;
+  readonly version_no: number;
+  readonly status: VersionStatus;
+  readonly compile_state: CompileState;
+  /** `null` until a compile has written an artifact. ADR-002: sha256 of the artifact's own bytes. */
+  readonly artifact_hash: string | null;
+  readonly artifact_bytes: number | null;
+  readonly revision: number;
+  readonly created_at: string;
+  readonly frozen_at: string | null;
+  readonly published_at: string | null;
+  readonly can_roll_back: boolean;
+}
+
+export interface VersionHistoryView {
+  readonly survey_id: string;
+  readonly survey_ref: string;
+  /** The version the survey token currently points at, or `null` when nothing is live. */
+  readonly live_version_id: string | null;
+  readonly versions: readonly VersionHistoryEntryView[];
+  /** More versions than one response carries. The collection endpoint is the paginated read. */
+  readonly truncated: boolean;
+}
+
+/** `POST /surveys/:id/rollback`. `artifact_hash` is the hash the token now points at. */
+export interface RollbackResultView {
+  readonly survey_id: string;
+  readonly from_version_id: string;
+  readonly to_version_id: string;
+  readonly artifact_hash: string | null;
+  readonly token: string;
 }
 
 export interface JobProgressView {

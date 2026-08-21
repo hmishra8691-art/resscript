@@ -2,8 +2,10 @@
 
 Milestone M0.2 (migration tooling and the RLS test harness), the database half of
 P1-01 (tenancy and the isolation guarantee), the database half of P1-03 (the
-version-scoped content model and the survey tree), and the database half of P1-06
-(logic rules, and the authoring surface each one was written in).
+version-scoped content model and the survey tree), the database half of P1-06
+(logic rules, and the authoring surface each one was written in), and the database
+half of P1-08 (the publish transaction, the survey token, rollback, the redirect store, and
+the enqueue wrapper that lets the studio queue its own publish job).
 
 Authoritative design, in precedence order: **Deliverable K** (`11-canonical-registries.md`)
 beats everything; then the ADRs (`00-decisions-adr.md`, especially ADR-002 immutability and
@@ -224,7 +226,7 @@ read tenant data *at all*.
 
 | Role | Used by | May do | May **not** do |
 |---|---|---|---|
-| `authoring` | studio / control plane; Supabase's `authenticated` maps here | `USAGE` on `app`, `content`, `billing`; `SELECT/INSERT/UPDATE/DELETE` on `app` and `content` tables — **every row decision made by RLS**; `SELECT` on `billing`; `EXECUTE` on the named helpers, `app.create_organization`, `app.get_job` and `app.resolve_invitation` | reach `ops` or `runtime`; write `app.audit_log` (no INSERT policy *and* the privilege is revoked); execute the runtime RPCs |
+| `authoring` | studio / control plane; Supabase's `authenticated` maps here | `USAGE` on `app`, `content`, `billing`; `SELECT/INSERT/UPDATE/DELETE` on `app` and `content` tables — **every row decision made by RLS**; `SELECT` on `billing`; `EXECUTE` on the named helpers, `app.create_organization`, `app.get_job`, `app.enqueue_job`, `app.publish_version`, `app.rollback_version`, `app.survey_tokens_for_version` and `app.resolve_invitation` | reach `ops` or `runtime`; write `app.audit_log` (no INSERT policy *and* the privilege is revoked); execute the runtime RPCs |
 | `runtime_writer` | the respondent-facing runtime (data plane) | `EXECUTE` on a handful of named `SECURITY DEFINER` RPCs in `runtime` — currently `runtime.resolve_token(text)` and `runtime.load_session(app.ulid)` | **hold any table privilege anywhere.** No `SELECT` on `app.*` or `content.*`; no `USAGE` on `content` at all. `USAGE` on `app` is granted for type visibility only (the `app.ulid` / `app.sha256` domains in the RPC signatures) |
 | `analytics_reader` | export / BI readers | `USAGE` on `export`; `SELECT` on the generated per-version flat tables (B §11), which are themselves RLS-forced | read `app` or `content`; write anything |
 
@@ -280,6 +282,10 @@ ones written years from now).
 | `0006_revoke_public_execute` | `ops.functions_executable_by_public()` — the third catalog assertion — plus a catalog-driven sweep revoking `PUBLIC EXECUTE` across all six schemas, and the one re-grant that needs (`app.gen_ulid` to `authoring`, because it is a column `DEFAULT`). See "`PUBLIC EXECUTE` is not closed by default privileges" above. |
 | `0007_content_model` | P1-03, the version-scoped authoring model: `content.nodes` (one table, `node_kind` discriminator, kind-shape CHECK, the partial `ref` index), `content.question_items`, `content.question_cells`, `content.variables` (incl. `variables_export_col_key` and the `vars_derived_expr` **carve-out**), `content.languages`, `content.i18n_strings`, `content.reserved_variable_names` + the trigger B §4.3 asks for; the `content.questions`/`pages`/`blocks` views (`security_invoker = true`); `app.can_see_version` / `app.version_is_draft` and 24 per-command RLS policies; `content.next_sort_key`, `move_node`, `next_item_sort_key`, `move_question_item`, `rebalance_items`, `tree_rows` (one recursive CTE), `clone_version` (copy-on-write, **no reference remapping**); a **redefinition of `content.rebalance_siblings`**, whose 0001 body could never run; and `ops.test_seed_content()`. |
 | `0008_authored_in` | The database half of P1-06: `content.logic_rules` per B §4.4 — `content.rule_kind` and `content.rule_target_kind`, the three polymorphic target FKs plus `rules_one_target`, the dependency-closure arrays with their two GIN indexes, `rules_target_node_idx`, four per-command policies and the draft trigger — carrying **`authored_in`** (C §7: the stored fact the DSL round-trip fidelity report reads) and **`trivia`** (D §6.4). There is deliberately **no `source` column**: the author's text is *printed* from `(ast, trivia)`, never stored, and two `hasnt_column` assertions keep it that way. Also **redefines `content.clone_version`** to copy rules, because a content table missing from its enumerated list loses its rows on every publish-then-edit with no error at all. |
+
+| `0010_publish_path` | The three defects that made P1-08's publish path non-functional, all found while building the compile worker. **`app.enqueue_job`** — the write-side twin of 0005's `app.get_job`, because `ops.enqueue_job` is `SECURITY DEFINER` in a schema `authoring` holds no `USAGE` on and `EXECUTE` without schema `USAGE` is inert, so the studio could not queue its own publish job at all; it takes **no `org_id` and no `created_by`**, derives both inside the definer, floors at `analyst`, scopes the optional project and version references, and delegates to `ops.enqueue_job` so `jobs_idem_key`'s "one job per double-click" keeps one implementation. **`content.redirects`** (+ `content.redirect_scope`) — C §9's map flattened one row per (version, scope, scope key, disposition, custom key), RLS enabled **and** forced, `tg_draft_only`, four per-command policies; without it `CMP-0300` blocked **every** survey, because C §6's synthesized flow always reaches `COMPLETE`. **Redefines `content.clone_version`** a second time, to carry redirects across the copy-on-write. **`qitems_id_prefix`** — `content.question_items.id` must be `opt_`-prefixed for all three item kinds (C §5.1), added `NOT VALID` then validated; before it, `asId('opt', …)` threw on a stored `row_` id and **no matrix question could publish**. Also redefines `ops.test_seed_content` for both (an `opt_` matrix row, two default-scope redirects). |
+
+| `0009_artifacts` | The database half of P1-08: `runtime.survey_tokens` per B §3.2 — the denormalized token → artifact row the runtime resolves, keyed by the **0001 `runtime.survey_token` domain** (K §5's 26-char lowercase base-36, the fix for risk **R8**), with `tokens_live_key` (one live token per survey per `is_test`, so republishing *repoints* a URL that is already in the field), RLS enabled **and** forced, and exactly one policy — `SELECT` for `runtime_rpc_owner`. `app.publish_version` and `app.rollback_version` (`SECURITY DEFINER`, granted to `authoring`) are the only writers, through `runtime.upsert_survey_token`, which is granted to nobody; `runtime.gen_survey_token` is the one place a token is minted. **Implements `runtime.resolve_token`**, the placeholder 0004 left for this milestone, with no case folding of any kind. `app.survey_tokens_for_version` gives the studio H §2.7's read without any privilege in schema `runtime`. Adds no column to `app.survey_versions` — 0004 already created all four — only `sv_diagnostics_is_array` / `sv_ack_warnings_is_array` (`NOT VALID`, then validated) and the column comments 0004 left unwritten. |
 
 ### Deviations from Deliverable B, and why
 
@@ -347,7 +353,7 @@ ones written years from now).
   option/row/column by `question_items.item_kind`, so a second copy of those distinctions
   here would be a second copy that can disagree — and a `CHECK` cannot read another table to
   stop it.
-- **`content.clone_version` is redefined in 0008**, to copy `content.logic_rules`. The
+- **`content.clone_version` is redefined in 0008 and again in 0010**, to copy `content.logic_rules` and then `content.redirects`. The
   function enumerates its tables by name, so a content table it does not know about is a
   table whose rows are dropped on the copy-on-write that ADR-002 makes the *only* way to
   edit a published survey — publish, click Edit, and every display rule and screener
@@ -355,25 +361,129 @@ ones written years from now).
   The signature is unchanged, so 0007's `has_function` assertion stays there; its two
   behavioural assertions compare the returned per-table count map by `jsonb` equality and
   were maintained in 0007's `test.sql` in the same commit, per the rule above. **Every future
-  content table has to be added to that function and to its count map.**
+  content table has to be added to that function and to its count map** — and 0010 is the evidence
+  that this is a mechanism rather than a wish: adding `content.redirects` turned three count-map
+  assertions red in 0007 and 0008 until the branch existed. For redirects the symptom of
+  forgetting would have been especially cruel — publish, click Edit, and the *next* publish of
+  that draft fails `CMP-0300` on a survey that was live an hour ago, with nothing anywhere saying
+  that clicking Edit is what deleted the configuration.
+- **`runtime.survey_tokens.artifact_hash` is `NOT NULL`**, where B §3.2 leaves it nullable.
+  That column *is* the answer to "which bytes does this URL serve", and a row that cannot
+  answer it is a 500 for a respondent a panel vendor has already counted as an entrant. The
+  publish order is upload → upsert token → flip `compile_state` (roadmap P1-08), so the hash
+  is always known by the time the row is written; requiring it makes that ordering
+  non-optional.
+- **`runtime.survey_tokens` has no `quota_policy` column yet.** B §3.2 gives it one (03 §8's
+  settings including ADR-008's `on_store_unavailable`). Nothing in P1-08 writes or reads it,
+  and a column nothing writes is the table equivalent of a grant with no consumer; it lands
+  with P1-12, which is also when the artifact starts carrying the plan it mirrors.
+- **There is deliberately no CHECK tying `is_test` to `status`.** The obvious one —
+  `is_test = (status <> 'production')` — is false in the ordinary case: a version published
+  to staging for review and then promoted is reachable through *both* links at once, and the
+  review link must keep marking its sessions `is_test` while pointing at a production
+  version. That is what a soft launch is, and it is why B §3.2 stores both columns instead of
+  deriving one.
+- **`runtime.survey_tokens` is owned by the migration runner, not by `runtime_rpc_owner`**,
+  unlike the `runtime.response_events` partitions 0001 reassigns. Ownership follows the
+  **writer**: this table is written by the control plane (`app.publish_version` /
+  `app.rollback_version`, definer functions that also read `app.survey_versions`) and only
+  read by the runtime, so the runtime's read is one `GRANT SELECT` plus one policy — both
+  visible in the catalog and both revocable — rather than an ownership that cannot be
+  narrowed. The alternative would need either privileges on a table the publish functions do
+  not own (breaking any deployment whose runner is `BYPASSRLS` but not superuser) or read
+  privileges for the token writer throughout `app`, which is the grant the whole design
+  exists to avoid.
+- **`content.question_items.id` is `opt_`-prefixed for options, rows *and* columns.** 0007's
+  column comment said the prefix was kind-dependent and its fixture wrote `row_…`; Deliverable C
+  §5.1 says `QuestionItem` is *one shape* for all three and `packages/schema` brands every item id
+  `Id<'opt'>`, with `ID_PREFIXES` carrying only `option: 'opt'`. C wins by rule — it is the
+  document format the API validates against, the compiler consumes and the artifact serializes —
+  and the specific defect was fatal: `asId('opt', …)` throws on a stored `row_` id, so
+  `apps/studio`'s DSL registry raised on any matrix and the compile worker reported `SCH-0104`
+  against every row and column, meaning **no matrix question could be published**. 0010 adds
+  `qitems_id_prefix` (`NOT VALID`, then validated — a CHECK is neither a rename nor a type change,
+  so the linter's two bans do not apply) and rewrites `ops.test_seed_content`. **There is no data
+  step**, and the claim was verified rather than assumed: the table is empty in every migrated
+  database, `apps/*` has no INSERT path into it at all, and the only producers of a `row_`/`col_`
+  id in the tree were 0007's fixture and 0007's own `test.sql`, both of which run inside a
+  rolled-back transaction. That verification is what made the cheap fix legitimate — an item id is
+  referenced by two composite FKs from `question_cells`, by `logic_rules.target_item_id`, by
+  `variables.source_item_id`, and by **opaque JSONB** (C §5.1's explicit mask `item_ids`, and rule
+  ASTs), so a prefix rewrite after real content exists is an expand/contract with an id-alias
+  column and a per-AST migration in TypeScript, not an `UPDATE`.
+- **`content.redirects` is narrower than Deliverable B's P2-10 table: it has no `allow_pii`.**
+  B schedules the table for Phase 2 "flattened with `allow_pii`", and 0010 creates it in P1-08
+  with B's name, B's flattening and B's version scoping but without that column — because
+  `CMP-0300` ("a termination with no configured redirect is a compile error", C §17) blocks
+  **every** survey until the table exists: C §6's synthesized flow always reaches `COMPLETE`.
+  `allow_pii` is deferred because C §9 blocks a `pii` variable in a template "unless explicitly
+  allowed" and *what "allowed" is scoped to* — a redirect, a vendor, a variable, or K §1's
+  `pii_access` capability — is what the P2-10 vendor work decides; guessing produces a column
+  whose meaning has to be migrated, which is the argument 0008 made for `on_unknown` and 0009 for
+  `quota_policy`. Adding it later is one non-rewriting `ADD COLUMN … DEFAULT false`, in the safe
+  direction. Rejected alternative: a `redirects jsonb` blob on the version or one row per version.
+  It is less code and the wrong shape, for the reason B §6 gives for one row per string — the
+  operational questions ("which surveys point at the vendor we are dropping", "which templates
+  interpolate a PII variable") are per-row, and `allow_pii` when it lands is a per-redirect fact
+  with nowhere to live in a blob but its own duplicated key.
+- **`content.redirects.disposition` is `text` + CHECK, not `runtime.disposition`.** K §2's
+  registry is an ENUM *in schema `runtime`*, and a column of that type would require every writer
+  to hold `USAGE` on that schema — which is exactly the grant ADR-001's plane boundary withholds
+  from `authoring`. So the eight labels K §2 marks "redirect required" are mirrored into a CHECK
+  (the same mirroring 0008 used for `RULE_EVALUATIONS` / `RULE_AUTHORED_IN`), spelled out rather
+  than delegated to `runtime.disposition_requires_redirect()` because a CHECK cannot call across
+  the boundary the type cannot cross either. `IN_PROGRESS`, `ABANDONED` and `TIMED_OUT` are
+  therefore unstorable here: the first is not terminal and the other two are inferred by a
+  sweeper, so there is nobody left to redirect.
+- **`app.enqueue_job` lives in `app`, takes no `org_id` and no `created_by`, and floors at
+  `analyst`.** The placement is 0005 §2's argument for `app.get_job`, applied to the write side:
+  `EXECUTE` without schema `USAGE` is inert, so `GRANT EXECUTE ON FUNCTION ops.enqueue_job` fails
+  with "permission denied for schema ops" and the studio could not queue its own publish job. Both
+  omitted parameters are derived inside the definer, because `ops.jobs.org_id` and
+  `ops.jobs.created_by` are the **only** input to 0009's publish capability check — the compile
+  worker assumes the enqueuing user's identity from them — so a parameter for either would be a
+  way to publish as somebody else with an audit row naming a human who never clicked anything. A
+  service-role enqueue is not an acceptable substitute: it leaves `created_by` NULL and
+  `app.publish_version` then refuses the job, so it produces work that can never succeed. The
+  floor is coarse on purpose: 0003 made `ops.jobs.kind` free text so that adding a job kind needs
+  no migration, so a kind → capability map here would be a second registry that can disagree with
+  `apps/worker`'s — the real authorization is one layer down, where `app.publish_version` re-checks
+  `project_manager` for production and `programmer` for staging. Note the one non-obvious part,
+  which this migration's `test.sql` caught: `app.can_see_project()` is a project-*scoping*
+  predicate and not a tenancy one (for a staff role with empty `project_ids` it is true of any id,
+  including another org's), so the wrapper pairs it with an explicit `org_id` check exactly as
+  0004's `app.can_see_survey` and 0007's `app.can_see_version` do.
+- **`ops.tables_without_rls()` cannot see `runtime.survey_tokens`.** It scans
+  `app`/`content`/`billing`/`export`, which is B §12's list, so the standing guard is blind
+  to schema `runtime`; 0009 enables *and* forces RLS anyway and asserts `relrowsecurity` /
+  `relforcerowsecurity` from `pg_class` directly. Adding `'runtime'` to that function's
+  schema list is one `CREATE OR REPLACE` and should happen when P1-09/P1-10 add
+  `runtime.sessions` and the hash-partitioned event tables — each of which needs its own
+  decision about partition-level RLS, which is why 0009 did not make it for them.
 
 ### What is stubbed
 
-- `runtime.resolve_token(text)` and `runtime.load_session(app.ulid)` are **placeholders that
-  return nothing**. (`app.get_job` and `app.resolve_invitation`, added in 0005, are *not*
-  stubs — they are fully implemented and tested.) They exist so ADR-009's grant shape is testable now rather than after
-  P1-08. B §2's other four RPCs (`resolve_invite_token`, `start_session`, `submit_page`,
+- `runtime.load_session(app.ulid)` is a **placeholder that returns nothing** until P1-09
+  creates `runtime.response_documents`. `runtime.resolve_token(text)` **is no longer a stub**:
+  0004 created it returning nothing so ADR-009's grant shape was testable from the start, and
+  0009 replaced the body with one that reads `runtime.survey_tokens`. The signature is
+  unchanged, so 0004 keeps the privilege and no-`org_id` assertions and 0009 owns the
+  behavioural ones. (`app.get_job` and `app.resolve_invitation`, added in 0005, were never
+  stubs.) B §2's other four RPCs (`resolve_invite_token`, `start_session`, `submit_page`,
   `flush_quota_counters`) are not created at all — a grant with no consumer is a hole waiting
   for one.
 - `content.rebalance_siblings()` was declared in 0001, before `content.nodes` existed, so the
   ordering contract had exactly one implementation from the start. **0007 redefines it** and
   it is live from there on; see the deviation note above for why the original body could
   never have run.
-- No `runtime.*` or `export.*` tables exist yet, and no `billing` tables. The
+- `runtime.survey_tokens` (P1-08) is the only `runtime` table; `runtime.sessions` and
+  `response_documents` (P1-09), `response_events` (P1-10) and the `quota_*` set (P1-12) do
+  not exist yet, nor do any `export.*` or `billing` tables. The
   two `ops.rls_exemptions` rows for `billing.plans` / `billing.plan_features` are pre-seeded
   per B §12.1 and are inert until those tables appear. The `content.*` tables that P1-03 owns
-  exist as of 0007 and `logic_rules` (P1-06) as of 0008; `flow_nodes` (P2), the `quota_*` set
-  (P1-12), `vendors`, `redirects`, `designs`, `code_assets` and `version_theme` arrive with
+  exist as of 0007, `logic_rules` (P1-06) as of 0008 and `redirects` (P1-08, narrowed — see the
+  deviation above) as of 0010; `flow_nodes` (P2), the `quota_*` set
+  (P1-12), `vendors`, `designs`, `code_assets` and `version_theme` arrive with
   the milestones that use them, each with its own RLS block, draft trigger and
   `content.clone_version` branch.
 - `content.logic_rules` has **no `on_unknown` column** yet. D §4.1's rule shape carries
@@ -395,7 +505,9 @@ ones written years from now).
 ### Partition maintenance
 
 `ops.ensure_event_partitions(months_ahead)` idempotently premakes monthly partitions for
-`app.audit_log` and — once P1-08 creates it — `runtime.response_events` with its 8-way hash
+`app.audit_log` and — once P1-10 creates it (0001's comment says P1-08; the roadmap puts
+`runtime.response_events` in P1-10 with the submit path, and 0009 did not create it) —
+`runtime.response_events` with its 8-way hash
 sub-partitions (B §8.1: time on top so retention and archival are `DETACH PARTITION`, hash
 on version underneath for export locality). It **skips any parent that does not exist yet**,
 so it is callable from 0001 onward.

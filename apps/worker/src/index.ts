@@ -59,4 +59,60 @@ export {
 
 export { NOOP_KIND, noopJob, type NoopPayload, type NoopResult } from './kinds/noop.js';
 
-export { buildRegistry, type WorkerPayloads } from './kinds/registry.js';
+export {
+  ARTIFACT_KEY_PREFIX,
+  FsArtifactStore,
+  MemoryArtifactStore,
+  SupabaseArtifactStore,
+  artifactKey,
+  sha256Of,
+  type ArtifactStore,
+  type StorageBucketLike,
+} from './artifact-store.js';
+
+export {
+  DEFAULT_SURVEY_SETTINGS,
+  SYNTHETIC_END_ID,
+  SYNTHETIC_START_ID,
+  assembleSurvey,
+  sequenceFlowNodeId,
+  type AuthoringCellRow,
+  type AuthoringItemRow,
+  type AuthoringLanguageRow,
+  type AuthoringNodeRow,
+  type AuthoringRedirectRow,
+  type AuthoringRows,
+  type AuthoringRuleRow,
+  type AuthoringStringRow,
+  type AuthoringSurveyRow,
+  type AuthoringVariableRow,
+  type AuthoringVersionRow,
+} from './authoring-model.js';
+
+export {
+  PUBLISH_SQL,
+  PgPublishStore,
+  poolSessions,
+  savepointSessions,
+  type JobIdentity,
+  type PoolLike,
+  type PublishOutcome,
+  type PublishRequest,
+  type PublishStore,
+  type SessionFactory,
+  type SqlSession,
+} from './publish-store.js';
+
+export {
+  COMPILE_KIND,
+  COMPILE_STAGES,
+  compileJob,
+  unconfiguredCompileEnvironment,
+  type CompileEnvironment,
+  type CompileJobResult,
+  type CompilePayload,
+  type CompileWarningRecord,
+  type PublishTarget,
+} from './kinds/compile.js';
+
+export { buildRegistry, type WorkerDependencies, type WorkerPayloads } from './kinds/registry.js';

@@ -52,6 +52,22 @@ export interface ArtifactManifest {
   readonly csp_directives: { readonly [directive: string]: readonly string[] };
   readonly variable_manifest: readonly VariableManifestEntry[];
   readonly entitlements: readonly string[];
+  /**
+   * `"<plugin id>@<major>" → the exact version that compiled this artifact`.
+   *
+   * **Added in artifact schema version 1 by milestone P1-08, append-only.** F §5 pins a published
+   * survey to the plugin version it compiled against, and until this field existed the only
+   * record of that was `CompiledQuestion.question_type` — which carries the *major* and not the
+   * version, is per question rather than per plugin, and is absent for a matrix's per-cell
+   * controls (`QuestionCell.control.question_type` is resolved too, and its resolution is
+   * nowhere in a compiled page). A runtime that has to answer "which build of `matrix` rendered
+   * this survey in March" needs the exact version, so the manifest carries it once per key rather
+   * than the survey carrying it never.
+   *
+   * Keyed by the `id@major` form because that is the identity the registry resolves and the
+   * identity a compiled question names; the value is opaque to everything but provenance.
+   */
+  readonly plugin_versions: { readonly [pluginKey: string]: string };
 }
 
 /** A flattened page graph with static edges, so the runtime never scans the whole survey. */
@@ -102,13 +118,72 @@ export interface CompiledRule {
 }
 
 /**
- * Cross-page rules indexed by trigger variable. Indexing is what keeps this file small
- * relative to rule count: a page change dirties a handful of variables, and only their rules
- * are considered.
+ * One cell of the dependency graph, in its serialized form.
+ *
+ * A cell is any piece of derived state a rule can write and another can read: a variable's
+ * value, a node's visibility, a question's item set on one axis, one property of one option, a
+ * validation verdict, a termination, a flow decision. `key` is the canonical string form
+ * (`value(var_x)`, `visible(qst_x)`, `items(qst_x.options)`, …) and `cell` is the tagged union
+ * itself, so the runtime can rehydrate without parsing the key.
+ */
+export interface ArtifactLogicCell {
+  readonly key: string;
+  readonly kind: string;
+  readonly cell: JsonObject;
+}
+
+/**
+ * The compiled logic program: the cell graph, its evaluation order, and the flattened AST.
+ *
+ * WHY THE CELL GRAPH IS IN THE ARTIFACT rather than rebuilt at runtime. Building it needs the
+ * type environment, which needs the authoring variable registry — and ADR-001 says the runtime
+ * may not read authoring tables. Recomputing it per session would also make the topological
+ * order a function of runtime code rather than of the published bytes, which is exactly the
+ * property ADR-002's content addressing exists to pin: two respondents on one artifact must
+ * evaluate rules in the same order, in the same order they did six months ago.
+ *
+ * EVERY INDEX IN THIS STRUCTURE IS POSITIONAL and fixed by `rules` being in canonical
+ * (`order_key`, then `id`) order and `cells` being sorted by (phase rank, key). Neither is
+ * discovery order. That is what turns "identical verdicts under 1,000 randomized rule
+ * orderings" from an assertion about behaviour into an assertion about bytes.
  */
 export interface ArtifactLogic {
-  readonly by_trigger_variable: { readonly [variableId: string]: readonly CompiledRule[] };
+  /** Cell registry. A cell's index is its position here. */
+  readonly cells: readonly ArtifactLogicCell[];
+  /** Cell indices in evaluation order. Empty iff the graph was cyclic — which blocks publish. */
+  readonly topo: readonly number[];
+  /** Cell index → its position in `topo`; `-1` for a cell absent from it. */
+  readonly topo_pos: readonly number[];
+  /** Forward edges, for propagation: cell index → the cells it can dirty. */
+  readonly dependents: readonly (readonly number[])[];
+  /** Reverse edges, for explaining a cycle and for the trace: cell index → its inputs. */
+  readonly inputs: readonly (readonly number[])[];
+  /** Cell index → indices into `rules`, in application order. */
+  readonly writers: readonly (readonly number[])[];
+  /**
+   * Variable id → the transitively downstream cells, topo-ordered. This is the "what could
+   * this answer affect" index: a page submit dirties a handful of variables, and only their
+   * downstream cells are considered, which is what keeps evaluation cost proportional to the
+   * change rather than to the survey.
+   */
+  readonly by_trigger_variable: { readonly [variableId: string]: readonly number[] };
+  /** Node/variable id → the `valid(rule)` cell indices scoped to it. */
+  readonly valid_by_target: { readonly [targetId: string]: readonly number[] };
+  /** The rules, in the canonical order that fixes every index above. */
   readonly rules: readonly CompiledRule[];
+  /**
+   * The flattened, common-subexpression-eliminated AST. `nodes[i].n === i` and the array is
+   * dense, so a node id is an index and memoization is an array lookup rather than a map hit.
+   */
+  readonly nodes: readonly Expr[];
+  /** Authored defaults, resolved once so the runtime never needs the authoring model. */
+  readonly base_visible: { readonly [nodeId: string]: boolean };
+  /** Key is `${questionId}.${axis}`; value is the unmasked item codes in canonical order. */
+  readonly base_items: { readonly [questionAxis: string]: readonly number[] };
+  /** Key is `${optionId}.${prop}`. */
+  readonly base_option: { readonly [optionProp: string]: boolean };
+  /** Cell index (as a decimal string) → index into `nodes` of its defining expression. */
+  readonly derived: { readonly [cellIndex: string]: number };
 }
 
 export interface CompiledArtifact {

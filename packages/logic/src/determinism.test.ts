@@ -192,3 +192,50 @@ describe('the D §4.3 four-rule fixture', () => {
     expect(verdict.value(V.skipped)).toBe(TRUE);
   });
 });
+
+/**
+ * The CSE key must be a function of a literal's meaning, not of how its JSON was spelled.
+ *
+ * Found while building P1-08's artifact emitter: `discriminant` keyed a `lit` node on
+ * `JSON.stringify(e.v)`, which walks own-property insertion order. So `{k:'bool',v:true}` and
+ * `{v:true,k:'bool'}` — one literal, two spellings — hashed differently, the interner declined to
+ * share them, and the flattened AST came out one node longer. Node ids are indices into that
+ * array in the artifact, so every id after the literal shifted and the artifact hash moved for a
+ * survey nobody had edited.
+ *
+ * Only reachable for a document that did not come from Postgres (`jsonb` normalizes key order):
+ * an imported questionnaire, a fixture, a survey round-tripped through a formatter. Which is to
+ * say, exactly the paths where a hash change gets blamed on the importer.
+ */
+describe('literal interning is spelling-independent', () => {
+  it('shares two identically-meaning literals spelled with different key order', () => {
+    const canonicalLit = { op: 'lit' as const, n: 1, v: { k: 'bool' as const, v: true } };
+    // Same value, keys reversed. `as` because the reversal is the point and TS erases key order.
+    const reversedLit = { op: 'lit' as const, n: 1, v: { v: true, k: 'bool' as const } };
+
+    const shapeOf = (lit: typeof canonicalLit): string => {
+      const rules = fourRules().map((r) => ({ ...r, condition: lit }));
+      const program = compileLogic(rules, E);
+      return JSON.stringify({
+        nodeCount: program.nodeCount,
+        cells: program.cellKeys,
+        topo: [...program.topo].map((c) => program.cellKeys[c]),
+      });
+    };
+
+    expect(shapeOf(reversedLit)).toBe(shapeOf(canonicalLit));
+  });
+
+  it('still distinguishes literals that differ in meaning', () => {
+    // The guard against "fix it by returning a constant": TRUE and FALSE must not share a node.
+    const rules = fourRules().map((r, i) => ({
+      ...r,
+      condition: { op: 'lit' as const, n: 1, v: { k: 'bool', v: i % 2 === 0 } } as never,
+    }));
+    const boolLits = compileLogic(rules, E).nodes.filter(
+      (node) => node.op === 'lit' && node.v.k === 'bool',
+    );
+    const distinct = new Set(boolLits.map((node) => (node.op === 'lit' ? String(node.v.k === 'bool' && node.v.v) : '')));
+    expect(distinct).toEqual(new Set(['true', 'false']));
+  });
+});

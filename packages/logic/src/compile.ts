@@ -19,7 +19,7 @@
  * rows came back from Postgres in.
  */
 
-import type { Expr, Group, GroupItem } from './ast.js';
+import type { Expr, Group, GroupItem, LiteralValue } from './ast.js';
 import { childrenOf, mapChildren } from './ast.js';
 import { checkExpr, checkRule } from './check.js';
 import type { LgcDiagnostic } from './diagnostics.js';
@@ -296,7 +296,7 @@ function structuralKey(e: Expr): string {
 function discriminant(e: Expr): string {
   switch (e.op) {
     case 'lit':
-      return JSON.stringify(e.v);
+      return literalKey(e.v);
     case 'var':
       return e.var;
     case 'probe':
@@ -327,6 +327,48 @@ function discriminant(e: Expr): string {
       return String(e.cases.length);
     default:
       return '';
+  }
+}
+
+/**
+ * A literal's structural key, by explicit case rather than by `JSON.stringify`.
+ *
+ * `JSON.stringify` walks own-property insertion order, so `{"k":"bool","v":true}` and
+ * `{"v":true,"k":"bool"}` — the same literal, differently spelled — produce different keys, the
+ * interner declines to share them, and the node count changes. That is invisible until it isn't:
+ * node ids are indices into the flattened AST the artifact carries, so a re-spelled literal
+ * shifts every id after it and the artifact hash moves for a survey nobody edited. P1-08's
+ * content addressing (ADR-002) rests on the hash being a function of meaning, so the key has to
+ * be too.
+ *
+ * In practice `content.logic_rules.condition` is `jsonb`, which Postgres normalizes, so the
+ * defect only surfaces for a document parsed from hand-written JSON — an imported questionnaire,
+ * a fixture, a survey round-tripped through a formatter. Exactly the paths that get blamed on
+ * something else.
+ */
+function literalKey(v: LiteralValue): string {
+  switch (v.k) {
+    case 'null':
+      return 'null';
+    case 'bool':
+      return v.v ? 'bool:t' : 'bool:f';
+    case 'num':
+      // `String` and not `toString(36)`: -0 and 0 must not share a key, and they don't here
+      // because `String(-0)` is '0' while the sign is recovered from... nothing. So spell it.
+      return `num:${Object.is(v.v, -0) ? '-0' : String(v.v)}`;
+    case 'text':
+      return `text:${JSON.stringify(v.v)}`;
+    case 'date':
+      return `date:${v.v}`;
+    case 'enum':
+      return `enum:${String(v.v)}:${v.d}`;
+    case 'set':
+      // Codes are already sorted and deduped by `normalizeCodes`, so join is canonical.
+      return `set:${v.v.join(',')}:${v.d}`;
+    default: {
+      const never: never = v;
+      throw new LogicInvariant(`unhandled literal ${JSON.stringify(never)}`);
+    }
   }
 }
 
