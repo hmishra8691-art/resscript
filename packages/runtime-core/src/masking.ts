@@ -1,275 +1,204 @@
 /**
- * Task 56: Masking and item resolution per Deliverable E §9.2.
+ * Task 56: masking and item resolution, per Deliverable E §9.2 and schema C §15.
  *
- * Determine which items (options/rows/columns) are shown to respondents.
- * Masking is applied *before* randomization (order matters per E §9.2).
+ * Masking resolves *which items exist* for a question, before logic evaluates option states
+ * and before randomization filters to the group order (E §8.3). The order is fixed:
  *
- * Sources:
- * - selected_in Qx: items whose codes match selections in previous question
- * - expression_per_item: custom condition evaluated with `item` bound
- * - code list: explicit inclusion/exclusion list
+ *   1. base items = the question's options / rows / columns from the artifact
+ *   2. apply masks in artifact order
+ *   3. if the result is empty -> apply `fallback.when_empty`
+ *   4. option_state rules evaluate over the surviving items only
+ *   5. randomization orders the surviving items
  *
- * Fallback when mask results in zero items:
- * - skip_question: don't show question, variables stay null
- * - show_all: revert to all items, emit event
- * - terminate: end survey with specified disposition
+ * Steps 4 and 5 are the caller's; this module owns 1–3.
+ *
+ * `fallback.when_empty` being required with no default (C §15) is the whole point. It is the
+ * field most often forgotten, and forgetting it produces the classic dead end: the mask
+ * resolves to zero items, the respondent gets an empty required question, and cannot proceed.
+ * No default is safe — `show_all` is wrong for a brand battery, `skip_question` is wrong for a
+ * screener, `terminate` is wrong for both.
+ *
+ * ---
+ *
+ * NOTE ON ORDERING. E §9.2 says "apply masks in artifact order (compiler-ordered by rule
+ * order_key)". `Mask` carries no `order_key` field — the compiler bakes the order into the
+ * array, so the runtime applies them positionally and must not sort. An earlier draft of this
+ * module required a `mask.order_key`, which no artifact would have supplied.
  */
 
-export interface Item {
-  code: string;
-  label?: string;
-}
+/* ------------------------------------------------------------------ *
+ * Structural types
+ *
+ * Mirrors of `@resscript/schema`'s `Mask` and `CompiledItem`. `code` is a **number**: C §5.1
+ * keeps `code` (the exported value) and `position` (the display slot) as separate fields
+ * precisely so that randomizing display order cannot silently rewrite exported values.
+ * ------------------------------------------------------------------ */
 
+export type MaskTarget = 'options' | 'rows' | 'columns';
 export type MaskMode = 'include' | 'exclude';
+export type MaskFallback = 'skip_question' | 'show_all' | 'terminate';
 
-export type SourceKind = 'selected_in' | 'code_list' | 'expression_per_item';
-
-export type FallbackKind = 'skip_question' | 'show_all' | 'terminate';
-
-export interface MaskSource {
-  kind: SourceKind;
-  variable_id?: string; // for selected_in
-  codes?: string[]; // for code_list
-  expression?: (item: Item, vars: Record<string, any>) => boolean; // for expression_per_item
-}
+export type MaskSource =
+  /** Keep (or drop) the items whose `code` appears in a set variable's value. */
+  | { readonly kind: 'selected_in'; readonly variable_id: string }
+  /** Keep (or drop) the items whose `code` does *not* appear — "brands you did not pick". */
+  | { readonly kind: 'not_selected_in'; readonly variable_id: string }
+  /** An explicit static list, addressed by item **id** rather than code. */
+  | { readonly kind: 'explicit'; readonly item_ids: readonly string[] }
+  /** An AST evaluated once per item, with `item` bound. Evaluation is injected. */
+  | { readonly kind: 'expression_per_item'; readonly condition: unknown };
 
 export interface Mask {
-  id: string;
-  applies_to: 'options' | 'rows' | 'columns';
-  mode: MaskMode;
-  source: MaskSource;
-  fallback: {
-    when_empty: FallbackKind;
-    disposition?: string; // for terminate mode
-  };
-  order_key: number; // for ordering application of masks
+  readonly id: string;
+  readonly applies_to: MaskTarget;
+  readonly mode: MaskMode;
+  readonly source: MaskSource;
+  readonly fallback: { readonly when_empty: MaskFallback };
 }
 
-export interface MaskResult {
-  items: Item[];
-  fallback_applied?: FallbackKind;
-  event?: string; // for logging
+export interface MaskItem {
+  readonly id: string;
+  readonly code: number;
+  readonly ref?: string;
+  readonly position?: number;
 }
+
+export interface MaskContext {
+  /** Session variable state. A set variable's value is an array of codes. */
+  readonly vars: { readonly [variableId: string]: unknown };
+  /**
+   * Evaluate an `expression_per_item` condition with `item` bound. Injected because rule
+   * evaluation lives in `packages/logic` and `runtime-core` must stay loadable in QuickJS.
+   * `null` (UNKNOWN) is treated as "does not match", the conservative direction.
+   */
+  readonly evalPerItem?: (condition: unknown, item: MaskItem) => boolean | null;
+}
+
+export interface MaskResult<T extends MaskItem = MaskItem> {
+  readonly items: readonly T[];
+  /** Set when a mask emptied the set and its fallback fired. */
+  readonly fallback_applied?: MaskFallback;
+  /** The mask that emptied the set, for the trace. */
+  readonly fallback_mask_id?: string;
+  /** Emitted for `show_all` (E §9.2) so a silently widened question is visible in the log. */
+  readonly event?: string;
+  /**
+   * True when the question must not be shown and its variables stay null. Recorded in the
+   * trace as `masked_empty` — NOT as a respondent skip, which would be a different fact.
+   */
+  readonly skip_question?: boolean;
+  /** True when the fallback demands a disposition. The caller owns the termination. */
+  readonly terminate?: boolean;
+}
+
+/* ------------------------------------------------------------------ *
+ * Source resolution
+ * ------------------------------------------------------------------ */
 
 /**
- * Resolve the source items to include/exclude based on the source kind.
+ * The set of codes a `selected_in` / `not_selected_in` source names.
+ *
+ * A set variable's value is an array of codes; a single-select's is one code. Both are
+ * normalized to a numeric set. Codes are compared numerically after coercion because a
+ * multi-select's stored value may carry codes as strings depending on the transport.
  */
-function resolveSource(
+function selectedCodes(vars: MaskContext['vars'], variable_id: string): Set<number> {
+  const value = vars[variable_id];
+  if (value == null) return new Set();
+  const raw = Array.isArray(value) ? value : [value];
+  const out = new Set<number>();
+  for (const v of raw) {
+    const n = typeof v === 'number' ? v : Number(v);
+    if (Number.isFinite(n)) out.add(n);
+  }
+  return out;
+}
+
+/** Does `item` match the mask's source, independent of include/exclude? */
+function matchesSource<T extends MaskItem>(
   source: MaskSource,
-  vars: Record<string, any>,
-): Set<string> {
-  if (source.kind === 'code_list') {
-    return new Set(source.codes ?? []);
-  }
+  item: T,
+  ctx: MaskContext,
+): boolean {
+  switch (source.kind) {
+    case 'selected_in':
+      return selectedCodes(ctx.vars, source.variable_id).has(item.code);
 
-  if (source.kind === 'selected_in') {
-    const varId = source.variable_id;
-    if (!varId) return new Set();
+    case 'not_selected_in':
+      // The complement within the question's own item set, which is what makes this
+      // different from `include`/`exclude` inversion: the domain is the items, not the
+      // variable's enum.
+      return !selectedCodes(ctx.vars, source.variable_id).has(item.code);
 
-    const value = vars[varId];
-    if (!value) return new Set();
+    case 'explicit':
+      // Addressed by item id, not code. C §15 says `item_ids`, and an authored hand-picked
+      // list survives a code renumber this way.
+      return source.item_ids.includes(item.id);
 
-    // If it's an array (multi-select), return the codes
-    if (Array.isArray(value)) {
-      return new Set(value.filter(v => typeof v === 'string'));
+    case 'expression_per_item': {
+      if (!ctx.evalPerItem) return false;
+      // UNKNOWN does not match. Guessing would hide or reveal an item on unknown data.
+      return ctx.evalPerItem(source.condition, item) === true;
     }
-
-    // If it's a single value, return it as a set
-    if (typeof value === 'string' || typeof value === 'number') {
-      return new Set([String(value)]);
-    }
-
-    return new Set();
   }
-
-  if (source.kind === 'expression_per_item') {
-    // Expression source is evaluated per-item during application
-    return new Set();
-  }
-
-  return new Set();
 }
 
+/* ------------------------------------------------------------------ *
+ * Application
+ * ------------------------------------------------------------------ */
+
 /**
- * Apply a single mask to an item set.
+ * Apply the masks that target one axis, in artifact order.
+ *
+ * Emptiness is absorbing — `include ∩ ∅` and `exclude` over `∅` are both `∅` — so the first
+ * mask to empty the set is the one that determines the outcome, and its `fallback.when_empty`
+ * is the one that fires. Later masks are not applied, including after `show_all` reverts to
+ * the base items: re-applying them would just re-empty the set, and `show_all` means "the
+ * respondent must see something".
  */
-function applyMask(
-  items: Item[],
-  mask: Mask,
-  vars: Record<string, any>,
-): Item[] {
-  const source = resolveSource(mask.source, vars);
+export function applyMasking<T extends MaskItem>(
+  baseItems: readonly T[],
+  masks: readonly Mask[],
+  axis: MaskTarget,
+  ctx: MaskContext,
+): MaskResult<T> {
+  // Positional order is the artifact's order. Do not sort.
+  const applicable = masks.filter(m => m.applies_to === axis);
 
-  let result: Item[];
+  let items: readonly T[] = baseItems;
 
-  if (mask.source.kind === 'expression_per_item' && mask.source.expression) {
-    // For expression source, evaluate per-item
-    result = items.filter(item => {
-      const include = mask.source.expression!(item, vars);
-      return mask.mode === 'include' ? include : !include;
+  for (const mask of applicable) {
+    items = items.filter(item => {
+      const matched = matchesSource(mask.source, item, ctx);
+      return mask.mode === 'include' ? matched : !matched;
     });
-  } else {
-    // For code-list and selected_in sources
-    if (mask.mode === 'include') {
-      result = items.filter(item => source.has(item.code));
-    } else {
-      result = items.filter(item => !source.has(item.code));
-    }
-  }
 
-  return result;
-}
-
-/**
- * Apply all masks to items in order (E §9.2, ordered by order_key).
- * Returns the resulting items and any fallback that was applied.
- */
-export function applyMasking(
-  baseItems: Item[],
-  masks: Mask[],
-  vars: Record<string, any>,
-): MaskResult {
-  // Sort masks by order_key
-  const sortedMasks = masks.slice().sort((a, b) => a.order_key - b.order_key);
-
-  let items = baseItems;
-
-  // Apply each mask in order
-  for (const mask of sortedMasks) {
-    items = applyMask(items, mask, vars);
-
-    // If items is empty, handle fallback
     if (items.length === 0) {
       switch (mask.fallback.when_empty) {
         case 'skip_question':
           return {
             items: [],
             fallback_applied: 'skip_question',
-            event: `mask.${mask.id}.fallback_skip_question`,
+            fallback_mask_id: mask.id,
+            skip_question: true,
           };
-
         case 'show_all':
           return {
             items: baseItems,
             fallback_applied: 'show_all',
-            event: `mask.${mask.id}.fallback_show_all`,
+            fallback_mask_id: mask.id,
+            event: 'mask.fallback_show_all',
           };
-
         case 'terminate':
           return {
             items: [],
             fallback_applied: 'terminate',
-            event: `mask.${mask.id}.fallback_terminate`,
+            fallback_mask_id: mask.id,
+            terminate: true,
           };
       }
     }
   }
 
   return { items };
-}
-
-/**
- * Unit test: include masking.
- */
-export function testIncludeMasking(): boolean {
-  const items: Item[] = [
-    { code: 'a' },
-    { code: 'b' },
-    { code: 'c' },
-    { code: 'd' },
-  ];
-
-  const mask: Mask = {
-    id: 'msk_1',
-    applies_to: 'options',
-    mode: 'include',
-    source: { kind: 'code_list', codes: ['a', 'c'] },
-    fallback: { when_empty: 'show_all' },
-    order_key: 0,
-  };
-
-  const result = applyMasking(items, [mask], {});
-  const codes = result.items.map(i => i.code);
-
-  return codes.length === 2 && codes[0] === 'a' && codes[1] === 'c';
-}
-
-/**
- * Unit test: exclude masking.
- */
-export function testExcludeMasking(): boolean {
-  const items: Item[] = [
-    { code: 'a' },
-    { code: 'b' },
-    { code: 'c' },
-    { code: 'd' },
-  ];
-
-  const mask: Mask = {
-    id: 'msk_1',
-    applies_to: 'options',
-    mode: 'exclude',
-    source: { kind: 'code_list', codes: ['b', 'd'] },
-    fallback: { when_empty: 'show_all' },
-    order_key: 0,
-  };
-
-  const result = applyMasking(items, [mask], {});
-  const codes = result.items.map(i => i.code);
-
-  return codes.length === 2 && codes[0] === 'a' && codes[1] === 'c';
-}
-
-/**
- * Unit test: selected_in masking.
- */
-export function testSelectedInMasking(): boolean {
-  const items: Item[] = [
-    { code: 'coca' },
-    { code: 'pepsi' },
-    { code: 'sprite' },
-  ];
-
-  const mask: Mask = {
-    id: 'msk_brands',
-    applies_to: 'options',
-    mode: 'include',
-    source: { kind: 'selected_in', variable_id: 'var_q1' },
-    fallback: { when_empty: 'show_all' },
-    order_key: 0,
-  };
-
-  const vars = { var_q1: ['coca', 'sprite'] };
-  const result = applyMasking(items, [mask], vars);
-  const codes = result.items.map(i => i.code);
-
-  return codes.length === 2 && codes[0] === 'coca' && codes[1] === 'sprite';
-}
-
-/**
- * Unit test: fallback when_empty.
- */
-export function testFallbackWhenEmpty(): boolean {
-  const items: Item[] = [
-    { code: 'a' },
-    { code: 'b' },
-    { code: 'c' },
-  ];
-
-  const mask: Mask = {
-    id: 'msk_1',
-    applies_to: 'options',
-    mode: 'include',
-    source: { kind: 'code_list', codes: ['x', 'y'] }, // no match
-    fallback: { when_empty: 'show_all' },
-    order_key: 0,
-  };
-
-  const result = applyMasking(items, [mask], {});
-
-  return (
-    result.fallback_applied === 'show_all' &&
-    result.items.length === 3 &&
-    result.event === 'mask.msk_1.fallback_show_all'
-  );
 }

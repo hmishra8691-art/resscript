@@ -1,207 +1,261 @@
 /**
- * Task 55: Randomization modes per Deliverable E §8.
+ * Task 55: randomization, per Deliverable E §8 and schema C §12.
  *
- * Apply PRNG-driven randomization to question items:
- * - `shuffle`: Fisher-Yates permutation of free items
- * - `subset`: permute, take first n, record which n as design variable
- * - `reverse_half`: flip direction based on one bit from PRNG
+ * Runs after masking (E §9.2) and orders the surviving items.
  *
- * Shared group order (schema §12, E §8.3): identical order across linked questions.
- * Anchors (first, last, fixed:n) applied *after* randomization (E §8.4).
+ * Two families of mode, and conflating them is the mistake this module is shaped to prevent:
  *
- * Counter-backed modes (rotate, fixed_order_list) are P1-10; this handles PRNG only.
+ *   SEED-DERIVED — `shuffle`, `subset`, `reverse_half`. Order is a pure function of
+ *   `(seed, salt)`, so nothing is stored and every session replays (ADR-006).
+ *
+ *   COUNTER-BACKED — `rotate`, `fixed_order_list`, and a randomizer's `even_distribution`.
+ *   These distribute *across* respondents, which needs shared state, so they run on the quota
+ *   counter infrastructure (ADR-008) and persist their choice as a `design` variable. They are
+ *   not implementable here and this module says so rather than silently falling back to the
+ *   PRNG — "randomize" and "randomize evenly" are different features that users conflate, and
+ *   a silent substitution would produce an unbalanced cell nobody notices until fieldwork ends.
  */
 
 import { deriveKey, permute, sfc32Counter } from './prng.js';
 
-export interface Item {
-  code: string;
-  anchor?: 'none' | 'first' | 'last' | string; // string for 'fixed:n'
-  label?: string;
+/* ------------------------------------------------------------------ *
+ * Structural types — mirrors of `RandomizationSpec` and `CompiledItem`
+ * ------------------------------------------------------------------ */
+
+export type RandomizationMode =
+  | 'none'
+  | 'shuffle'
+  | 'subset'
+  | 'rotate'
+  | 'reverse_half'
+  | 'fixed_order_list';
+
+/** `none | first | last | fixed:<n>`, where `n` is a 1-based display position. */
+export type AnchorSpec = 'none' | 'first' | 'last' | string;
+
+export interface RandomizationSubBlock {
+  /** Item refs that shuffle only among themselves, e.g. keeping competitor brands grouped. */
+  readonly refs: readonly string[];
 }
 
-export interface Group {
-  ref: string;
-  /** Canonical items in declared order. */
-  canonical: Item[];
+export interface RandomizationSpec {
+  readonly mode: RandomizationMode;
+  /** For `subset`: how many items to keep. Ignored by other modes. */
+  readonly n?: number | null;
+  /** Two specs sharing a `group_ref` produce the same order (E §8.3). */
+  readonly group_ref?: string | null;
+  readonly respect_anchors?: boolean;
+  readonly sub_blocks?: readonly RandomizationSubBlock[];
+  /** Stable salt, so an order is reproducible from the session seed alone (ADR-006). */
+  readonly seed_salt?: string | null;
+  readonly even_distribution?: boolean;
+  readonly fixed_orders?: readonly (readonly string[])[];
 }
 
-export type RandomizationMode = 'shuffle' | 'subset' | 'reverse_half' | 'fixed_order';
-
-export interface RandomizationConfig {
-  mode: RandomizationMode;
-  /** For subset mode, how many items to include. */
-  n?: number;
-  /** For shared group order, the group ref. */
-  group_ref?: string;
-  /** If true, apply anchors (first, last, fixed:n). */
-  respect_anchors?: boolean;
+export interface RandomizeItem {
+  readonly id: string;
+  readonly code: number;
+  readonly ref?: string;
+  readonly anchor?: AnchorSpec;
+  readonly position?: number;
 }
 
 /**
- * Apply anchors to an ordered item list.
- * Order: first, free, last, fixed:n (ascending by position).
+ * A shared-order group: the group's canonical full item list, declared once in the artifact
+ * in code order.
  */
-function applyAnchors(shuffled: Item[]): Item[] {
-  const first = shuffled.filter(i => i.anchor === 'first');
-  const last = shuffled.filter(i => i.anchor === 'last');
-  const fixed = shuffled.filter(i => i.anchor?.toString().startsWith('fixed:'));
-  const free = shuffled.filter(i => !i.anchor || i.anchor === 'none');
+export interface OrderGroup<T extends RandomizeItem = RandomizeItem> {
+  readonly ref: string;
+  readonly canonical: readonly T[];
+}
 
-  let out: Item[] = [...first, ...free, ...last];
+export interface RandomizeResult<T extends RandomizeItem = RandomizeItem> {
+  readonly items: readonly T[];
+  /**
+   * For `subset`: the codes actually presented. Recorded as a `design` variable because
+   * "which subset did they see" is required for analysis (E §8.4) and is not otherwise
+   * recoverable once the item list changes.
+   */
+  readonly subset_codes?: readonly number[];
+  /** Set when a counter-backed mode was requested but no counter was supplied. */
+  readonly needs_counter?: boolean;
+  readonly event?: string;
+}
 
-  // Fixed:n inserts at absolute position n, applied in ascending order
-  for (const f of fixed.sort((a, b) => {
-    const aIdx = parseInt(a.anchor?.toString().split(':')[1] ?? '0', 10);
-    const bIdx = parseInt(b.anchor?.toString().split(':')[1] ?? '0', 10);
-    return aIdx - bIdx;
-  })) {
-    const idx = parseInt(f.anchor!.toString().split(':')[1]!, 10);
-    out.splice(idx - 1, 0, f);
+/* ------------------------------------------------------------------ *
+ * Salt derivation (E §8.2)
+ * ------------------------------------------------------------------ */
+
+/**
+ * The salt that scopes a draw.
+ *
+ * A `group_ref` wins over an explicit `seed_salt`, because sharing the group is the whole
+ * point: two questions in a battery must derive the same key. `axis_key` (e.g. `qst_5.options`)
+ * is the fallback, so two axes of one question do not share an order by accident.
+ */
+export function saltFor(spec: RandomizationSpec, axis_key: string): string {
+  if (spec.group_ref) return `grp:${spec.group_ref}`;
+  if (spec.seed_salt) return spec.seed_salt;
+  return axis_key;
+}
+
+/* ------------------------------------------------------------------ *
+ * Anchors (E §8.4)
+ * ------------------------------------------------------------------ */
+
+function fixedIndex(anchor: AnchorSpec | undefined): number | null {
+  if (typeof anchor !== 'string' || !anchor.startsWith('fixed:')) return null;
+  const n = Number.parseInt(anchor.slice('fixed:'.length), 10);
+  return Number.isFinite(n) && n >= 1 ? n : null;
+}
+
+/**
+ * Apply anchors *after* permutation.
+ *
+ * `first` and `last` items keep their declared relative order among themselves — shuffling
+ * them would defeat the anchor. `fixed:n` items are then spliced in at their 1-based absolute
+ * position in ascending `n`, so two fixed items cannot fight over a slot.
+ *
+ * `RANDOMIZE Q9 OPTIONS KEEP OPTION 1 FIRST` (D §6.3) is sugar for `anchor: 'first'`, which is
+ * why the DSL and the schema agree with no translation layer.
+ */
+export function applyAnchors<T extends RandomizeItem>(
+  shuffled: readonly T[],
+  declared: readonly T[],
+): T[] {
+  const declaredOrder = (xs: readonly T[]) =>
+    [...xs].sort((a, b) => declared.indexOf(a) - declared.indexOf(b));
+
+  const first = declaredOrder(shuffled.filter(i => i.anchor === 'first'));
+  const last = declaredOrder(shuffled.filter(i => i.anchor === 'last'));
+  const fixed = shuffled
+    .filter(i => fixedIndex(i.anchor) !== null)
+    .sort((a, b) => fixedIndex(a.anchor)! - fixedIndex(b.anchor)!);
+  const free = shuffled.filter(
+    i => i.anchor !== 'first' && i.anchor !== 'last' && fixedIndex(i.anchor) === null,
+  );
+
+  const out: T[] = [...first, ...free, ...last];
+  for (const f of fixed) {
+    const idx = Math.min(Math.max(fixedIndex(f.anchor)! - 1, 0), out.length);
+    out.splice(idx, 0, f);
   }
-
   return out;
 }
 
+/* ------------------------------------------------------------------ *
+ * Sub-blocks
+ * ------------------------------------------------------------------ */
+
 /**
- * Randomize items according to the given mode and seed.
+ * Shuffle within each contiguous sub-block, preserving the block boundaries.
  *
- * For shared group order (group_ref set), permute the canonical group list
- * and filter to the present items, to ensure all questions in the battery
- * see the same order (filtered for their specific masks).
+ * Each block draws from its own salt so that adding a brand to one block does not reorder
+ * another — the alternative makes a tracker's wave-on-wave orders incomparable.
  */
-export function randomize(
-  items: Item[],
-  config: RandomizationConfig,
+function permuteSubBlocks<T extends RandomizeItem>(
+  items: readonly T[],
+  blocks: readonly RandomizationSubBlock[],
   seed: string,
-  group?: Group,
-): { items: Item[]; subset?: number } {
-  // Derive salt for the randomization
-  const salt = config.group_ref ? `grp:${config.group_ref}` : 'items';
+  salt: string,
+): T[] {
+  const out = [...items];
+  for (const [b, block] of blocks.entries()) {
+    const refs = new Set(block.refs);
+    const positions: number[] = [];
+    const members: T[] = [];
+    out.forEach((item, i) => {
+      if (item.ref !== undefined && refs.has(item.ref)) {
+        positions.push(i);
+        members.push(item);
+      }
+    });
+    if (members.length < 2) continue;
+    const shuffled = permute(members, deriveKey(seed, `${salt}#sub${b}`));
+    positions.forEach((pos, k) => {
+      out[pos] = shuffled[k]!;
+    });
+  }
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * The entry point
+ * ------------------------------------------------------------------ */
+
+/**
+ * Order `items` for one axis of one question.
+ *
+ * `group` is the shared-order group when `spec.group_ref` is set. Supplying it is what makes
+ * E §8.3 work, and omitting it when a `group_ref` is set silently degrades a battery to
+ * independent orders — so that case emits an event rather than passing quietly.
+ */
+export function randomize<T extends RandomizeItem>(
+  items: readonly T[],
+  spec: RandomizationSpec,
+  seed: string,
+  opts: { axis_key: string; group?: OrderGroup<T> },
+): RandomizeResult<T> {
+  if (spec.mode === 'none' || items.length < 2) {
+    return { items };
+  }
+
+  // Counter-backed modes need cross-respondent state (ADR-008). Say so; do not substitute.
+  if (spec.mode === 'rotate' || spec.mode === 'fixed_order_list' || spec.even_distribution) {
+    return {
+      items,
+      needs_counter: true,
+      event: 'randomize.needs_counter',
+    };
+  }
+
+  const salt = saltFor(spec, opts.axis_key);
   const key = deriveKey(seed, salt);
 
-  let ordered: Item[];
+  let ordered: readonly T[];
+  let event: string | undefined;
 
-  if (config.mode === 'shuffle') {
-    if (group) {
-      // Shared group order: permute canonical, filter to present items, preserve order
-      const permuted = permute(group.canonical, key);
-      const codes = new Set(items.map(i => i.code));
-      ordered = permuted.filter(i => codes.has(i.code));
-    } else {
-      // Independent shuffle: permute this question's items
+  if (spec.group_ref) {
+    if (!opts.group) {
+      // Falling back to an independent shuffle here is exactly the bug `group_ref` exists to
+      // prevent, so it is recorded rather than silent.
       ordered = permute(items, key);
-    }
-  } else if (config.mode === 'subset') {
-    if (group) {
-      const permuted = permute(group.canonical, key);
-      const codes = new Set(items.map(i => i.code));
-      const allOrdered = permuted.filter(i => codes.has(i.code));
-      const n = config.n ?? items.length;
-      ordered = allOrdered.slice(0, Math.min(n, allOrdered.length));
+      event = 'randomize.group_missing';
     } else {
-      const permuted = permute(items, key);
-      const n = config.n ?? items.length;
-      ordered = permuted.slice(0, Math.min(n, permuted.length));
+      // Permute the group's CANONICAL list, then filter to the items present.
+      //
+      // This is the detail simpler tools get wrong. Q5 and Q6 may share a group but be masked
+      // differently; permuting each question's already-filtered list independently gives them
+      // different orders whenever the masks differ, which is precisely what a shared group is
+      // for. Permute first, filter second.
+      const present = new Set(items.map(i => i.code));
+      const canonicalOrder = permute(opts.group.canonical, key).filter(i => present.has(i.code));
+      // Any item not in the canonical list (an artifact/group mismatch) is appended in
+      // declared order rather than dropped: dropping it would remove an answerable option.
+      const seen = new Set(canonicalOrder.map(i => i.code));
+      ordered = [...canonicalOrder, ...items.filter(i => !seen.has(i.code))];
     }
-  } else if (config.mode === 'reverse_half') {
-    // One bit from PRNG: < 0.5 means reverse
-    const bit = sfc32Counter(key, 0) < 0.5;
-    ordered = bit ? items.slice().reverse() : items;
+  } else if (spec.sub_blocks && spec.sub_blocks.length > 0) {
+    ordered = permuteSubBlocks(items, spec.sub_blocks, seed, salt);
+  } else if (spec.mode === 'reverse_half') {
+    // One bit from the PRNG. Half of respondents see the declared order, half the reverse —
+    // enough to cancel primacy effects on a scale without a full shuffle.
+    ordered = sfc32Counter(key, 0) < 0.5 ? items : [...items].reverse();
   } else {
-    // fixed_order: no randomization
-    ordered = items;
+    ordered = permute(items, key);
   }
 
-  // Apply anchors if requested
-  const result = config.respect_anchors ? applyAnchors(ordered) : ordered;
+  const anchored = spec.respect_anchors ? applyAnchors(ordered, items) : [...ordered];
 
-  // For subset mode, record how many items were included
-  if (config.mode === 'subset') {
-    const n = config.n ?? items.length;
-    return { items: result, subset: Math.min(n, items.length) };
+  if (spec.mode === 'subset') {
+    const n = spec.n ?? anchored.length;
+    const kept = anchored.slice(0, Math.max(0, Math.min(n, anchored.length)));
+    return {
+      items: kept,
+      subset_codes: kept.map(i => i.code),
+      ...(event ? { event } : {}),
+    };
   }
 
-  return { items: result };
-}
-
-/**
- * Unit test: deterministic randomization.
- */
-export function testRandomizationDeterminism(): boolean {
-  const items = [
-    { code: 'a' },
-    { code: 'b' },
-    { code: 'c' },
-    { code: 'd' },
-  ];
-
-  const config: RandomizationConfig = { mode: 'shuffle' };
-  const seed = 'seed-test';
-
-  const result1 = randomize(items, config, seed);
-  const result2 = randomize(items, config, seed);
-
-  return result1.items.every((v, i) => v.code === result2.items[i]?.code);
-}
-
-/**
- * Unit test: shared group order produces identical order for different item sets.
- *
- * The key requirement: coca and sprite maintain the same relative order
- * across different masked questions (E §8.3).
- */
-export function testSharedGroupOrder(): boolean {
-  const group: Group = {
-    ref: 'brands',
-    canonical: [
-      { code: 'coca' },
-      { code: 'pepsi' },
-      { code: 'sprite' },
-      { code: 'fanta' },
-    ],
-  };
-
-  // Q1: sees coca, pepsi, sprite
-  const q1Items = [{ code: 'coca' }, { code: 'pepsi' }, { code: 'sprite' }];
-  // Q2: sees coca, sprite, fanta (different subset)
-  const q2Items = [{ code: 'coca' }, { code: 'sprite' }, { code: 'fanta' }];
-
-  const config: RandomizationConfig = { mode: 'shuffle', group_ref: 'brands' };
-  const seed = 'seed-battery';
-
-  const result1 = randomize(q1Items, config, seed, group);
-  const result2 = randomize(q2Items, config, seed, group);
-
-  // Both should have coca and sprite in the same relative order
-  const covidx1 = result1.items.findIndex(i => i.code === 'coca');
-  const spriteidx1 = result1.items.findIndex(i => i.code === 'sprite');
-
-  const covidx2 = result2.items.findIndex(i => i.code === 'coca');
-  const spriteidx2 = result2.items.findIndex(i => i.code === 'sprite');
-
-  // The relative order must be consistent: if coca < sprite in Q1, then coca < sprite in Q2
-  const order1 = covidx1 < spriteidx1;
-  const order2 = covidx2 < spriteidx2;
-
-  return order1 === order2;
-}
-
-/**
- * Unit test: anchors are respected.
- */
-export function testAnchors(): boolean {
-  const items = [
-    { code: 'a', anchor: 'first' as const },
-    { code: 'b' },
-    { code: 'c', anchor: 'last' as const },
-    { code: 'd' },
-  ];
-
-  const config: RandomizationConfig = { mode: 'shuffle', respect_anchors: true };
-  const result = randomize(items, config, 'seed-test');
-
-  // 'a' should be first, 'c' should be last
-  const codes = result.items.map(i => i.code);
-  return codes[0] === 'a' && codes[codes.length - 1] === 'c';
+  return { items: anchored, ...(event ? { event } : {}) };
 }

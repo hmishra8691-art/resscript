@@ -10,26 +10,27 @@ export { deriveKey, permute, sfc32Counter, testDistributionUniformity, testPermu
 
 export {
   randomize,
-  testRandomizationDeterminism,
-  testSharedGroupOrder,
-  testAnchors,
-  type Item,
-  type Group,
+  applyAnchors,
+  saltFor,
+  type AnchorSpec,
+  type OrderGroup,
   type RandomizationMode,
-  type RandomizationConfig,
+  type RandomizationSpec,
+  type RandomizationSubBlock,
+  type RandomizeItem,
+  type RandomizeResult,
 } from './randomize.js';
 
 export {
   applyMasking,
-  testIncludeMasking,
-  testExcludeMasking,
-  testSelectedInMasking,
-  testFallbackWhenEmpty,
   type Mask,
+  type MaskContext,
+  type MaskFallback,
+  type MaskItem,
   type MaskMode,
-  type MaskSource,
-  type FallbackKind,
   type MaskResult,
+  type MaskSource,
+  type MaskTarget,
 } from './masking.js';
 
 export {

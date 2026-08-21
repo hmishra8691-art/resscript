@@ -74,7 +74,7 @@ export function deriveKey(seed: string, salt: string): [number, number, number, 
  * The permutation depends only on (key, array.length), not on call order.
  * Two calls with the same seed and salt always produce the same permutation.
  */
-export function permute<T>(items: T[], key: [number, number, number, number]): T[] {
+export function permute<T>(items: readonly T[], key: [number, number, number, number]): T[] {
   const a = items.slice();
   for (let i = a.length - 1; i > 0; i--) {
     const j = Math.floor(sfc32Counter(key, i) * (i + 1));
