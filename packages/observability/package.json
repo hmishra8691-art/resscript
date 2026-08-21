@@ -6,10 +6,12 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
+      "node": "./dist/index.js",
       "default": "./src/index.ts"
     },
     "./node": {
       "types": "./src/node.ts",
+      "node": "./dist/node.js",
       "default": "./src/node.ts"
     }
   },

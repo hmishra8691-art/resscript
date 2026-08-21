@@ -89,16 +89,23 @@ export type FlowNodeLike =
     }
   | { readonly id: string; readonly type: 'end'; readonly disposition: string };
 
+/**
+ * What the machine reads from the artifact: the graph, and nothing else.
+ *
+ * Deliberately NOT `pages`. C §17's contract is that rendering one page costs manifest + graph +
+ * logic + *one* page, so a 2,000-question survey renders its 40th page with the same number of
+ * byte-reads as a 20-question one. A machine that needed every page's `block_path` to route would
+ * force the loader to fetch all of them and quietly break that.
+ *
+ * `page_entry` is the compiler's precomputed `page_id -> flow node id` index and is exactly the
+ * routing information required, so the machine never scans content.
+ */
 export interface MachineArtifact {
   readonly graph: {
     readonly page_order: readonly string[];
     readonly nodes: readonly FlowNodeLike[];
-  };
-  readonly pages: {
-    readonly [pageId: string]: {
-      readonly id: string;
-      readonly block_path: readonly string[];
-    };
+    /** `page_id -> flow node id`. Precomputed by the compiler (C §17). */
+    readonly page_entry: { readonly [pageId: string]: string };
   };
 }
 
@@ -191,19 +198,15 @@ function nodeById(artifact: MachineArtifact, id: string): FlowNodeLike | undefin
 }
 
 /**
- * The pages a `sequence` or `loop` node covers, in `page_order`.
+ * The pages a flow node covers, in `page_order`.
  *
- * `target_id` may name a page directly or a block containing pages. A page belongs to a block
- * when the block appears in the page's `block_path`, so nested blocks resolve without the
- * machine walking the content tree.
+ * Read off `page_entry`, which the compiler populates by flattening the content tree at publish
+ * time. Two reasons this beats resolving `sequence.target_id` against each page's `block_path`:
+ * nested blocks are already resolved, and the machine does not need a single page object — which
+ * is what keeps per-page cost independent of survey size (C §17).
  */
-export function pagesForTarget(artifact: MachineArtifact, target_id: string): string[] {
-  return artifact.graph.page_order.filter(pageId => {
-    const page = artifact.pages[pageId];
-    if (!page) return false;
-    if (page.id === target_id) return true;
-    return page.block_path.includes(target_id);
-  });
+export function pagesForNode(artifact: MachineArtifact, node_id: string): string[] {
+  return artifact.graph.page_order.filter(pageId => artifact.graph.page_entry[pageId] === node_id);
 }
 
 function isVisible(ctx: PureCtx, page_id: string): boolean {
@@ -211,19 +214,19 @@ function isVisible(ctx: PureCtx, page_id: string): boolean {
 }
 
 /**
- * The next visible page inside `target_id` strictly after `after`, or the first if `after` is
+ * The next visible page owned by `node_id`, strictly after `after`, or the first if `after` is
  * null. Returns null when the sequence is exhausted — the caller then follows `node.next`.
  *
  * Invisible pages are skipped here rather than filtered upstream so that a page made visible
  * by an answer on an earlier page of the same block is picked up on this pass.
  */
-function nextPageInTarget(
+function nextPageInNode(
   artifact: MachineArtifact,
   ctx: PureCtx,
-  target_id: string,
+  node_id: string,
   after: string | null,
 ): string | null {
-  const pages = pagesForTarget(artifact, target_id);
+  const pages = pagesForNode(artifact, node_id);
   const start = after === null ? 0 : pages.indexOf(after) + 1;
   if (after !== null && start === 0) {
     // `after` is not in this sequence — treat it as "start from the beginning".
@@ -289,7 +292,7 @@ function traverse<S extends MachineSession>(
 
       case 'sequence':
       case 'loop': {
-        const page = nextPageInTarget(artifact, ctx, node.target_id, resumeAfter);
+        const page = nextPageInNode(artifact, ctx, node.id, resumeAfter);
         if (page !== null) {
           cmds.push({ c: 'render', page_id: page });
           const alreadyVisited = state.history.filter(v => v.page_id === page).length;

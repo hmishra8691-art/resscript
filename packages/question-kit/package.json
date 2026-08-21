@@ -6,14 +6,17 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
+      "node": "./dist/index.js",
       "default": "./src/index.ts"
     },
     "./react": {
       "types": "./src/react.ts",
+      "node": "./dist/react.js",
       "default": "./src/react.ts"
     },
     "./testkit": {
       "types": "./src/testkit/index.ts",
+      "node": "./dist/testkit/index.js",
       "default": "./src/testkit/index.ts"
     }
   },

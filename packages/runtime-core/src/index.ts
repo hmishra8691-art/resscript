@@ -72,7 +72,7 @@ export {
 
 export {
   step,
-  pagesForTarget,
+  pagesForNode,
   type Cmd,
   type Disposition,
   type FlowNodeLike,

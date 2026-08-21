@@ -1,126 +1,295 @@
 /**
- * Artifact loader with 3-tier caching: in-process LRU → CDN → object storage.
+ * Artifact loading, per Deliverable C §17 and E §16.
  *
- * Artifacts are immutable (ADR-002) and content-addressed, so cache keys are hashes
- * and TTL is infinite — a hash never needs invalidation.
+ * The contract that shapes this module: **rendering one page costs `manifest` + `graph` + `logic`
+ * + one page.** The first three are fetched once per session and cached, so survey size affects
+ * the one-time cost and not the per-page cost — a 2,000-question survey renders its 40th page with
+ * the same number of byte-reads as a 20-question one. So the interface is deliberately split:
+ * `head()` for the once-per-session part, `page()` for the per-page part. A `get()` returning a
+ * whole `CompiledArtifact` cannot honour that, because the caller has no way to express "just this
+ * page" and every entry would pull every page.
  *
- * L1 (in-process): 64 artifacts or 512 MB, whichever fills first.
- *   Hit rate >99.5% in steady state; a runtime instance serves a handful of surveys.
+ * The compiler's file tree (`packages/compiler/src/emit/bundle.ts`):
  *
- * L2 (CDN): Cache-Control: public, max-age=31536000, immutable.
- *   Per-file caching by hash in the URL.
+ *   manifest.json
+ *   graph.json
+ *   logic.json
+ *   pages/<language>/<page id>.json     <- per language, which is why `page()` takes one
+ *   i18n/<language>.json
+ *   quotas.json                          (optional)
+ *   designs/<ref>.json                   (optional)
  *
- * L3 (object storage): Durable, the authoritative copy. Manifest fetched first.
- *
- * Sub-files are cached individually, so a 2,000-question survey occupies cache
- * proportional to the pages being served, not the full size.
+ * Artifacts are immutable and content-addressed (ADR-002), so cache keys are hashes and there is
+ * no TTL and no invalidation: a hash never changes meaning.
  */
 
-import type { CompiledArtifact, ArtifactManifest } from '@resscript/schema';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { createLogger } from '@resscript/observability';
+import type {
+  ArtifactGraph,
+  ArtifactLogic,
+  ArtifactManifest,
+  CompiledPage,
+} from '@resscript/schema';
+
+const log = createLogger({ service: 'runtime-artifacts' });
+
+/** The once-per-session part of an artifact. */
+export interface ArtifactHead {
+  readonly hash: string;
+  readonly manifest: ArtifactManifest;
+  readonly graph: ArtifactGraph;
+  readonly logic: ArtifactLogic;
+}
+
+export class ArtifactNotFound extends Error {
+  constructor(readonly hash: string, readonly path: string) {
+    super(`Artifact file not found: ${hash}/${path}`);
+    this.name = 'ArtifactNotFound';
+  }
+}
 
 export interface ArtifactLoader {
-  /** Load a complete artifact by hash. Throws if not found after L3 exhausted. */
-  get(hash: string): Promise<CompiledArtifact>;
-
-  /** Pre-warm L1 cache. Called on first token resolution for a hash never seen. */
+  /** `manifest` + `graph` + `logic`. Cached per hash for the process lifetime. */
+  head(hash: string): Promise<ArtifactHead>;
+  /** One page in one language, or null when the artifact has no such page. */
+  page(hash: string, language: string, pageId: string): Promise<CompiledPage | null>;
+  /** Best-effort pre-warm of the head. Never throws. */
   warm(hash: string): Promise<void>;
 }
 
-/** In-process LRU cache for artifacts. */
-class ArtifactCache {
-  private readonly cache = new Map<string, CompiledArtifact>();
-  private readonly maxSizeBytes = 512 * 1024 * 1024; // 512 MB
-  private currentSizeBytes = 0;
+/* ------------------------------------------------------------------ *
+ * Caching
+ * ------------------------------------------------------------------ */
 
-  has(hash: string): boolean {
-    return this.cache.has(hash);
+/**
+ * An LRU keyed by `<hash>/<path>`.
+ *
+ * Bounded by entry count rather than bytes: measuring a decoded object's retained size in JS
+ * requires either a serialization pass per insert or a guess, and a wrong guess in the direction
+ * of "smaller than it is" turns the byte cap into an OOM. Entry count is honest about what it
+ * bounds. Pages are cached individually, so a large survey occupies cache proportional to the
+ * pages actually being served (C §17), not to its total size.
+ */
+class LruCache<T> {
+  private readonly entries = new Map<string, T>();
+
+  constructor(private readonly maxEntries: number) {}
+
+  get(key: string): T | undefined {
+    const hit = this.entries.get(key);
+    if (hit === undefined) return undefined;
+    // Re-insert to mark as most-recently-used.
+    this.entries.delete(key);
+    this.entries.set(key, hit);
+    return hit;
   }
 
-  get(hash: string): CompiledArtifact | undefined {
-    return this.cache.get(hash);
-  }
-
-  set(hash: string, artifact: CompiledArtifact): void {
-    // Rough size estimate: serialize to JSON and measure
-    const estimatedSize = JSON.stringify(artifact).length;
-
-    // Evict LRU entries until we have room
-    while (this.currentSizeBytes + estimatedSize > this.maxSizeBytes && this.cache.size > 0) {
-      const firstKey = this.cache.keys().next().value as string;
-      const removed = this.cache.get(firstKey);
-      if (removed) {
-        this.currentSizeBytes -= JSON.stringify(removed).length;
-      }
-      this.cache.delete(firstKey);
+  set(key: string, value: T): void {
+    if (this.entries.has(key)) this.entries.delete(key);
+    this.entries.set(key, value);
+    while (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next();
+      if (oldest.done) break;
+      this.entries.delete(oldest.value);
     }
+  }
 
-    this.cache.set(hash, artifact);
-    this.currentSizeBytes += estimatedSize;
+  get size(): number {
+    return this.entries.size;
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * Sources
+ * ------------------------------------------------------------------ */
+
+/** Fetch one file of one artifact. Returns null for a definite absence, throws on failure. */
+export interface ArtifactSource {
+  readonly name: string;
+  fetch(hash: string, path: string): Promise<string | null>;
+}
+
 /**
- * Factory for creating an artifact loader.
- * Configuration is pulled from environment variables:
+ * A local directory laid out as `<dir>/<hash>/<path>`.
  *
- *   CDN_URL              — base URL for L2 CDN (e.g., https://cdn.example.com/artifacts)
- *   ARTIFACT_STORAGE_URL — base URL for L3 storage (e.g., s3://bucket/artifacts or https://...)
- *
- * The loader is responsible for fetching and caching. Network failures fall through layers
- * gracefully: CDN miss → object storage, storage unavailable → eventual 502.
+ * For development and tests. Without it there is no way to run the runtime against a real
+ * compiled artifact without standing up object storage, which makes the entry path unexercisable
+ * by hand.
  */
-export function createArtifactLoader(): ArtifactLoader {
-  const l1 = new ArtifactCache();
-  const cdnUrl = process.env['CDN_URL'] ?? 'https://cdn.resscript.io/artifacts';
-  const storageUrl = process.env['ARTIFACT_STORAGE_URL'] ?? 'https://storage.resscript.io/artifacts';
-
+export function fileSource(dir: string): ArtifactSource {
   return {
-    async get(hash: string): Promise<CompiledArtifact> {
-      // L1 hit
-      if (l1.has(hash)) {
-        return l1.get(hash)!;
-      }
-
-      // L2: fetch from CDN (with immutable headers, so failures are permanent)
-      let artifact: CompiledArtifact | null = null;
-
+    name: 'file',
+    async fetch(hash: string, path: string): Promise<string | null> {
       try {
-        const cdnResponse = await fetch(`${cdnUrl}/${hash}/manifest.json`);
-        if (cdnResponse.ok) {
-          const manifest = (await cdnResponse.json()) as ArtifactManifest;
-          artifact = { manifest } as unknown as CompiledArtifact; // TODO: load full artifact from files
-        }
+        return await readFile(join(dir, hash, path), 'utf8');
       } catch (err) {
-        // CDN unavailable; fall through to L3
-      }
-
-      // L3: fetch from object storage (slower, but definitive)
-      if (!artifact) {
-        try {
-          const storageResponse = await fetch(`${storageUrl}/${hash}/manifest.json`);
-          if (!storageResponse.ok) {
-            throw new Error(`Storage returned ${storageResponse.status}`);
-          }
-          const manifest = (await storageResponse.json()) as ArtifactManifest;
-          artifact = { manifest } as unknown as CompiledArtifact; // TODO: load full artifact from files
-        } catch (err) {
-          throw new Error(`Artifact not found: ${hash}`);
-        }
-      }
-
-      // Cache in L1 before returning
-      l1.set(hash, artifact);
-      return artifact;
-    },
-
-    async warm(hash: string): Promise<void> {
-      if (!l1.has(hash)) {
-        try {
-          await this.get(hash);
-        } catch (err) {
-          // Warm is best-effort; don't fail the request if it times out
-        }
+        if ((err as { code?: string }).code === 'ENOENT') return null;
+        throw err;
       }
     },
   };
+}
+
+/** An HTTP source: a CDN or object storage, both addressed as `<base>/<hash>/<path>`. */
+export function httpSource(name: string, base: string): ArtifactSource {
+  return {
+    name,
+    async fetch(hash: string, path: string): Promise<string | null> {
+      const res = await fetch(`${base}/${hash}/${path}`);
+      // 404 is a definite absence and must not fall through to the next tier as an error: the
+      // artifact genuinely has no such page, which `page()` reports as null.
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`${name} returned ${res.status}`);
+      return res.text();
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * The loader
+ * ------------------------------------------------------------------ */
+
+export interface LoaderOptions {
+  readonly sources: readonly ArtifactSource[];
+  /** Heads to keep. Each is one survey's manifest+graph+logic. */
+  readonly maxHeads?: number;
+  /** Pages to keep, across all surveys. */
+  readonly maxPages?: number;
+}
+
+export function createLoader(opts: LoaderOptions): ArtifactLoader {
+  const heads = new LruCache<ArtifactHead>(opts.maxHeads ?? 64);
+  const pages = new LruCache<CompiledPage | null>(opts.maxPages ?? 512);
+
+  if (opts.sources.length === 0) {
+    throw new Error('createLoader: at least one artifact source is required');
+  }
+
+  /** Try each source in order. A null from every source means the file does not exist. */
+  async function fetchFile(hash: string, path: string): Promise<string | null> {
+    let lastError: unknown = null;
+    for (const source of opts.sources) {
+      try {
+        const body = await source.fetch(hash, path);
+        if (body !== null) return body;
+      } catch (err) {
+        // A tier being unreachable is not the same as the file being absent, so keep going and
+        // only surface the error if no tier can answer at all.
+        lastError = err;
+        log.warn('artifact_source_failed', { source: source.name, hash, path, err: String(err) });
+      }
+    }
+    if (lastError !== null) throw lastError;
+    return null;
+  }
+
+  async function fetchJson<T>(hash: string, path: string): Promise<T | null> {
+    const body = await fetchFile(hash, path);
+    if (body === null) return null;
+    try {
+      return JSON.parse(body) as T;
+    } catch (err) {
+      // A truncated or corrupted artifact file must fail loudly. Returning a partial object is
+      // how a survey ends up rendering with no questions and no error anywhere.
+      throw new Error(`Artifact file is not valid JSON: ${hash}/${path}: ${String(err)}`);
+    }
+  }
+
+  return {
+    async head(hash: string): Promise<ArtifactHead> {
+      const cached = heads.get(hash);
+      if (cached) return cached;
+
+      // Three files, fetched together: they are always all needed, and serially they would cost
+      // three round trips on the first page view of every session.
+      const [manifest, graph, logic] = await Promise.all([
+        fetchJson<ArtifactManifest>(hash, 'manifest.json'),
+        fetchJson<ArtifactGraph>(hash, 'graph.json'),
+        fetchJson<ArtifactLogic>(hash, 'logic.json'),
+      ]);
+
+      if (!manifest) throw new ArtifactNotFound(hash, 'manifest.json');
+      if (!graph) throw new ArtifactNotFound(hash, 'graph.json');
+      if (!logic) throw new ArtifactNotFound(hash, 'logic.json');
+
+      // The graph is what the machine routes on. A head missing `nodes` or `page_entry` would
+      // send every respondent straight to TERMINATE with no indication why, so it is rejected
+      // here where the hash is still in hand.
+      if (!Array.isArray(graph.nodes) || graph.nodes.length === 0) {
+        throw new Error(`Artifact graph has no flow nodes: ${hash}`);
+      }
+      if (typeof graph.page_entry !== 'object' || graph.page_entry === null) {
+        throw new Error(`Artifact graph has no page_entry index: ${hash}`);
+      }
+
+      const head: ArtifactHead = { hash, manifest, graph, logic };
+      heads.set(hash, head);
+      log.info('artifact_head_loaded', {
+        hash,
+        nodes: graph.nodes.length,
+        pages: graph.page_order.length,
+      });
+      return head;
+    },
+
+    async page(hash: string, language: string, pageId: string): Promise<CompiledPage | null> {
+      const key = `${hash}/${language}/${pageId}`;
+      const cached = pages.get(key);
+      if (cached !== undefined) return cached;
+
+      const page = await fetchJson<CompiledPage>(hash, `pages/${language}/${pageId}.json`);
+      // A null is cached too: a page absent in one language is absent on every request for it,
+      // and re-fetching a known-missing file on every render is a per-page cost that C §17's
+      // contract does not allow.
+      pages.set(key, page);
+      return page;
+    },
+
+    async warm(hash: string): Promise<void> {
+      try {
+        await this.head(hash);
+      } catch (err) {
+        // Best-effort by definition: a failed warm must not fail the request that triggered it.
+        log.warn('artifact_warm_failed', { hash, err: String(err) });
+      }
+    },
+  };
+}
+
+/**
+ * Build a loader from the environment.
+ *
+ *   ARTIFACT_DIR         — a local directory, tried first when set. Development only.
+ *   CDN_URL              — L2, immutable-cached by hash.
+ *   ARTIFACT_STORAGE_URL — L3, the durable authoritative copy.
+ */
+export function createArtifactLoader(): ArtifactLoader {
+  const sources: ArtifactSource[] = [];
+
+  const dir = process.env['ARTIFACT_DIR'];
+  if (dir) {
+    if (process.env['NODE_ENV'] === 'production') {
+      throw new Error('ARTIFACT_DIR is not permitted in production');
+    }
+    log.warn('artifact_file_source_enabled', { dir });
+    sources.push(fileSource(dir));
+  }
+
+  const cdn = process.env['CDN_URL'];
+  if (cdn) sources.push(httpSource('cdn', cdn));
+
+  const storage = process.env['ARTIFACT_STORAGE_URL'];
+  if (storage) sources.push(httpSource('storage', storage));
+
+  if (sources.length === 0) {
+    // Defaulting to a hard-coded hostname would make a misconfigured deployment look healthy
+    // until the first respondent, and then fail on every request. Fail at startup instead.
+    throw new Error(
+      'No artifact source configured. Set ARTIFACT_DIR (development) or CDN_URL / ARTIFACT_STORAGE_URL.',
+    );
+  }
+
+  return createLoader({ sources });
 }

@@ -6,10 +6,12 @@
   "exports": {
     ".": {
       "types": "./src/index.ts",
+      "node": "./dist/index.js",
       "default": "./src/index.ts"
     },
     "./diagnostics": {
       "types": "./src/diagnostics.ts",
+      "node": "./dist/diagnostics.js",
       "default": "./src/diagnostics.ts"
     }
   },

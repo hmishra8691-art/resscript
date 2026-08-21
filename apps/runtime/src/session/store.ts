@@ -29,6 +29,45 @@ export interface SessionStore {
 }
 
 /**
+ * An in-process session store.
+ *
+ * Real enough to drive the entry and page-render endpoints end to end, which is what makes an
+ * HTTP-level test of those paths possible before Redis exists. Two properties are deliberately
+ * faithful so that swapping in Redis does not change behaviour:
+ *
+ *   - `save` deep-copies, so a caller mutating its `SessionState` after saving cannot alter the
+ *     stored copy. A store that handed back the same object would let the endpoints pass while
+ *     depending on shared mutable state that Redis will not give them.
+ *   - `load` returns a copy too, so two concurrent requests for one session see independent
+ *     objects and the `revision` guard is exercised rather than bypassed.
+ *
+ * Not suitable for more than one process, and it forgets everything on restart.
+ */
+export function createMemorySessionStore(): SessionStore {
+  const sessions = new Map<string, string>();
+  const resumeTokens = new Map<string, string>();
+
+  return {
+    async load(sessionId: string): Promise<SessionState | null> {
+      const raw = sessions.get(sessionId);
+      return raw === undefined ? null : (JSON.parse(raw) as SessionState);
+    },
+
+    async save(sessionState: SessionState): Promise<void> {
+      sessions.set(sessionState.session_id, JSON.stringify(sessionState));
+    },
+
+    async saveResumeToken(sessionId: string, resumeToken: string): Promise<void> {
+      resumeTokens.set(resumeToken, sessionId);
+    },
+
+    async resolveResumeToken(resumeTokenHash: string): Promise<string | null> {
+      return resumeTokens.get(resumeTokenHash) ?? null;
+    },
+  };
+}
+
+/**
  * Create a session store backed by Redis and Postgres.
  *
  * Environment variables:

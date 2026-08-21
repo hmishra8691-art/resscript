@@ -100,6 +100,26 @@ export interface PageVisit {
   wrote: VariableId[];
   shown: QuestionId[];
   attempt: number;
+  /**
+   * Digest of the page as it was actually rendered — visibility, resolved item sets, and piped
+   * text — produced by `renderPage`.
+   *
+   * Invalidate-forward (E §7.2 step 3) has to answer "did this page's rendering drift" for every
+   * visit downstream of a back-submit. It cannot re-derive what the respondent saw without
+   * replaying the session against an earlier variable state, and E §7.1 rejects replay precisely
+   * because it fabricates answers to differently-masked questions. So the render records a
+   * digest and the drift test is a string comparison.
+   *
+   * Optional because a visit written before this field existed has none, and the survival test
+   * treats a missing digest as drifted — re-asking is recoverable, keeping a stale answer to a
+   * question whose options changed is not.
+   */
+  render_digest?: string | null;
+  /**
+   * Set once a back-submit invalidated this visit's answers. Kept rather than deleted: history
+   * is a log, and the old values live in the emitted event (ADR-007).
+   */
+  invalidated?: boolean;
 }
 
 export interface PageTiming {

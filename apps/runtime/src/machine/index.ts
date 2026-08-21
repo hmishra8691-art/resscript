@@ -11,10 +11,9 @@
 
 import { step as pureStep } from '@resscript/runtime-core';
 import type { Cmd, Input, MachineArtifact, PureCtx } from '@resscript/runtime-core';
-import type { CompiledArtifact } from '@resscript/schema';
 import type { SessionState } from '../session/types.js';
 
-export type { Cmd, Input, PureCtx } from '@resscript/runtime-core';
+export type { Cmd, Input, MachineArtifact, PureCtx } from '@resscript/runtime-core';
 
 /**
  * Step the state machine forward.
@@ -22,18 +21,18 @@ export type { Cmd, Input, PureCtx } from '@resscript/runtime-core';
  * Pure: identical inputs always produce identical outputs. The returned `Cmd[]` is the only
  * instruction to perform side effects; the machine never awaits.
  *
- * `CompiledArtifact` satisfies `MachineArtifact` structurally — branded ids are `string &
- * {…}`, so the narrow shape the machine reads accepts a real artifact without a cast at the
- * value level. The one cast below is on the *type* only, because `readonly` variance on the
- * nested `FlowNode` union is invariant under TypeScript's structural rules for unions.
+ * Takes a `MachineArtifact` — the graph alone — rather than a whole `CompiledArtifact`. That is
+ * the point of C §17's split: the machine routes without any page object, so the loader can fetch
+ * pages lazily and per-page cost stays independent of survey size. An artifact head satisfies
+ * this structurally, since branded ids are `string & {…}`.
  */
 export function step(
   state: SessionState,
   input: Input,
-  artifact: CompiledArtifact,
+  artifact: MachineArtifact,
   ctx: PureCtx,
 ): { next: SessionState; cmds: Cmd[] } {
-  return pureStep(state, input, artifact as unknown as MachineArtifact, ctx);
+  return pureStep(state, input, artifact, ctx);
 }
 
 /**

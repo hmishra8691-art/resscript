@@ -8,7 +8,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   step,
-  pagesForTarget,
+  pagesForNode,
   type Cmd,
   type FlowNodeLike,
   type Input,
@@ -21,15 +21,22 @@ import {
  * Fixture builders
  * ---------------------------------------------------------------- */
 
+/**
+ * Build an artifact from flow nodes plus a page list.
+ *
+ * `entry` is the flow node that owns the page — the compiler's `page_entry` index, which is what
+ * the machine routes on. Defaults to `fn_seq` because most fixtures have one sequence node.
+ */
 function artifact(
   nodes: FlowNodeLike[],
-  pages: Array<{ id: string; block_path?: string[] }>,
+  pages: Array<{ id: string; entry?: string }>,
 ): MachineArtifact {
   return {
-    graph: { page_order: pages.map(p => p.id), nodes },
-    pages: Object.fromEntries(
-      pages.map(p => [p.id, { id: p.id, block_path: p.block_path ?? [] }]),
-    ),
+    graph: {
+      page_order: pages.map(p => p.id),
+      nodes,
+      page_entry: Object.fromEntries(pages.map(p => [p.id, p.entry ?? 'fn_seq'])),
+    },
   };
 }
 
@@ -66,9 +73,9 @@ function linearSurvey() {
       { id: 'fn_end', type: 'end', disposition: 'COMPLETE' },
     ],
     [
-      { id: 'pg_1', block_path: ['blk_main'] },
-      { id: 'pg_2', block_path: ['blk_main'] },
-      { id: 'pg_3', block_path: ['blk_main'] },
+      { id: 'pg_1', entry: 'fn_seq' },
+      { id: 'pg_2', entry: 'fn_seq' },
+      { id: 'pg_3', entry: 'fn_seq' },
     ],
   );
 }
@@ -104,31 +111,41 @@ function runToCompletion(art: MachineArtifact, c: PureCtx = ctx(), maxSteps = 50
  * Graph helpers
  * ---------------------------------------------------------------- */
 
-describe('pagesForTarget', () => {
-  it('resolves a block to its pages in page_order', () => {
-    const art = linearSurvey();
-    expect(pagesForTarget(art, 'blk_main')).toEqual(['pg_1', 'pg_2', 'pg_3']);
+describe('pagesForNode', () => {
+  it('resolves a flow node to the pages it owns, in page_order', () => {
+    expect(pagesForNode(linearSurvey(), 'fn_seq')).toEqual(['pg_1', 'pg_2', 'pg_3']);
   });
 
-  it('resolves a page named directly', () => {
-    const art = linearSurvey();
-    expect(pagesForTarget(art, 'pg_2')).toEqual(['pg_2']);
+  it('returns empty for a node that owns no pages', () => {
+    expect(pagesForNode(linearSurvey(), 'fn_end')).toEqual([]);
   });
 
-  it('resolves nested blocks via block_path', () => {
+  it('splits pages across two sequence nodes', () => {
     const art = artifact(
-      [{ id: 'fn_start', type: 'start', next: null }],
       [
-        { id: 'pg_a', block_path: ['blk_outer', 'blk_inner'] },
-        { id: 'pg_b', block_path: ['blk_outer'] },
+        { id: 'fn_start', type: 'start', next: 'fn_a' },
+        { id: 'fn_a', type: 'sequence', target_id: 'blk_a', next: 'fn_b' },
+        { id: 'fn_b', type: 'sequence', target_id: 'blk_b', next: 'fn_end' },
+        { id: 'fn_end', type: 'end', disposition: 'COMPLETE' },
+      ],
+      [
+        { id: 'pg_1', entry: 'fn_a' },
+        { id: 'pg_2', entry: 'fn_b' },
+        { id: 'pg_3', entry: 'fn_a' },
       ],
     );
-    expect(pagesForTarget(art, 'blk_outer')).toEqual(['pg_a', 'pg_b']);
-    expect(pagesForTarget(art, 'blk_inner')).toEqual(['pg_a']);
+
+    // page_order is respected, not grouping order: fn_a owns pg_1 and pg_3.
+    expect(pagesForNode(art, 'fn_a')).toEqual(['pg_1', 'pg_3']);
+    expect(pagesForNode(art, 'fn_b')).toEqual(['pg_2']);
   });
 
-  it('returns empty for an unknown target', () => {
-    expect(pagesForTarget(linearSurvey(), 'blk_nope')).toEqual([]);
+  it('needs no page objects at all', () => {
+    // C §17: per-page cost must not scale with survey size, so the machine routes on the graph
+    // alone. A MachineArtifact has no `pages` field to read.
+    const art = artifact([{ id: 'fn_start', type: 'start', next: null }], [{ id: 'pg_x' }]);
+    expect(Object.keys(art.graph.page_entry)).toEqual(['pg_x']);
+    expect('pages' in art).toBe(false);
   });
 });
 
@@ -286,8 +303,8 @@ describe('branch nodes', () => {
         { id: 'fn_end', type: 'end', disposition: 'COMPLETE' },
       ],
       [
-        { id: 'pg_a', block_path: ['blk_a'] },
-        { id: 'pg_b', block_path: ['blk_b'] },
+        { id: 'pg_a', entry: 'fn_seq_a' },
+        { id: 'pg_b', entry: 'fn_seq_b' },
       ],
     );
   }
@@ -453,7 +470,7 @@ describe('quota gate', () => {
         { id: 'fn_qf', type: 'termination', disposition: 'QUOTA_FULL' },
         { id: 'fn_end', type: 'end', disposition: 'COMPLETE' },
       ],
-      [{ id: 'pg_1', block_path: ['blk_main'] }],
+      [{ id: 'pg_1', entry: 'fn_seq' }],
     );
   }
 
@@ -553,7 +570,7 @@ describe('randomizer', () => {
         { id: 'fn_seq', type: 'sequence', target_id: 'blk_a', next: 'fn_end' },
         { id: 'fn_end', type: 'end', disposition: 'COMPLETE' },
       ],
-      [{ id: 'pg_a', block_path: ['blk_a'] }],
+      [{ id: 'pg_a', entry: 'fn_seq' }],
     );
     const r = step(session(), { i: 'enter' }, art, ctx());
 
