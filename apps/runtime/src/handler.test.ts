@@ -31,6 +31,8 @@ interface Captured {
   status: number;
   headers: Record<string, string>;
   body: any;
+  /** The unparsed body, for HTML assertions. */
+  raw: string;
 }
 
 function fakeRes(): { res: ServerResponse; captured: () => Captured } {
@@ -55,7 +57,12 @@ function fakeRes(): { res: ServerResponse; captured: () => Captured } {
 
   return {
     res,
-    captured: () => ({ status, headers, body: raw ? JSON.parse(raw) : null }),
+    captured: () => ({
+      status,
+      headers,
+      raw,
+      body: raw && (headers['content-type'] ?? '').includes('json') ? JSON.parse(raw) : null,
+    }),
   };
 }
 
@@ -64,14 +71,21 @@ function req(opts: {
   host?: string;
   path: string;
   body?: unknown;
+  rawBody?: string;
+  headers?: Record<string, string>;
 }): IncomingMessage {
   // A minimal event-emitting body, because the real handler streams req 'data'/'end'.
-  const chunks = opts.body === undefined ? [] : [Buffer.from(JSON.stringify(opts.body))];
+  const chunks =
+    opts.rawBody !== undefined
+      ? [Buffer.from(opts.rawBody)]
+      : opts.body === undefined
+        ? []
+        : [Buffer.from(JSON.stringify(opts.body))];
   const listeners: Record<string, Array<(arg?: unknown) => void>> = {};
   const fake = {
     method: opts.method ?? 'GET',
     url: opts.path,
-    headers: { host: opts.host ?? `${TOKEN}.run.local` },
+    headers: { host: opts.host ?? `${TOKEN}.run.local`, ...(opts.headers ?? {}) },
     on(event: string, cb: (arg?: unknown) => void) {
       (listeners[event] ??= []).push(cb);
       if (event === 'end') {
@@ -269,7 +283,10 @@ beforeEach(() => {
 
 async function call(
   d: RuntimeDeps,
-  opts: { method?: string; host?: string; path: string; body?: unknown },
+  opts: {
+    method?: string; host?: string; path: string; body?: unknown;
+    rawBody?: string; headers?: Record<string, string>;
+  },
 ): Promise<Captured> {
   const h = createHandler(d);
   const { res, captured } = fakeRes();
@@ -903,6 +920,92 @@ describe('test mode (E §14.1)', () => {
     expect(test.body.page.questions.map((q: { id: string }) => q.id)).toEqual(
       prod.body.page.questions.map((q: { id: string }) => q.id),
     );
+  });
+});
+
+describe('no-JavaScript flow — the P1-09 acceptance line', () => {
+  // A browser: Accept text/html on GETs, form-encoded POSTs. The fake req grows a raw body.
+  const browse = (d: RuntimeDeps, path: string) =>
+    call(d, { path, headers: { accept: 'text/html' } } as never);
+
+  async function formPost(d: RuntimeDeps, path: string, fields: Record<string, string>) {
+    const raw = new URLSearchParams(fields).toString();
+    return call(d, {
+      method: 'POST', path, rawBody: raw,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    } as never);
+  }
+
+  it('entry renders an HTML form that names the submit endpoint', async () => {
+    const d = deps();
+    const r = await browse(d, `/s/${TOKEN}`);
+
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toContain('text/html');
+    expect(r.raw).toContain('<form method="post"');
+    expect(r.raw).toContain('type="radio"');
+    expect(r.raw).toContain('Coca-Cola');
+    // The seed never reaches the browser (E §4 step 10) — only derived orders, as DOM order.
+    expect(r.raw).not.toMatch(/[0-9a-f]{32}/);
+  });
+
+  it('completes a survey with JavaScript disabled: form post, 303, form post, terminal', async () => {
+    const d = deps();
+    const entry = await browse(d, `/s/${TOKEN}`);
+    const sessionId = /session=(ses_[0-9A-Z]+)/.exec(entry.raw)?.[1];
+    expect(sessionId).toBeDefined();
+
+    const p1 = await formPost(d, `/s/${TOKEN}/submit?session=${sessionId}`,
+      { __page_id: 'pg_1', var_q1: '2' });
+    expect(p1.status).toBe(303); // POST/redirect/GET
+    expect(p1.headers['location']).toContain('/p/pg_2');
+
+    const p2page = await browse(d, p1.headers['location']!);
+    expect(p2page.raw).toContain('Why?');
+
+    const done = await formPost(d, `/s/${TOKEN}/submit?session=${sessionId}`,
+      { __page_id: 'pg_2', var_q2: 'because' });
+    expect(done.status).toBe(200);
+    expect(done.raw).toContain('Thank you');
+
+    // And the answer is really stored, coerced from the form's string.
+    const stored = await d.sessions.load(sessionId!);
+    expect(stored?.vars['var_q1' as never]).toBe(2);
+    expect(stored?.disposition).toBe('COMPLETE');
+  });
+
+  it('a validation failure re-renders the form with the message, at 200', async () => {
+    const d = deps();
+    const entry = await browse(d, `/s/${TOKEN}`);
+    const sessionId = /session=(ses_[0-9A-Z]+)/.exec(entry.raw)?.[1];
+
+    const r = await formPost(d, `/s/${TOKEN}/submit?session=${sessionId}`,
+      { __page_id: 'pg_1' }); // required Q1 unanswered
+
+    expect(r.status).toBe(200); // some panel webviews treat any error status as fatal
+    expect(r.raw).toContain('class="error"');
+    expect(r.raw).toContain('err.required');
+  });
+
+  it('a refreshed (replayed) form post redirects to the current page', async () => {
+    const d = deps();
+    const entry = await browse(d, `/s/${TOKEN}`);
+    const sessionId = /session=(ses_[0-9A-Z]+)/.exec(entry.raw)?.[1];
+    await formPost(d, `/s/${TOKEN}/submit?session=${sessionId}`,
+      { __page_id: 'pg_1', var_q1: '1' });
+
+    const again = await formPost(d, `/s/${TOKEN}/submit?session=${sessionId}`,
+      { __page_id: 'pg_1', var_q1: '1' });
+
+    expect(again.status).toBe(303);
+    expect(again.headers['location']).toContain('/p/pg_2');
+  });
+
+  it('the JSON API is untouched by content negotiation', async () => {
+    const d = deps();
+    const r = await call(d, { path: `/s/${TOKEN}` });
+    expect(r.headers['content-type']).toContain('application/json');
+    expect(r.body.page.page_id).toBe('pg_1');
   });
 });
 

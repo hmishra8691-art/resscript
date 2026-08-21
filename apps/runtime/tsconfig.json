@@ -4,14 +4,31 @@
     "outDir": "dist",
     "rootDir": "src",
     "tsBuildInfoFile": "dist/.tsbuildinfo",
-    "lib": ["ES2022"],
-    "types": ["node"]
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*"
+  ],
   "references": [
-    { "path": "../../packages/logic" },
-    { "path": "../../packages/runtime-core" },
-    { "path": "../../packages/schema" },
-    { "path": "../../packages/observability" }
+    {
+      "path": "../../packages/logic"
+    },
+    {
+      "path": "../../packages/runtime-core"
+    },
+    {
+      "path": "../../packages/schema"
+    },
+    {
+      "path": "../../packages/observability"
+    }
+  ],
+  "exclude": [
+    "src/client"
   ]
 }

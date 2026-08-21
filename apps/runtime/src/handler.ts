@@ -15,6 +15,9 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createLogger, requestIdFrom } from '@resscript/observability';
 import {
@@ -37,6 +40,7 @@ import { createSession, generateULID } from './entry.js';
 import { rebuildSession, type RuntimeWriter } from './session/durable.js';
 import type { QuotaClient } from './quota/index.js';
 import { handleSubmitCore, type SubmitBody } from './submit.js';
+import { renderHtmlPage, renderTerminalPage } from './render/html.js';
 import { makeCtx, step } from './machine/index.js';
 import type { SessionStore } from './session/store.js';
 import type { PageVisit, SessionState } from './session/types.js';
@@ -170,6 +174,61 @@ function readJsonBody(req: IncomingMessage, maxBytes = 1_048_576): Promise<unkno
 
 class BodyTooLarge extends Error {}
 class MalformedBody extends Error {}
+
+/** Browsers say text/html; the JSON API (the client bundle, tests, integrations) does not. */
+function wantsHtml(req: IncomingMessage): boolean {
+  return (req.headers.accept ?? '').includes('text/html');
+}
+
+function html(res: ServerResponse, status: number, body: string): void {
+  res.writeHead(status, {
+    ...SECURITY_HEADERS,
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': Buffer.byteLength(body),
+    // ADR-005: no inline script except the enhancement bundle by src; no external origins.
+    'content-security-policy':
+      "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'; frame-ancestors 'none'",
+  });
+  res.end(body);
+}
+
+/**
+ * Parse a form POST into a submit body. Repeated names become arrays (checkbox groups), and
+ * `__page_id` is the form's own routing field. The values stay strings — the anti-tamper
+ * filter's type coercion is the ONE place transport repair happens, for both encodings.
+ */
+async function readFormBody(req: IncomingMessage, maxBytes = 1_048_576): Promise<SubmitBody> {
+  const raw = await new Promise<string>((resolve, reject) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new BodyTooLarge());
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+  const params = new URLSearchParams(raw);
+  const values: Record<string, unknown> = {};
+  for (const key of new Set(params.keys())) {
+    if (key === '__page_id') continue;
+    const all = params.getAll(key);
+    values[key] = all.length > 1 ? all : all[0];
+  }
+  return { page_id: params.get('__page_id') ?? '', values };
+}
+
+/** question id -> the variable its input posts as: the first emit, per the logic schema. */
+function variableOfFactory(logic: RehydratedLogic): (questionId: string) => string | undefined {
+  return questionId => logic.schema.questionVariables(questionId as never)[0] as
+    | string
+    | undefined;
+}
 
 /**
  * Load a session: Redis (or the in-memory store) first, then the Postgres rebuild.
@@ -444,6 +503,7 @@ interface Ctx {
   readonly requestId: string;
   readonly url: URL;
   readonly token: string;
+  readonly wantsHtml: boolean;
 }
 
 /**
@@ -631,6 +691,10 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
   });
 
   if (out.disposition) {
+    if (ctx.wantsHtml) {
+      html(res, 200, renderTerminalPage(out.disposition));
+      return;
+    }
     json(res, 200, finalBody(out.session, out.disposition, ctx.requestId));
     return;
   }
@@ -638,6 +702,16 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     // The machine neither rendered nor finalized. Every path through a published graph does one
     // or the other (the compiler enforces it), so this is a compiler escape, not a bad request.
     json(res, 500, { error: { code: 'no_page' }, request_id: ctx.requestId });
+    return;
+  }
+  if (ctx.wantsHtml) {
+    html(res, 200, renderHtmlPage({
+      page: out.page,
+      sessionId: out.session.session_id,
+      token: ctx.token,
+      variableOf: variableOfFactory(logicFor(head)),
+      clientScriptUrl: '/client.js',
+    }));
     return;
   }
   json(res, 200, {
@@ -714,6 +788,24 @@ async function handlePageRender(
   const stamped = stampDigest(session, pageId, rendered.digest);
   await ctx.deps.sessions.save(stamped);
 
+  if (ctx.wantsHtml) {
+    // Prefill from stored answers, so a PRG landing or a resume shows what they entered.
+    const prefill = Object.fromEntries(
+      stamped.history
+        .filter(v => v.page_id === pageId)
+        .flatMap(v => v.wrote)
+        .map(v => [v, (stamped.vars as Record<string, unknown>)[v]]),
+    );
+    html(res, 200, renderHtmlPage({
+      page: rendered,
+      sessionId: stamped.session_id,
+      token: ctx.token,
+      prefill,
+      variableOf: variableOfFactory(logicFor(pinned.head)),
+      clientScriptUrl: '/client.js',
+    }));
+    return;
+  }
   json(res, 200, pageBody(rendered, stamped, ctx.requestId, debug));
 }
 
@@ -725,9 +817,14 @@ async function handlePageRender(
  * page out of the machine's commands, and mapping each outcome to a status code.
  */
 async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage): Promise<void> {
+  // A form POST (no JavaScript) and a JSON POST (the client bundle) share EVERYTHING past
+  // parsing: same filter, same validation, same machine, same write. Progressive enhancement
+  // that forked the pipeline would validate two different surveys.
+  const isForm = (req.headers['content-type'] ?? '').includes('application/x-www-form-urlencoded');
+  const htmlMode = isForm || ctx.url.searchParams.get('html') === '1';
   let raw: unknown;
   try {
-    raw = await readJsonBody(req);
+    raw = isForm ? await readFormBody(req) : await readJsonBody(req);
   } catch {
     json(res, 400, { error: { code: 'malformed_request' }, request_id: ctx.requestId });
     return;
@@ -781,16 +878,38 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
   });
 
   switch (outcome.kind) {
-    case 'replay':
+    case 'replay': {
+      if (htmlMode) {
+        const dest = (outcome.response as { page_id?: string } | undefined)?.page_id;
+        res.writeHead(303, {
+          ...SECURITY_HEADERS,
+          location: dest
+            ? `/s/${ctx.token}/p/${encodeURIComponent(dest)}?session=${encodeURIComponent(sessionId)}`
+            : `/s/${ctx.token}`,
+        });
+        res.end();
+        return;
+      }
       json(res, 200, { replayed: true, ...(outcome.response as object), request_id: ctx.requestId });
       return;
+    }
 
-    case 'stale':
+    case 'stale': {
+      if (htmlMode && outcome.current_page_id) {
+        // A no-JS double-navigation lands on whatever page the session is really on.
+        res.writeHead(303, {
+          ...SECURITY_HEADERS,
+          location: `/s/${ctx.token}/p/${encodeURIComponent(outcome.current_page_id)}?session=${encodeURIComponent(sessionId)}`,
+        });
+        res.end();
+        return;
+      }
       json(res, 409, {
         error: { code: 'stale_page', current_page_id: outcome.current_page_id },
         request_id: ctx.requestId,
       });
       return;
+    }
 
     case 'back_refused':
       json(res, 409, {
@@ -819,6 +938,25 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
         } as never,
       };
       await ctx.deps.sessions.save(bumped);
+      if (htmlMode) {
+        // Re-render the form with the messages attached to their questions — 200, not 4xx:
+        // the respondent's next action is on this page, and some panel webviews treat any
+        // error status as fatal.
+        const errors = new Map<string, string[]>();
+        for (const f of outcome.failures) {
+          errors.set(f.question_id, [...(errors.get(f.question_id) ?? []), f.message_key]);
+        }
+        html(res, 200, renderHtmlPage({
+          page: outcome.page,
+          sessionId: session.session_id,
+          token: ctx.token,
+          errors,
+          prefill: body.values as Record<string, unknown>,
+          variableOf: variableOfFactory(logic),
+          clientScriptUrl: '/client.js',
+        }));
+        return;
+      }
       json(res, 200, {
         validation_failed: outcome.failures,
         page: { page_id: outcome.page.page_id, questions: outcome.page.questions,
@@ -841,6 +979,10 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
         });
       }
       await ctx.deps.sessions.save(outcome.session);
+      if (htmlMode) {
+        html(res, 200, renderTerminalPage(outcome.disposition));
+        return;
+      }
       json(res, 200, finalBody(outcome.session, outcome.disposition, ctx.requestId));
       return;
     }
@@ -855,11 +997,25 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
       });
       await ctx.deps.sessions.save(out.session);
       if (out.disposition) {
+        if (htmlMode) {
+          html(res, 200, renderTerminalPage(out.disposition));
+          return;
+        }
         json(res, 200, finalBody(out.session, out.disposition, ctx.requestId));
         return;
       }
       if (!out.page) {
         json(res, 500, { error: { code: 'no_page' }, request_id: ctx.requestId });
+        return;
+      }
+      if (htmlMode) {
+        // POST/redirect/GET: the browser lands on the next page's URL, so refresh re-renders
+        // instead of re-submitting, and the back button is the browser's own.
+        res.writeHead(303, {
+          ...SECURITY_HEADERS,
+          location: `/s/${ctx.token}/p/${encodeURIComponent(String(out.session.current_page_id))}?session=${encodeURIComponent(sessionId)}`,
+        });
+        res.end();
         return;
       }
       json(res, 200, pageBody(out.page, out.session, ctx.requestId, out.debug));
@@ -1065,6 +1221,20 @@ async function handleTelemetry(res: ServerResponse, ctx: Ctx, req: IncomingMessa
   done();
 }
 
+/** The built enhancement bundle, read once. Null when the build has not produced it (tests). */
+let clientBundle: Buffer | null | undefined;
+async function loadClientBundle(): Promise<Buffer | null> {
+  if (clientBundle !== undefined) return clientBundle;
+  try {
+    clientBundle = await readFile(
+      join(dirname(fileURLToPath(import.meta.url)), 'client', 'client.js'),
+    );
+  } catch {
+    clientBundle = null;
+  }
+  return clientBundle;
+}
+
 /** Telemetry numbers are clamped: a client claiming a 12-day render is lying or broken. */
 function clampMs(v: unknown): number | null {
   if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return null;
@@ -1106,6 +1276,26 @@ export function createHandler(deps: RuntimeDeps) {
     const requestId = requestIdFrom(req.headers);
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
+    // The enhancement bundle. Served from every survey origin (the CSP is script-src 'self',
+    // so it MUST come from the page's own origin — ADR-005's isolation applies to our own
+    // script too). Immutable-cached: the file only changes with a deploy, which changes the
+    // process serving it.
+    if (req.method === 'GET' && url.pathname === '/client.js') {
+      const bundle = await loadClientBundle();
+      if (!bundle) {
+        json(res, 404, { error: { code: 'not_found' }, request_id: requestId });
+        return;
+      }
+      res.writeHead(200, {
+        'content-type': 'text/javascript; charset=utf-8',
+        'content-length': bundle.length,
+        'cache-control': 'public, max-age=3600',
+        'x-content-type-options': 'nosniff',
+      });
+      res.end(bundle);
+      return;
+    }
+
     // Health endpoints answer on any origin: a load balancer probing them does not know a token.
     if (url.pathname === '/health') {
       json(res, 200, { status: 'ok', service: 'runtime', request_id: requestId });
@@ -1123,7 +1313,7 @@ export function createHandler(deps: RuntimeDeps) {
       return;
     }
 
-    const ctx: Ctx = { deps, requestId, url, token: origin.token };
+    const ctx: Ctx = { deps, requestId, url, token: origin.token, wantsHtml: wantsHtml(req) };
     const prefix = `/s/${origin.token}`;
 
     try {
