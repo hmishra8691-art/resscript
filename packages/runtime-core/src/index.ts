@@ -1,11 +1,9 @@
 /**
- * @resscript/runtime-core — reserved for milestone P1-09.
+ * @resscript/runtime-core — pure functions for P1-09 (Deliverable E).
  *
- * Page state machine, seeded PRNG, piping, validation execution. Deliverable E.
- *
- * This placeholder exists so `tsc -b` can build the workspace project graph before the
- * package has content: TypeScript treats a composite project with no input files as error
- * TS18003, which would break the root build for every other package. Delete it when P1-09
- * lands.
+ * Seeded PRNG (ADR-006), page state machine, piping, validation execution.
+ * All functions are pure: identical inputs → identical outputs, replayable
+ * across Node, browser, and QuickJS.
  */
-export const MILESTONE = 'P1-09' as const;
+
+export { deriveKey, permute, sfc32Counter, testDistributionUniformity, testPermuteDeterminism } from './prng.js';
