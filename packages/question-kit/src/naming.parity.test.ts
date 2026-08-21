@@ -145,11 +145,17 @@ describe('the scoped namer a composed child receives', () => {
     // Each of these would produce a name no `VariablePart` describes, so it could not survive a
     // round-trip through the variable registry — see ComposeErrorCode.compose_unnameable_part.
     expect(() => namer.suffixed('band')).toThrow(/cannot name/);
-    expect(() => namer.option(1)).toThrow(/cannot name/);
     expect(() => namer.row(1)).toThrow(/cannot name/);
     expect(() => namer.column(1)).toThrow(/cannot name/);
     expect(() => namer.cell(1, 1)).toThrow(/cannot name/);
-    // And in a grid cell, not even the other-specify.
+    // `option` in a ROW scope is the sanctioned fan-out (P1-05): under use_columns the child's
+    // options ARE the shared columns, so the name is the true grid cell.
+    expect(namer.option(2)).toBe('Q5r3c2');
+    // ...but only for codes that resolve among the columns: a child with its own option list
+    // still cannot fan out (`Q5r3r2` remains unnameable).
+    expect(() => namer.option(99)).toThrow(/cannot name/);
+    // And in a grid cell, neither options nor the other-specify.
+    expect(() => createScopedNamer(spec, cellScope).option(1)).toThrow(/cannot name/);
     expect(() => createScopedNamer(spec, cellScope).other()).toThrow(/cannot name/);
   });
 
@@ -164,7 +170,14 @@ describe('the scoped namer a composed child receives', () => {
       kind: 'other_specify',
       ofRef: 'r3',
     });
-    expect(() => rescopePart({ kind: 'option', optionRef: 'o1' }, rowScope)).toThrow(
+    // The row-scope fan-out: the child's option (the parent's column) becomes the grid cell.
+    expect(rescopePart({ kind: 'option', optionRef: 'c2' }, rowScope)).toEqual({
+      kind: 'cell',
+      rowRef: 'r3',
+      columnRef: 'c2',
+    });
+    // In a full grid cell the fan-out stays impossible.
+    expect(() => rescopePart({ kind: 'option', optionRef: 'o1' }, cellScope)).toThrow(
       PluginComposeError,
     );
   });

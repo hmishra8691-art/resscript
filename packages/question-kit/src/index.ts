@@ -15,6 +15,18 @@
 import type { AnyPluginCore as AnyPluginCoreType } from './contract/plugin.js';
 import { multiSelectCore } from './plugins/multi-select/core.js';
 import { npsCore } from './plugins/nps/core.js';
+import { binaryCore } from './plugins/binary/core.js';
+import { consentCore } from './plugins/consent/core.js';
+import { contentMediaCore } from './plugins/content-media/core.js';
+import { contentTextCore } from './plugins/content-text/core.js';
+import { dateCore } from './plugins/date/core.js';
+import { matrixCore } from './plugins/matrix/core.js';
+import { numericCore } from './plugins/numeric/core.js';
+import { numericListCore } from './plugins/numeric-list/core.js';
+import { ratingCore } from './plugins/rating/core.js';
+import { textCore } from './plugins/text/core.js';
+import { textareaCore } from './plugins/textarea/core.js';
+import { textListCore } from './plugins/text-list/core.js';
 import { singleSelectCore } from './plugins/single-select/core.js';
 
 /* ---- the contract ------------------------------------------------------- */
@@ -226,6 +238,69 @@ export type { MultiSelectAnswer, MultiSelectConfig } from './plugins/multi-selec
 export { npsCore, NPS_BANDS, NPS_CONFIG_SCHEMA, NPS_MAX_SCORE, NPS_MIN_SCORE } from './plugins/nps/core.js';
 export type { NpsAnswer, NpsConfig } from './plugins/nps/core.js';
 
+export { binaryCore, BINARY_CONFIG_SCHEMA } from './plugins/binary/core.js';
+export type { BinaryAnswer, BinaryConfig } from './plugins/binary/core.js';
+
+export { ratingCore, RATING_CONFIG_SCHEMA } from './plugins/rating/core.js';
+export type { RatingAnswer, RatingConfig } from './plugins/rating/core.js';
+
+export { textCore, TEXT_CONFIG_SCHEMA } from './plugins/text/core.js';
+export type { TextAnswer, TextConfig, TextInputMode } from './plugins/text/core.js';
+
+export {
+  textareaCore,
+  TEXTAREA_CONFIG_SCHEMA,
+  TEXTAREA_MESSAGE_KEYS,
+  countWords,
+} from './plugins/textarea/core.js';
+export type { TextareaAnswer, TextareaConfig } from './plugins/textarea/core.js';
+
+export {
+  textListCore,
+  TEXT_LIST_CONFIG_SCHEMA,
+  TEXT_LIST_MESSAGE_KEYS,
+} from './plugins/text-list/core.js';
+export type { TextListAnswer, TextListConfig } from './plugins/text-list/core.js';
+
+export {
+  numericCore,
+  MAX_NUMERIC_MAGNITUDE,
+  NUMERIC_CONFIG_SCHEMA,
+  onDecimalGrid,
+  readGridNumber,
+} from './plugins/numeric/core.js';
+export type { NumericAnswer, NumericConfig, NumericUnit } from './plugins/numeric/core.js';
+
+export { numericListCore, NUMERIC_LIST_CONFIG_SCHEMA } from './plugins/numeric-list/core.js';
+export type {
+  NumericListAnswer,
+  NumericListConfig,
+  NumericListSum,
+} from './plugins/numeric-list/core.js';
+
+export { dateCore, DATE_CONFIG_SCHEMA, ISO_DATE_PATTERN, isCalendarDate } from './plugins/date/core.js';
+export type { DateAnswer, DateConfig } from './plugins/date/core.js';
+
+export { matrixCore, MATRIX_CONFIG_SCHEMA, controlForRow, rowScope } from './plugins/matrix/core.js';
+export type { MatrixAnswer, MatrixConfig } from './plugins/matrix/core.js';
+
+export { contentTextCore, CONTENT_TEXT_CONFIG_SCHEMA } from './plugins/content-text/core.js';
+export type { ContentTextAnswer, ContentTextConfig } from './plugins/content-text/core.js';
+
+export { contentMediaCore, CONTENT_MEDIA_CONFIG_SCHEMA } from './plugins/content-media/core.js';
+export type { ContentMediaAnswer, ContentMediaConfig } from './plugins/content-media/core.js';
+
+export { consentCore, CONSENT_CONFIG_SCHEMA } from './plugins/consent/core.js';
+export type { ConsentAnswer, ConsentConfig } from './plugins/consent/core.js';
+
+export {
+  createComposeDelegates,
+  resolveComposedChild,
+  type ChildSeat,
+  type ComposeDelegateOptions,
+  type ComposeDelegates,
+} from './compose-host.js';
+
 /**
  * The Phase-1 cores registered by the compiler and the API boundary.
  *
@@ -238,4 +313,16 @@ export const FIRST_PARTY_CORES: readonly AnyPluginCoreType[] = [
   singleSelectCore,
   multiSelectCore,
   npsCore,
+  binaryCore,
+  ratingCore,
+  textCore,
+  textareaCore,
+  textListCore,
+  numericCore,
+  numericListCore,
+  dateCore,
+  matrixCore,
+  contentTextCore,
+  contentMediaCore,
+  consentCore,
 ];

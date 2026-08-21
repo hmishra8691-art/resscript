@@ -130,13 +130,15 @@ describe('composition rule 1 — the child must exist and be composable', () => 
   });
 
   it('rejects a registered but non-composable control', () => {
+    // `nps` is the canonical non-composable: its `_band` companion has no cell-scoped part.
+    // (`multi_select` used to play this role, until the row-scope fan-out made it composable.)
     const registry = registryWith([
-      [multiSelectCore, { trust: 'first_party' }],
+      [npsCore, { trust: 'first_party' }],
       [testParentCore, { trust: 'first_party' }],
     ]);
     const result = declareVariablesFor(
       testParentCore,
-      parentQuestion({}, { childType: 'multi_select' }),
+      parentQuestion({}, { childType: 'nps' }),
       { registry },
     );
     expect(codes(result.diagnostics)).toEqual(['QK-test_parent-compose_not_composable']);

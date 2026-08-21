@@ -198,8 +198,10 @@ describe('composition eligibility', () => {
     registry.register(parent, { trust: 'first_party' });
 
     const ids = registry.listComposable('first_party').map((entry) => entry.meta.id);
-    expect(ids).toEqual(['single_select']);
-    expect(ids).not.toContain('multi_select');
+    // Both selects are composable since the row-scope fan-out landed (P1-05); the parent —
+    // composable: false — is what stays out of its own picker.
+    expect(ids).toEqual(['single_select', 'multi_select']);
+    expect(ids).not.toContain('test_parent');
   });
 
   it('lets trust go down but not up', () => {
@@ -244,6 +246,18 @@ describe('the first-party set is data, not code', () => {
       'single_select@1',
       'multi_select@1',
       'nps@1',
+      'binary@1',
+      'rating@1',
+      'text@1',
+      'textarea@1',
+      'text_list@1',
+      'numeric@1',
+      'numeric_list@1',
+      'date@1',
+      'matrix@1',
+      'content_text@1',
+      'content_media@1',
+      'consent@1',
     ]);
   });
 });

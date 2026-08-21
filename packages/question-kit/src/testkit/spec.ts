@@ -22,11 +22,12 @@
  */
 
 import type { JsonValue } from '@resscript/schema';
+import type { AnyPluginCore } from '../contract/plugin.js';
 import type { AuthoredQuestion } from '../contract/authored.js';
 import type { AuthoredItem } from '../contract/items.js';
 import type { ValidationIssue } from '../contract/validate.js';
 import type { CellOverride, LoopContext, QuestionFlagsView } from '../contract/variables.js';
-import type { RenderDevice, TextDirection } from '../contract/view.js';
+import type { RenderContext, RenderDevice, TextDirection } from '../contract/view.js';
 import type { ItemState } from '../resolve.js';
 
 /** One authored state of the question. F §9's "every meaningfully distinct authored state". */
@@ -159,10 +160,28 @@ export interface CompositionSpec {
 }
 
 /**
+ * What a COMPOSING plugin needs from the harness that a leaf plugin does not: a registry that
+ * resolves its children (declarations), the delegate implementations behind its codec and
+ * validator (built by `createComposeDelegates` from the same registry), and a `renderChild` for
+ * its renderer. Absent for every leaf plugin — the harness then behaves exactly as it always
+ * has, and a leaf plugin that accidentally calls a delegate still gets the loud throw.
+ */
+export interface ComposeHostSpec {
+  /** The child cores this parent's fixtures compose, registered as first_party for compile. */
+  readonly childCores: readonly AnyPluginCore[];
+  /** The renderer's child seam. Required if any render state reaches a composed cell. */
+  readonly renderChild?: RenderContext['renderChild'];
+}
+
+/**
  * Every section is required. A plugin that omits one does not compile — F §9's central claim, and
  * the reason this is an interface with no optional members rather than a bag of switches.
+ * (`host` is the one exception, because it describes the plugin's SHAPE — composing or leaf —
+ * rather than a section an author might skip.)
  */
 export interface PluginTestSpec<Config, Answer> {
+  /** Present only for composing parents. See `ComposeHostSpec`. */
+  readonly host?: ComposeHostSpec;
   readonly fixtures: FixtureMap<Config>;
   readonly variableSnapshots: VariableSnapshotSpec;
   readonly render: RenderSpec<Answer>;

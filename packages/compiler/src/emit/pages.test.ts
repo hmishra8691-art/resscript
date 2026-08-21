@@ -69,9 +69,9 @@ describe('buildPages', () => {
     expect(questionOf(fixture, 'en', fixture.ids.page1, fixture.ids.q1).question_type).toBe(
       'single_select@1',
     );
-    // `numeric` is not a first-party core, so it does not resolve. `CMP-0400` reports it; the page
+    // `slider` is a Phase-2 type, so it does not resolve. `CMP-0400` reports it; the page
     // keeps the authored string rather than dropping the question.
-    expect(questionOf(fixture, 'en', fixture.ids.page2, fixture.ids.q7).question_type).toBe('numeric');
+    expect(questionOf(fixture, 'en', fixture.ids.page2, fixture.ids.q7).question_type).toBe('slider');
   });
 
   it('makes config, validation, masks and emits required rather than optional', () => {

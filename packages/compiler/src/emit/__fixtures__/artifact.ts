@@ -186,7 +186,10 @@ export function buildSurvey(spec: FixtureSpec = {}): { readonly survey: Survey; 
     id: ids.next('question'),
     type: 'question',
     ref: 'Q7',
-    question_type: 'numeric',
+    // A Phase-2 type, so it does NOT resolve against the Phase-1 registry: q7 exists to
+    // exercise the unresolved path. (It was `numeric` until P1-05 made numeric first-party
+    // and quietly turned this fixture into a resolved question.)
+    question_type: 'slider',
     label: { key: 'q7.label' },
     required: false,
     config: { min: 0, max: 10 },

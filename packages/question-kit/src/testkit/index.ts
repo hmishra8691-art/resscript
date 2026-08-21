@@ -38,6 +38,7 @@ import type { AuthoredItem } from '../contract/items.js';
 import type { VariableDeclaration } from '../contract/variables.js';
 import type { ValidationIssue } from '../contract/validate.js';
 import type { JsonObject, JsonValue } from '@resscript/schema';
+import { createComposeDelegates } from '../compose-host.js';
 import { fixtureQuestion, type PluginFixture, type PluginTestSpec } from './spec.js';
 import { testParentCore, type TestParentConfig } from './parent.js';
 import {
@@ -217,6 +218,19 @@ export function definePluginTests<Config, Answer>(
     if (fixture === undefined) throw new Error(`no fixture named ${JSON.stringify(name)}`);
     return fixture;
   };
+  // A composing parent gets ONE registry of its declared children, threaded through every
+  // declaration call and every codec/validate context. Leaf plugins get `undefined` and the
+  // harness behaves exactly as before this section existed.
+  const hostRegistry = (() => {
+    if (spec.host === undefined) return undefined;
+    const registry = createRegistry<AnyPluginCore>();
+    for (const core of spec.host.childCores) registry.register(core, { trust: 'first_party' });
+    return registry;
+  })();
+  const hostDelegates = (question: AuthoredQuestion<Config>) =>
+    hostRegistry === undefined
+      ? undefined
+      : createComposeDelegates(question as AuthoredQuestion<unknown>, hostRegistry);
 
   describe(`${plugin.meta.id}@${plugin.meta.version}`, () => {
     it('declares at least one fixture', () => {
@@ -272,14 +286,14 @@ export function definePluginTests<Config, Answer>(
         });
 
         it(`fixture "${name}" declares exactly the expected variables`, () => {
-          const declarations = declarationsOf(plugin, questionOf(name));
+          const declarations = declarationsOf(plugin, questionOf(name), hostRegistry);
           expect(declarations.map(summarizeDeclaration)).toEqual(expected ?? []);
         });
 
         if (spec.variableSnapshots.assertDeterministic) {
           it(`fixture "${name}" is deterministic across two calls`, () => {
-            const first = declarationsOf(plugin, questionOf(name));
-            const second = declarationsOf(plugin, questionOf(name));
+            const first = declarationsOf(plugin, questionOf(name), hostRegistry);
+            const second = declarationsOf(plugin, questionOf(name), hostRegistry);
             // Deep equality, not summaries: a hidden clock or counter read would most likely show
             // up in a field the summary does not carry.
             expect(second).toEqual(first);
@@ -289,7 +303,7 @@ export function definePluginTests<Config, Answer>(
         if (spec.variableSnapshots.assertOrderIndependent) {
           it(`fixture "${name}" is independent of authored item order`, () => {
             const base = questionOf(name);
-            const declarations = declarationsOf(plugin, base);
+            const declarations = declarationsOf(plugin, base, hostRegistry);
             for (const salt of [1, 2, 3]) {
               const reordered: AuthoredQuestion<Config> = {
                 ...base,
@@ -298,7 +312,7 @@ export function definePluginTests<Config, Answer>(
                 columns: reposition(shuffleDeterministically(base.columns, salt)),
               };
               expect(
-                declarationsOf(plugin, reordered),
+                declarationsOf(plugin, reordered, hostRegistry),
                 `reordering items (salt ${salt}) changed the export contract`,
               ).toEqual(declarations);
             }
@@ -308,9 +322,9 @@ export function definePluginTests<Config, Answer>(
         if (spec.variableSnapshots.assertRenameCoherent) {
           it(`fixture "${name}" renames coherently`, () => {
             const base = questionOf(name);
-            const before = declarationsOf(plugin, base);
+            const before = declarationsOf(plugin, base, hostRegistry);
             const renamed: AuthoredQuestion<Config> = { ...base, ref: 'ZZ9' };
-            const after = declarationsOf(plugin, renamed);
+            const after = declarationsOf(plugin, renamed, hostRegistry);
             const namer = namerFor(renamed);
 
             expect(after.length).toBe(before.length);
@@ -332,7 +346,7 @@ export function definePluginTests<Config, Answer>(
         if (spec.variableSnapshots.assertAnalysable) {
           it(`fixture "${name}" passes every declaration invariant`, () => {
             const question = questionOf(name);
-            const declarations = declarationsOf(plugin, question);
+            const declarations = declarationsOf(plugin, question, hostRegistry);
             const problems = verifyDeclarations(declarations, {
               ref: question.ref,
               loop: question.loop,
@@ -352,9 +366,12 @@ export function definePluginTests<Config, Answer>(
         answers.forEach((answer, index) => {
           it(`fixture "${name}" answer ${index} round-trips through variables`, () => {
             const question = questionOf(name);
-            const declarations = declarationsOf(plugin, question);
+            const declarations = declarationsOf(plugin, question, hostRegistry);
             const resolved = resolveQuestion(question, declarations, itemStatesOf(fixtureOf(name)));
-            const ctx = createCodecContext({ question, resolved });
+            const delegates = hostDelegates(question);
+            const ctx = createCodecContext({
+              question, resolved, ...(delegates === undefined ? {} : { delegates }),
+            });
             const vars = plugin.codec.toVariables(answer, ctx);
 
             if (spec.codec.assertVariablesSubsetOfDeclared) {
@@ -381,9 +398,12 @@ export function definePluginTests<Config, Answer>(
       for (const name of fixtureNames) {
         it(`fixture "${name}" round-trips its empty answer and writes only declared keys`, () => {
           const question = questionOf(name);
-          const declarations = declarationsOf(plugin, question);
+          const declarations = declarationsOf(plugin, question, hostRegistry);
           const resolved = resolveQuestion(question, declarations, itemStatesOf(fixtureOf(name)));
-          const ctx = createCodecContext({ question, resolved });
+          const delegates = hostDelegates(question);
+          const ctx = createCodecContext({
+            question, resolved, ...(delegates === undefined ? {} : { delegates }),
+          });
           const empty = plugin.codec.emptyAnswer(ctx);
           const declared = new Set(declarations.map((d) => d.name));
           const vars = plugin.codec.toVariables(empty, ctx);
@@ -398,9 +418,12 @@ export function definePluginTests<Config, Answer>(
           it(`hostile input ${index} is rejected without throwing`, () => {
             const name = fixtureNames[0] ?? '';
             const question = questionOf(name);
-            const declarations = declarationsOf(plugin, question);
+            const declarations = declarationsOf(plugin, question, hostRegistry);
             const resolved = resolveQuestion(question, declarations, itemStatesOf(fixtureOf(name)));
-            const ctx = createCodecContext({ question, resolved });
+            const delegates = hostDelegates(question);
+            const ctx = createCodecContext({
+              question, resolved, ...(delegates === undefined ? {} : { delegates }),
+            });
 
             const result = plugin.codec.parse(raw, ctx);
             expect(typeof result.ok).toBe('boolean');
@@ -425,7 +448,7 @@ export function definePluginTests<Config, Answer>(
     describe('validate', () => {
       spec.validation.forEach((testCase, index) => {
         it(`case ${index} (${testCase.fixture}) reports ${JSON.stringify(testCase.expect)}`, () => {
-          const issues = runValidate(plugin, spec, testCase.fixture, testCase, 'server');
+          const issues = runValidate(plugin, spec, testCase.fixture, testCase, 'server', hostRegistry);
           expect(issues.map((issue) => issue.messageKey).sort()).toEqual([...testCase.expect].sort());
           if (testCase.expectFocus !== undefined) {
             const focus = testCase.expectFocus;
@@ -441,8 +464,8 @@ export function definePluginTests<Config, Answer>(
 
         if (spec.assertValidationSidesAgree) {
           it(`case ${index} (${testCase.fixture}) client agrees with server`, () => {
-            const client = runValidate(plugin, spec, testCase.fixture, testCase, 'client');
-            const server = runValidate(plugin, spec, testCase.fixture, testCase, 'server');
+            const client = runValidate(plugin, spec, testCase.fixture, testCase, 'client', hostRegistry);
+            const server = runValidate(plugin, spec, testCase.fixture, testCase, 'server', hostRegistry);
             const serverKeys = server.map((issue) => issue.messageKey);
             // The client may under-report (F §1.2's expensive-check exemption). It may not report
             // anything the server does not: that is ADR-004's divergence, and it shows up as a
@@ -463,11 +486,17 @@ export function definePluginTests<Config, Answer>(
             for (const [stateName, state] of Object.entries(spec.render.states)) {
               it(`${name} / ${dir} / ${device} / ${stateName}`, async () => {
                 const question = questionOf(name);
-                const declarations = declarationsOf(plugin, question);
+                const declarations = declarationsOf(plugin, question, hostRegistry);
                 const resolved = resolveQuestion(question, declarations, {
                   itemStates: { ...fixtureOf(name).itemStates, ...state.itemStates },
                 });
-                const ctx = createRenderContext({ dir, device });
+                const ctx = createRenderContext({
+                  dir,
+                  device,
+                  ...(spec.host?.renderChild === undefined
+                    ? {}
+                    : { renderChild: spec.host.renderChild }),
+                });
                 const probe = await renderProbe(
                   plugin.renderer({
                     question: resolved,
@@ -613,11 +642,12 @@ function runValidate<Config, Answer>(
   fixtureName: string,
   testCase: { readonly value: Answer | undefined; readonly required: boolean; readonly siblings?: Readonly<Record<string, JsonValue>> },
   side: 'client' | 'server',
+  hostRegistry?: PluginRegistry<AnyPluginCore>,
 ): readonly ValidationIssue[] {
   const fixture = spec.fixtures[fixtureName];
   if (fixture === undefined) throw new Error(`no fixture named ${JSON.stringify(fixtureName)}`);
   const question = fixtureQuestion(plugin.meta.id, fixture);
-  const declarations = declarationsOf(plugin, question);
+  const declarations = declarationsOf(plugin, question, hostRegistry);
   const resolved = resolveQuestion(question, declarations, itemStatesOf(fixture));
   return plugin.validate(
     createValidateContext({
@@ -626,6 +656,15 @@ function runValidate<Config, Answer>(
       required: testCase.required,
       side,
       ...(testCase.siblings === undefined ? {} : { siblings: testCase.siblings }),
+      ...(hostRegistry === undefined
+        ? {}
+        : {
+            delegateValidate: createComposeDelegates(
+              question as AuthoredQuestion<unknown>,
+              hostRegistry,
+              { side },
+            ).delegateValidate,
+          }),
     }),
   );
 }

@@ -153,6 +153,7 @@ export function resolveQuestion<Config>(
     options: options_,
     rows,
     columns,
+    cells: question.cells,
     variables,
     variableFor(rowRef) {
       const hit = variables.byRow[rowRef];

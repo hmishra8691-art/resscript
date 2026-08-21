@@ -156,11 +156,19 @@ export function createNamer(spec: NamerSpec): VariableNamer {
  * matrix contributes "the name scope and nothing else". Everything a child cannot legally name
  * in a cell scope throws `compose_unnameable_part` rather than inventing a name:
  *
- *  - `row`/`column`/`option`/`cell` — a child fanning out inside a cell would produce `Q5r3r2`,
- *    which F §3.1 rule 4 rejects for the same reason (loop naming has one `{iteration}` slot).
+ *  - `row`/`column`/`cell` — a child fanning out into ITS OWN axes inside a cell would produce
+ *    `Q5r3r2`, which F §3.1 rule 4 rejects for the same reason (loop naming has one
+ *    `{iteration}` slot).
+ *  - `option` in a FULL-GRID cell scope — `Q5r3c2c1` has no part.
  *  - `suffixed` — there is no part in schema §4 that names `Q5r3_band`. See
  *    `ComposeErrorCode.compose_unnameable_part`; this is why a plugin with companion variables
  *    cannot be a cell control.
+ *
+ * `option()` in a ROW scope is the deliberate exception, and only when the ref resolves among
+ * the parent's COLUMNS: under `use_columns` the child's options ARE the shared column list, so
+ * its fan-out is precisely the grid's cells — `Q5r3c2` — which schema §4's `cell` part already
+ * names. This is what makes a multi-select-per-row matrix (`Qr{i}c{j} : boolean`, the catalogue's
+ * Phase-1 grid) expressible without the child knowing it is composed.
  *
  * `other()` survives, because `Q5r3_other` *is* representable: it is the `other_specify` part
  * with the row's code, exactly as a fan-out's other-specify is.
@@ -181,11 +189,27 @@ export function createScopedNamer(spec: NamerSpec, scope: ComposeScope): Variabl
     );
   };
 
+  /** A row-scoped child's option, resolved among the parent's columns (see the header). */
+  const columnRefByCode = (code: number): string => {
+    const hit = spec.columns.find((column) => column.code === code);
+    if (hit === undefined) {
+      return reject(`an option with code ${code} that is not one of the shared columns`);
+    }
+    return hit.ref;
+  };
+
   return {
     self: () => selfName,
     row: () => reject('a row'),
     column: () => reject('a column'),
-    option: () => reject('an option'),
+    option: (code) =>
+      scope.kind === 'row'
+        ? deriveDeclarationName(spec, {
+            kind: 'cell',
+            rowRef: scope.rowRef,
+            columnRef: columnRefByCode(code),
+          })
+        : reject('an option inside a grid cell'),
     cell: () => reject('a cell'),
     other: () =>
       // The child's "other" hangs off the row it lives in, so the name is the row's name plus
@@ -204,6 +228,13 @@ export function createScopedNamer(spec: NamerSpec, scope: ComposeScope): Variabl
             ? deriveDeclarationName(spec, { kind: 'other_specify', ofRef: scope.rowRef })
             : reject('an other-specify inside a grid cell');
         case 'option':
+          return scope.kind === 'row'
+            ? deriveDeclarationName(spec, {
+                kind: 'cell',
+                rowRef: scope.rowRef,
+                columnRef: part.optionRef,
+              })
+            : reject('an option inside a grid cell');
         case 'row':
         case 'column':
         case 'cell':
@@ -235,6 +266,16 @@ export function rescopePart(part: DeclarationPart, scope: ComposeScope): Declara
     case 'other_specify':
       return { kind: 'other_specify', ofRef: scope.rowRef };
     case 'option':
+      // The row-scope fan-out (see createScopedNamer's header): the child's option is the
+      // parent's column, so the provenance is the true grid cell.
+      if (scope.kind === 'row') {
+        return { kind: 'cell', rowRef: scope.rowRef, columnRef: part.optionRef };
+      }
+      throw new PluginComposeError(
+        'compose_unnameable_part',
+        'a composed child cannot contribute an option part inside a grid cell',
+        { scope: scope.kind, part: part.kind },
+      );
     case 'row':
     case 'column':
     case 'cell':

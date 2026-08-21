@@ -279,10 +279,17 @@ function compose<Config>(
 
   // Rule 5: every child name must be inside the scope it was given. A child that names anything
   // else is writing into another question's export columns, and the compiler must not find that
-  // out from a duplicate-column error three questions later.
+  // out from a duplicate-column error three questions later. A ROW scope owns three name shapes:
+  // the row itself (`Q1r1`), suffixes on it (`Q1r1_other`), and — the row-scope fan-out the
+  // scoped namer sanctions — its cells (`Q1r1c2`). A grid-cell scope owns only the first two.
   const scopePrefix = deriveDeclarationName(spec, scopeSelfPart(scope));
+  const cellFanOut = scope.kind === 'row' ? new RegExp(`^${scopePrefix}c[0-9]+$`) : null;
   for (const declaration of childDeclarations) {
-    if (declaration.name !== scopePrefix && !declaration.name.startsWith(`${scopePrefix}_`)) {
+    const inside =
+      declaration.name === scopePrefix ||
+      declaration.name.startsWith(`${scopePrefix}_`) ||
+      (cellFanOut !== null && cellFanOut.test(declaration.name));
+    if (!inside) {
       throw new PluginComposeError(
         'plugin_namespace_violation',
         `cell control ${resolved.meta.id} declared ${JSON.stringify(declaration.name)}, which is ` +
@@ -292,25 +299,45 @@ function compose<Config>(
     }
   }
 
-  // Rule 6: one response variable per scalar cell, unless the parent opted in.
-  const responseCount = childDeclarations.filter((d) => d.kind === 'response').length;
-  if (responseCount > 1 && options.allowMultiVarCells !== true) {
-    throw new PluginComposeError(
-      'compose_multi_var_cell',
-      `cell control ${resolved.meta.id} declares ${responseCount} response variables in one cell; ` +
-        'set allowMultiVarCells if the parent layout really has room for them',
-      { childId: resolved.meta.id, count: responseCount },
-    );
-  }
-
   // Provenance is rewritten here, not in the parent plugin as F §3.1's sample does it: the child
   // named itself through the scoped namer, so its own `part` describes a question it is not.
   // Doing it centrally means every composing plugin gets `other_specify` right too, which F's
   // sample flattens into a plain cell.
-  return childDeclarations.map((declaration) => ({
+  const rescoped = childDeclarations.map((declaration) => ({
     ...declaration,
     source: { part: rescopePart(declaration.source.part, scope) },
   }));
+
+  // Rule 6: one response variable per GRID CELL, unless the parent opted in. Counted per cell
+  // COORDINATE rather than per compose() call, because a multi-select row legitimately fans out
+  // into one boolean per column — each grid cell still holds exactly one value, which is the
+  // export-layout assumption the rule protects. Two response variables landing on the SAME
+  // coordinate is the violation — and an other-specify verbatim COUNTS AGAINST ITS ROW's
+  // coordinate (it is a second column hanging off that cell), which is exactly the case the
+  // opt-in exists for.
+  const perCell = new Map<string, number>();
+  for (const declaration of rescoped) {
+    if (declaration.kind !== 'response') continue;
+    const part = declaration.source.part;
+    const key =
+      part.kind === 'cell'
+        ? `${part.rowRef}\u0000${part.columnRef ?? ''}`
+        : part.kind === 'other_specify'
+          ? `${part.ofRef ?? ''}\u0000`
+          : `part:${part.kind}`;
+    perCell.set(key, (perCell.get(key) ?? 0) + 1);
+  }
+  const worst = Math.max(0, ...perCell.values());
+  if (worst > 1 && options.allowMultiVarCells !== true) {
+    throw new PluginComposeError(
+      'compose_multi_var_cell',
+      `cell control ${resolved.meta.id} declares ${worst} response variables in one cell; ` +
+        'set allowMultiVarCells if the parent layout really has room for them',
+      { childId: resolved.meta.id, count: worst },
+    );
+  }
+
+  return rescoped;
 }
 
 function scopeSelfPart(scope: ComposeScope): {

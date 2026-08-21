@@ -11,7 +11,7 @@
 import type { JsonValue } from '@resscript/schema';
 import type { ResolvedItem } from './items.js';
 import type { I18nKey } from './meta.js';
-import type { CellControl, ComposeScope } from './variables.js';
+import type { CellControl, CellOverride, ComposeScope } from './variables.js';
 
 export interface ResolvedQuestionVariables {
   readonly self?: string;
@@ -39,6 +39,15 @@ export interface ResolvedQuestion<Config> {
   readonly options: readonly ResolvedItem[];
   readonly rows: readonly ResolvedItem[];
   readonly columns: readonly ResolvedItem[];
+  /**
+   * The authored per-row control overrides, carried through resolution verbatim.
+   *
+   * Added by P1-05: a composing plugin's codec and validator run against `ResolvedQuestion`,
+   * and "which control does row 3 delegate to" is authored on `question.cells` — without this
+   * field the matrix would need a second copy of its overrides in config, one editor bug away
+   * from disagreeing with the authored truth.
+   */
+  readonly cells: readonly CellOverride[];
   readonly variables: ResolvedQuestionVariables;
   /** The variable name for one row/option. Throws for an unknown ref: that is a plugin bug. */
   variableFor(rowRef: string): string;

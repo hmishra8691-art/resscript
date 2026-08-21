@@ -177,12 +177,14 @@ export const multiSelectCore: QuestionTypePluginCore<MultiSelectConfig, MultiSel
     entitlementKey: null,
     trust: 'first_party',
     /**
-     * Not composable, and the reason is the fan-out rather than a policy: a cell control names
-     * itself through the scoped namer, whose `option()` throws `compose_unnameable_part` — there
-     * is no schema §4 part that names `Q5r3r2`. A multi-select inside a grid cell is a
-     * multi-select matrix, which is `matrix` with a per-row control, not this.
+     * Composable as a ROW control only, and the mechanism is the scoped namer rather than a
+     * flag here: under `use_columns` this plugin's options are the parent's columns, so its
+     * per-option booleans name the grid's cells (`Q5r3c2` — the catalogue's `Qr{i}c{j}` grid)
+     * and its set view names the row. In a FULL-GRID cell scope the same namer throws
+     * `compose_unnameable_part` (`Q5r3c2c1` has no schema §4 part), so the illegal placement
+     * still fails at compile time, with a name.
      */
-    composable: false,
+    composable: true,
     emitsData: true,
   },
 
