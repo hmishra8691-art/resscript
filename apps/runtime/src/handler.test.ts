@@ -21,6 +21,7 @@ import { createMemorySessionStore } from './session/store.js';
 import { createStaticTokenResolver, type ResolvedToken } from './token.js';
 import { ArtifactNotFound, type ArtifactHead, type ArtifactLoader } from './artifact/loader.js';
 import { createSession } from './entry.js';
+import { rehydrate } from '@resscript/runtime-core';
 
 /* ---------------------------------------------------------------- *
  * Fake HTTP
@@ -73,6 +74,31 @@ function req(opts: { method?: string; host?: string; path: string }): IncomingMe
 const TOKEN = 'abcdefghij0123456789klmnop'; // 26 lowercase base36
 const HASH = 'f'.repeat(64);
 
+/** An `ArtifactLogic` with no rules — the shape `rehydrate` expects, not a bare `{}`. */
+const EMPTY_LOGIC = {
+  cells: [],
+  topo: [],
+  topo_pos: [],
+  dependents: [],
+  inputs: [],
+  writers: [],
+  by_trigger_variable: {},
+  valid_by_target: {},
+  rules: [],
+  nodes: [],
+  base_visible: {},
+  // Fully materialized, as emit/logic.ts writes it: "an item list has no natural default — the
+  // empty list and 'this question has no rows axis' are different, and the second is what an absent
+  // key means." An empty record here would say no question has any items.
+  base_items: { 'qst_1.options': [1, 2] },
+  base_option: {},
+  derived: {},
+  schema: { question_variables: {}, page_questions: {}, page_of: {}, label_keys: {} },
+};
+
+/** The logic a direct `interpret` call needs. Rehydrated once for the whole suite. */
+const REHYDRATED = rehydrate(EMPTY_LOGIC as never);
+
 /**
  * A fake artifact: a head plus a per-language page tree, which is the shape the loader actually
  * serves (C §17). Keeping the fixture split the same way as the real file tree is what makes
@@ -97,7 +123,9 @@ function linearArtifact(): FakeArtifact {
         ],
         page_entry: { pg_1: 'fn_seq', pg_2: 'fn_seq' },
       },
-      logic: {},
+      // A real (empty) logic program: `rehydrate` walks these, so `{}` would throw on
+      // `artifact.cells.map`. Empty means "no rules", which is what these fixtures intend.
+      logic: EMPTY_LOGIC,
     } as unknown as ArtifactHead,
     pages: {
       en: {
@@ -142,7 +170,9 @@ function screenoutArtifact(): FakeArtifact {
         ],
         page_entry: {},
       },
-      logic: {},
+      // A real (empty) logic program: `rehydrate` walks these, so `{}` would throw on
+      // `artifact.cells.map`. Empty means "no rules", which is what these fixtures intend.
+      logic: EMPTY_LOGIC,
     } as unknown as ArtifactHead,
     pages: {},
   };
@@ -614,6 +644,7 @@ describe('interpret', () => {
       ],
     };
     const out = await interpret([{ c: 'render', page_id: 'pg_1' }], s, fetcher(), {
+      logic: REHYDRATED,
       escapeContext: 'none',
     });
 
@@ -630,6 +661,7 @@ describe('interpret', () => {
       return (linearArtifact().pages['en']?.[pageId] ?? null) as never;
     };
     await interpret([{ c: 'render', page_id: 'pg_1' }], session(), counting, {
+      logic: REHYDRATED,
       escapeContext: 'none',
     });
 
@@ -638,6 +670,7 @@ describe('interpret', () => {
 
   it('reports a missing page rather than throwing', async () => {
     const out = await interpret([{ c: 'render', page_id: 'pg_ghost' }], session(), fetcher(), {
+      logic: REHYDRATED,
       escapeContext: 'none',
     });
 
@@ -650,7 +683,7 @@ describe('interpret', () => {
       [{ c: 'finalize', disposition: 'COMPLETE' }],
       session(),
       fetcher(),
-      { escapeContext: 'none' },
+      { logic: REHYDRATED, escapeContext: 'none' },
     );
 
     expect(out.disposition).toBe('COMPLETE');
@@ -662,7 +695,7 @@ describe('interpret', () => {
       [{ c: 'finalize', disposition: 'CUSTOM', custom_key: 'over_budget' }],
       session(),
       fetcher(),
-      { escapeContext: 'none' },
+      { logic: REHYDRATED, escapeContext: 'none' },
     );
 
     expect(out.events).toContainEqual({
@@ -683,7 +716,7 @@ describe('interpret', () => {
       ],
       session(),
       fetcher(),
-      { escapeContext: 'none' },
+      { logic: REHYDRATED, escapeContext: 'none' },
     );
 
     expect(out.events.map(e => e.kind)).toEqual([
@@ -695,6 +728,7 @@ describe('interpret', () => {
 
   it('records a deferred api_call with its node', async () => {
     const out = await interpret([{ c: 'call_api', node_id: 'fn_api' }], session(), fetcher(), {
+      logic: REHYDRATED,
       escapeContext: 'none',
     });
 
@@ -710,7 +744,7 @@ describe('interpret', () => {
       [{ c: 'emit_event', event: { kind: 'flow.dangling_edge' } }],
       session(),
       fetcher(),
-      { escapeContext: 'none' },
+      { logic: REHYDRATED, escapeContext: 'none' },
     );
 
     expect(out.events).toContainEqual({ kind: 'flow.dangling_edge' });
@@ -727,6 +761,7 @@ describe('interpret', () => {
     const s = { ...session(), vars: { n: '<script>' } as never };
 
     const out = await interpret([{ c: 'render', page_id: 'pg_1' }], s, one, {
+      logic: REHYDRATED,
       escapeContext: 'html_text',
     });
 

@@ -136,6 +136,20 @@ export interface RenderCtx {
   readonly optionState?: (question_id: string, axis: Axis, item: RenderItem) => OptionState;
   /** The canonical item list for a shared-order group (E §8.3). */
   readonly groupFor?: (group_ref: string) => OrderGroup<RenderItem> | undefined;
+  /**
+   * Precomputed display orders, keyed `<question id>.<axis>` — the same map that goes into
+   * `EvalContext.orders`.
+   *
+   * Supplying it is how the renderer and the logic engine are made to agree *structurally* rather
+   * than coincidentally. Both need the order: the engine reads it for `item_attr:'position'`, the
+   * renderer presents it. If each computed its own they would agree only as long as nobody changed
+   * one of the two call sites — and a disagreement means the position a rule reasons about is not
+   * the position the respondent sees.
+   *
+   * Omit it and the renderer computes the order itself, which is correct for a render with no logic
+   * evaluation (and is what the tests below mostly do).
+   */
+  readonly orders?: { readonly [scope: string]: readonly number[] };
   /** What a null pipe target renders as. Per-survey configurable; default `""`. */
   readonly emptyToken?: string;
   /** Output context for piped text. The renderer owns escaping, not the author. */
@@ -196,6 +210,55 @@ export type MaskFallback = 'skip_question' | 'show_all' | 'terminate';
 
 const AXES: readonly Axis[] = ['options', 'rows', 'columns'];
 
+/**
+ * The key `EvalContext.orders` is indexed by. Must match `packages/logic`'s `orderScope`, which is
+ * the same two-part join — restated rather than imported so `runtime-core` keeps no runtime
+ * dependency on the engine for a string template.
+ */
+export function orderScope(questionId: string, axis: Axis): string {
+  return `${questionId}.${axis}`;
+}
+
+/**
+ * Compute the display order of every randomized axis on a page.
+ *
+ * This is the value that goes into `EvalContext.orders` AND into `RenderCtx.orders`, so the engine
+ * and the renderer reason about one order rather than two that happen to match. Computed over the
+ * DECLARED item list, before masking, for the reason in the module header.
+ *
+ * An axis with no randomization spec is absent rather than mapped to its declared codes: absent
+ * means "no order was imposed", and `item_attr:'position'` falling back to declared position is the
+ * engine's own default.
+ */
+export function computeOrders(
+  page: RenderPage,
+  seed: string,
+  opts: { groupFor?: (group_ref: string) => OrderGroup<RenderItem> | undefined } = {},
+): { readonly [scope: string]: readonly number[] } {
+  const out: { [scope: string]: readonly number[] } = {};
+
+  for (const q of page.questions) {
+    for (const axis of AXES) {
+      const base = axisItems(q, axis);
+      const spec = axisSpec(q, axis);
+      if (!base || !spec || spec.mode === 'none' || base.length < 2) continue;
+
+      const group = spec.group_ref ? opts.groupFor?.(spec.group_ref) : undefined;
+      // `subset` is ordered unlimited here; the limit is applied per render, after masking, so the
+      // respondent always sees n of what survived.
+      const orderSpec: RandomizationSpec =
+        spec.mode === 'subset' ? { ...spec, mode: 'shuffle' } : spec;
+      const r = randomize(base, orderSpec, seed, {
+        axis_key: `${q.id}.${axis}`,
+        ...(group ? { group } : {}),
+      });
+      out[orderScope(q.id, axis)] = r.items.map(i => i.code);
+    }
+  }
+
+  return out;
+}
+
 function axisItems(q: RenderQuestion, axis: Axis): readonly RenderItem[] | undefined {
   if (axis === 'options') return q.options;
   if (axis === 'rows') return q.rows;
@@ -233,7 +296,17 @@ function renderAxis(
   let ordered: readonly RenderItem[] = base;
   let subsetLimit: number | null = null;
 
-  if (spec) {
+  const precomputed = ctx.orders?.[orderScope(q.id, axis)];
+  if (precomputed !== undefined) {
+    // Order the base list BY the precomputed codes. Not `precomputed.map(byCode)`: a code the
+    // artifact no longer has would become a hole, and an item the order omits must still render —
+    // appended in declared order — rather than vanishing.
+    const rank = new Map(precomputed.map((code, i) => [code, i]));
+    ordered = [...base].sort(
+      (a, b) => (rank.get(a.code) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.code) ?? Number.MAX_SAFE_INTEGER),
+    );
+    if (spec?.mode === 'subset') subsetLimit = spec.n ?? base.length;
+  } else if (spec) {
     const group = spec.group_ref ? ctx.groupFor?.(spec.group_ref) : undefined;
     // `subset` is deferred: taking the first n here and then masking could leave fewer than n
     // items, and "show them n of these" is the authored intent. The limit is applied after the

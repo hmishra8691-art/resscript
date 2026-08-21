@@ -18,14 +18,19 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createLogger, requestIdFrom } from '@resscript/observability';
 import {
   deriveKey,
+  evaluatePage,
   invalidateForward,
   randomAt,
+  rehydrate,
   renderPage,
   type Cmd,
+  type EvaluatedPage,
   type MachineArtifact,
+  type RehydratedLogic,
   type RenderPage,
   type RenderedPage,
 } from '@resscript/runtime-core';
+import { evalCondition, evaluate, varStateOf } from '@resscript/logic';
 import { ArtifactNotFound, type ArtifactHead, type ArtifactLoader } from './artifact/loader.js';
 import { createSession } from './entry.js';
 import { makeCtx, step } from './machine/index.js';
@@ -128,22 +133,63 @@ function captureEntryParams(url: URL): Record<string, string> {
 export type EscapeContext = 'html_text' | 'none';
 
 /**
- * Render one page against a session.
+ * Rehydrated logic, cached per artifact hash.
  *
- * Rule evaluation is not wired yet, so visibility defaults to visible and option state to
- * unconstrained. Those hooks are where `packages/logic` attaches in P1-10; leaving them as
- * injected defaults rather than inlining `true` keeps the seam visible.
+ * Rehydration walks every cell, rule and AST node, so doing it per request would put a full pass
+ * over the program on the respondent hot path. The artifact is immutable (ADR-002), so the hash is a
+ * safe cache key with no invalidation — the same argument the artifact loader's cache rests on.
  */
-function renderFor(
+const logicCache = new Map<string, RehydratedLogic>();
+
+function logicFor(head: ArtifactHead): RehydratedLogic {
+  const cached = logicCache.get(head.hash);
+  if (cached) return cached;
+  const rehydrated = rehydrate(head.logic);
+  logicCache.set(head.hash, rehydrated);
+  return rehydrated;
+}
+
+/**
+ * Evaluate a page's logic and render it.
+ *
+ * The order matters and is the reason these two are one function: `evaluatePage` computes the
+ * display orders, hands them to the engine, and returns them alongside the verdict — and
+ * `renderPage` must then receive *those* orders rather than computing its own, or the position a
+ * rule reasons about is not the position the respondent sees.
+ *
+ * `pageSubmitted` reads the session's own history, which is what separates `asked` from `shown`:
+ * a page that was rendered but not submitted has been shown, not asked.
+ */
+function evaluateAndRender(
   page: RenderPage,
   session: SessionState,
+  logic: RehydratedLogic,
+  labels: { readonly [key: string]: string } | undefined,
   escapeContext: EscapeContext,
-): RenderedPage {
-  return renderPage(page, session.random_seed, {
+): { rendered: RenderedPage; evaluated: EvaluatedPage } {
+  const submitted = new Set(
+    session.history.filter(v => v.submitted_at !== null).map(v => String(v.page_id)),
+  );
+
+  const evaluated = evaluatePage({
+    page,
+    logic,
+    seed: session.random_seed,
+    vars: session.vars as Record<string, unknown>,
+    ...(labels ? { labels } : {}),
+    pageSubmitted: pageId => submitted.has(pageId),
+    evaluate: evaluate as never,
+    varStateOf: varStateOf as never,
+    evalCondition: evalCondition as never,
+  });
+
+  const rendered = renderPage(page, session.random_seed, {
     vars: session.vars as Record<string, unknown>,
     escapeContext,
-    groupFor: () => undefined,
+    ...evaluated.renderHooks,
   });
+
+  return { rendered, evaluated };
 }
 
 /**
@@ -176,6 +222,13 @@ export interface Interpreted {
 /** Fetch one page of the session's artifact in the session's language. */
 export type PageFetcher = (pageId: string) => Promise<RenderPage | null>;
 
+/** What the interpreter needs to evaluate logic while performing a `render` command. */
+export interface RenderDeps {
+  readonly logic: RehydratedLogic;
+  readonly labels?: { readonly [key: string]: string };
+  readonly escapeContext: EscapeContext;
+}
+
 /**
  * Perform a `Cmd[]`.
  *
@@ -188,7 +241,7 @@ export async function interpret(
   cmds: readonly Cmd[],
   session: SessionState,
   loadPage: PageFetcher,
-  opts: { escapeContext: EscapeContext },
+  opts: RenderDeps,
 ): Promise<Interpreted> {
   let current = session;
   let page: RenderedPage | null = null;
@@ -203,9 +256,26 @@ export async function interpret(
           events.push({ kind: 'render.missing_page', page_id: cmd.page_id });
           break;
         }
-        page = renderFor(source, current, opts.escapeContext);
-        current = stampDigest(current, cmd.page_id, page.digest);
-        for (const e of page.events) events.push({ ...e });
+        const { rendered, evaluated } = evaluateAndRender(
+          source,
+          current,
+          opts.logic,
+          opts.labels,
+          opts.escapeContext,
+        );
+        page = rendered;
+        current = stampDigest(current, cmd.page_id, rendered.digest);
+        for (const e of rendered.events) events.push({ ...e });
+        // A rule-driven termination is surfaced rather than acted on here: finalizing means
+        // releasing a reservation and appending an event, which the machine and P1-10's write path
+        // own. Recording it keeps a session that a rule wanted to screen out visible in the log.
+        if (evaluated.termination) {
+          events.push({
+            kind: 'logic.termination',
+            rule_id: evaluated.termination.rule_id,
+            disposition: evaluated.termination.disposition,
+          });
+        }
         break;
       }
 
@@ -265,9 +335,11 @@ function machineCtx(session: SessionState, now: number) {
   return makeCtx({
     now_ms: now,
     random: salt => randomAt(deriveKey(session.random_seed, salt), 0),
-    // Branch conditions need `packages/logic`. Until P1-10 wires it, report UNKNOWN rather than
-    // `true`: the machine takes the else arm on unknown, which is the safe direction — a
-    // respondent lands in the fallback path instead of one whose preconditions were never checked.
+    // UNKNOWN at entry, deliberately: a branch condition is evaluated against a page verdict, and
+    // at entry no page has been evaluated yet — there is nothing for `SHOWN(Q5)` to read. The
+    // machine answers UNKNOWN by taking the else arm, which is the safe direction. Threading a
+    // verdict from the *previous* page into the machine is P1-10's, where the submit path already
+    // has one in hand.
     evalCondition: () => null,
   });
 }
@@ -378,6 +450,7 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     machineCtx(session, now),
   );
   const out = await interpret(cmds, next, pageFetcher(ctx, head.hash, language), {
+    logic: logicFor(head),
     escapeContext: 'html_text',
   });
 
@@ -457,7 +530,13 @@ async function handlePageRender(
     return;
   }
 
-  const rendered = renderFor(source as unknown as RenderPage, session, 'html_text');
+  const { rendered } = evaluateAndRender(
+    source as unknown as RenderPage,
+    session,
+    logicFor(pinned.head),
+    undefined,
+    'html_text',
+  );
   // Re-rendering re-stamps the digest. It must, or a mask that moved between the first render and
   // a refresh would leave a digest describing a page the respondent is no longer looking at.
   const stamped = stampDigest(session, pageId, rendered.digest);

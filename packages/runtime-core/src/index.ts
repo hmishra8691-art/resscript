@@ -29,7 +29,19 @@ export {
 } from './artifact-logic.js';
 
 export {
+  evaluatePage,
+  type EvalConditionFn,
+  type EvaluateFn,
+  type EvaluatePageInput,
+  type EvaluatedPage,
+  type PageVerdict,
+  type VarStateFn,
+} from './evaluate-page.js';
+
+export {
   renderPage,
+  computeOrders,
+  orderScope,
   type Axis,
   type MaskFallback,
   type OptionState,
