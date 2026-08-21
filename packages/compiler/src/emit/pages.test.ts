@@ -106,6 +106,66 @@ describe('buildPages', () => {
   });
 });
 
+describe('randomization passthrough', () => {
+  /**
+   * WHY THIS EXISTS. `emit/pages.ts` dropped `randomize_options`, `randomize_rows` and
+   * `randomize_columns` entirely: the fields are authored on `QuestionNode` (C §12), the schema
+   * validates them, E §8 and ADR-006 specify seeded ordering at length, and `runtime-core`
+   * implements every mode the schema declares — but no field on `CompiledQuestion` carried them, so
+   * the runtime could never randomize anything.
+   *
+   * Unlike a mask, randomization has no second representation to fall back on. A mask is also
+   * compiled into a logic rule, so dropping `CompiledQuestion.masks` would have been survivable;
+   * randomization is seed-derived rather than rule-derived, so dropping it dropped the feature.
+   */
+  const q5Of = (page: CompiledPage): CompiledQuestion | undefined =>
+    page.questions.find(q => q.ref === 'Q5');
+
+  it('carries the authored spec through to the compiled question', () => {
+    const { pages, ids } = compileFixture();
+    const page = pages.byLanguage['en']?.[ids.page1];
+
+    expect(q5Of(page as CompiledPage)?.randomize_options).toEqual({
+      mode: 'shuffle',
+      group_ref: 'brands',
+      respect_anchors: true,
+    });
+  });
+
+  it('passes the spec through unresolved', () => {
+    // The runtime derives the order from (seed, salt) per session, so a compiler that resolved an
+    // order here would fix one order for every respondent — and make the artifact hash a function
+    // of the order rather than of the questionnaire.
+    const { pages, ids } = compileFixture();
+    const spec = q5Of(pages.byLanguage['en']?.[ids.page1] as CompiledPage)?.randomize_options;
+
+    expect(spec?.group_ref).toBe('brands');
+    expect(spec).not.toHaveProperty('resolved_order');
+  });
+
+  it('is identical in every language', () => {
+    // Order derives from the seed, not from the bundle, so a translated page must randomize the
+    // same way. A per-language difference would mean two respondents on one seed saw two orders.
+    const { pages, ids } = compileFixture({ languages: ['de'] });
+
+    expect(q5Of(pages.byLanguage['de']?.[ids.page1] as CompiledPage)?.randomize_options).toEqual(
+      q5Of(pages.byLanguage['en']?.[ids.page1] as CompiledPage)?.randomize_options,
+    );
+  });
+
+  it('leaves an unrandomized question absent rather than emitting a mode:none stub', () => {
+    // `undefined` and `{ mode: 'none' }` are the same to the renderer, and a field the artifact
+    // does not need is bytes in every page of every survey.
+    const { pages, ids } = compileFixture();
+    const q1 = pages.byLanguage['en']?.[ids.page1]?.questions.find(q => q.ref === 'Q1');
+
+    expect(q1).toBeDefined();
+    expect(q1).not.toHaveProperty('randomize_options');
+    expect(q1).not.toHaveProperty('randomize_rows');
+    expect(q1).not.toHaveProperty('randomize_columns');
+  });
+});
+
 describe('inline_rules', () => {
   it('inlines a rule whose trigger and target are both on the page', () => {
     const fixture = compileFixture();

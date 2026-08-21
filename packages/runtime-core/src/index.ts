@@ -20,6 +20,8 @@ export {
 
 export {
   renderPage,
+  type Axis,
+  type MaskFallback,
   type OptionState,
   type RenderCtx,
   type RenderItem,
@@ -42,18 +44,6 @@ export {
   type RandomizeItem,
   type RandomizeResult,
 } from './randomize.js';
-
-export {
-  applyMasking,
-  type Mask,
-  type MaskContext,
-  type MaskFallback,
-  type MaskItem,
-  type MaskMode,
-  type MaskResult,
-  type MaskSource,
-  type MaskTarget,
-} from './masking.js';
 
 export {
   invalidateForward,

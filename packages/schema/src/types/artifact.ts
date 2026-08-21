@@ -16,7 +16,7 @@
  */
 
 import type { ContentNodeId, PageId, QuestionId, VariableId } from '../ids.js';
-import type { Expr, Iso8601, JsonObject } from './common.js';
+import type { Expr, Iso8601, JsonObject, RandomizationSpec } from './common.js';
 import type { FlowNode } from './flow.js';
 import type { QuotaConfig } from './quotas.js';
 import type { StringBundle } from './i18n.js';
@@ -94,6 +94,23 @@ export interface CompiledQuestion {
   readonly validation: readonly ValidationRule[];
   readonly masks: readonly Mask[];
   readonly emits: readonly VariableId[];
+  /**
+   * Per-axis randomization, passed through from the authored `QuestionNode` (C §12).
+   *
+   * **Added in artifact schema version 1, append-only.** Omitted before that, which meant the
+   * runtime could not randomize anything: E §8 and ADR-006 describe seeded option order at length,
+   * `packages/runtime-core` implements every mode the schema declares, and the compiled artifact
+   * had no field in which to ask for it. Randomization is seed-derived rather than rule-derived, so
+   * unlike a mask it has no representation in the logic cell graph to fall back on — dropping it
+   * here dropped it entirely.
+   *
+   * Passed through unresolved, exactly like `masks` and `validation`: the runtime needs the spec
+   * (mode, `group_ref`, anchors, sub-blocks) to derive an order from `(seed, salt)`, and resolving
+   * it at compile time would fix one order for every respondent.
+   */
+  readonly randomize_options?: RandomizationSpec;
+  readonly randomize_rows?: RandomizationSpec;
+  readonly randomize_columns?: RandomizationSpec;
 }
 
 /** A compiled item: the authoring item with its label resolved and position densified. */

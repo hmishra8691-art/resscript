@@ -176,6 +176,10 @@ export function buildSurvey(spec: FixtureSpec = {}): { readonly survey: Survey; 
     config: MULTI_SELECT_CONFIG,
     options: q5Options,
     masks: [q5Mask],
+    // Carried so `pages.test.ts` can assert the spec survives compilation. It did not before:
+    // `emit/pages.ts` dropped all three randomize_* fields, so the runtime — which implements
+    // every mode — had nothing in the artifact to act on.
+    randomize_options: { mode: 'shuffle', group_ref: 'brands', respect_anchors: true },
   };
 
   const q7: QuestionNode = {

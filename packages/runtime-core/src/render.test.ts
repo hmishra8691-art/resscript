@@ -1,15 +1,25 @@
 /**
  * Test suite for page render (E §9).
  *
- * The tests that matter most are the ORDER ones. Each stage works in isolation — that is what
- * masking.test.ts and randomize.test.ts prove — and the render can still be wrong by composing
- * them in the wrong sequence. Randomize-then-mask passes every per-stage test and silently
- * breaks the shared-group guarantee.
+ * The tests that matter most are the ORDER ones. Each stage works in isolation — randomize.test.ts
+ * and prng.test.ts prove that — and the render can still be wrong by composing them in the wrong
+ * sequence. Filtering the randomized result instead of the base list passes every per-stage test
+ * and silently breaks the shared-group guarantee.
+ *
+ * Masking itself is NOT tested here: the compiler turns each authored mask into a logic rule, so
+ * the set operation lives in packages/logic and this module only consumes the resulting item set.
+ * What is tested is the seam — that an injected verdict is applied, applied before randomization,
+ * and that an empty one triggers the right fallback.
  */
 
 import { describe, it, expect } from 'vitest';
-import { renderPage, type RenderCtx, type RenderItem, type RenderPage } from './render.js';
-import type { Mask } from './masking.js';
+import {
+  renderPage,
+  type Axis,
+  type RenderCtx,
+  type RenderItem,
+  type RenderPage,
+} from './render.js';
 import type { RandomizationSpec } from './randomize.js';
 
 /* ---------------------------------------------------------------- *
@@ -47,13 +57,22 @@ function ctx(over: Partial<RenderCtx> = {}): RenderCtx {
   return { vars: {}, ...over };
 }
 
-const brandMask = (when_empty: 'skip_question' | 'show_all' | 'terminate'): Mask => ({
-  id: 'msk_brands',
-  applies_to: 'options',
-  mode: 'include',
-  source: { kind: 'selected_in', variable_id: 'var_q1' },
-  fallback: { when_empty },
-});
+/**
+ * Stand in for `Verdict.items` / the mask's `fallback.when_empty`.
+ *
+ * `allowed: null` means no mask applies; `[]` means a mask resolved to nothing, which is the case
+ * the fallback exists for. Keeping those distinct in the fixture is the point — conflating them is
+ * how the empty-question dead end happens.
+ */
+function maskCtx(
+  allowed: readonly number[] | null,
+  when_empty: 'skip_question' | 'show_all' | 'terminate' = 'skip_question',
+): Partial<RenderCtx> {
+  return {
+    itemsFor: () => allowed,
+    emptyFallbackFor: () => when_empty,
+  };
+}
 
 const codesOf = (r: ReturnType<typeof renderPage>, qi = 0) =>
   r.questions[qi]?.options?.items.map(i => i.code) ?? [];
@@ -138,24 +157,22 @@ describe('visibility', () => {
   });
 
   it('hidden and masked_empty are distinguishable', () => {
-    // E §9.2: a question dropped by an empty mask is `masked_empty`, NOT a respondent skip.
-    // An analyst needs to tell "chose not to answer" from "logic left nothing to answer".
+    // E §9.2: a question dropped by an empty mask is `masked_empty`, NOT a respondent skip. An
+    // analyst needs to tell "chose not to answer" from "logic left nothing to answer".
     const p = page({
       questions: [
         { id: 'qst_h', ref: 'QH', question_type: 'text' },
-        {
-          id: 'qst_m',
-          ref: 'QM',
-          question_type: 'single_select',
-          options: BRANDS,
-          masks: [brandMask('skip_question')],
-        },
+        { id: 'qst_m', ref: 'QM', question_type: 'single_select', options: BRANDS },
       ],
     });
     const r = renderPage(
       p,
       SEED,
-      ctx({ vars: { var_q1: [] }, isQuestionVisible: id => id !== 'qst_h' }),
+      ctx({
+        isQuestionVisible: id => id !== 'qst_h',
+        itemsFor: () => [],
+        emptyFallbackFor: () => 'skip_question',
+      }),
     );
 
     expect(r.skipped).toEqual([
@@ -169,25 +186,33 @@ describe('visibility', () => {
  * Masking
  * ---------------------------------------------------------------- */
 
-describe('masking', () => {
-  it('filters items to the mask', () => {
-    const p = page({
-      questions: [
-        {
-          id: 'qst_1',
-          ref: 'Q1',
-          question_type: 'multi_select',
-          options: BRANDS,
-          masks: [brandMask('show_all')],
-        },
-      ],
-    });
-    const r = renderPage(p, SEED, ctx({ vars: { var_q1: [1, 3] } }));
-
+describe('masking (injected from logic)', () => {
+  it('keeps only the codes logic says survived', () => {
+    const r = renderPage(page(), SEED, ctx(maskCtx([1, 3])));
     expect(codesOf(r)).toEqual([1, 3]);
   });
 
-  it('skip_question drops the question and records masked_empty', () => {
+  it('preserves base order, not the order logic returned', () => {
+    // Order is randomization's job (E §8.3). Taking it from the verdict would make a battery's
+    // shared order depend on cell-graph evaluation order instead of on the seed.
+    const r = renderPage(page(), SEED, ctx(maskCtx([4, 2, 1])));
+    expect(codesOf(r)).toEqual([1, 2, 4]);
+  });
+
+  it('a null verdict means no mask applies', () => {
+    const r = renderPage(page(), SEED, ctx(maskCtx(null)));
+    expect(codesOf(r)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('omitting the hook entirely also means no mask applies', () => {
+    const r = renderPage(page(), SEED, ctx());
+    expect(codesOf(r)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('does NOT apply question.masks itself', () => {
+    // The compiler already turned each authored mask into a logic rule, so applying them here too
+    // would double them: a show_all fallback firing in one layer and being re-emptied by the other
+    // gives an answer neither layer would give alone.
     const p = page({
       questions: [
         {
@@ -195,71 +220,115 @@ describe('masking', () => {
           ref: 'Q1',
           question_type: 'multi_select',
           options: BRANDS,
-          masks: [brandMask('skip_question')],
+          masks: [
+            {
+              id: 'msk_brands',
+              applies_to: 'options',
+              mode: 'include',
+              source: { kind: 'selected_in', variable_id: 'var_q1' },
+              fallback: { when_empty: 'skip_question' },
+            },
+          ],
         },
       ],
     });
-    const r = renderPage(p, SEED, ctx({ vars: { var_q1: [] } }));
+    const r = renderPage(p, SEED, ctx({ vars: { var_q1: [1] } }));
+
+    expect(codesOf(r)).toEqual([1, 2, 3, 4]);
+    expect(r.skipped).toEqual([]);
+  });
+
+  it('an empty verdict with skip_question drops the question as masked_empty', () => {
+    const r = renderPage(page(), SEED, ctx(maskCtx([], 'skip_question')));
 
     expect(r.questions).toEqual([]);
     expect(r.skipped).toEqual([{ question_id: 'qst_1', reason: 'masked_empty' }]);
   });
 
-  it('show_all reverts to the base items and emits an event', () => {
-    const p = page({
-      questions: [
-        {
-          id: 'qst_1',
-          ref: 'Q1',
-          question_type: 'multi_select',
-          options: BRANDS,
-          masks: [brandMask('show_all')],
-        },
-      ],
-    });
-    const r = renderPage(p, SEED, ctx({ vars: { var_q1: [] } }));
+  it('an empty verdict with show_all reverts to the base items and emits an event', () => {
+    const r = renderPage(page(), SEED, ctx(maskCtx([], 'show_all')));
 
     expect(codesOf(r)).toEqual([1, 2, 3, 4]);
     expect(r.events).toContainEqual({
       kind: 'mask.fallback_show_all',
       question_id: 'qst_1',
-      detail: 'msk_brands',
+      detail: 'options',
     });
   });
 
-  it('terminate surfaces the disposition to the caller', () => {
-    const p = page({
-      questions: [
-        {
-          id: 'qst_1',
-          ref: 'Q1',
-          question_type: 'multi_select',
-          options: BRANDS,
-          masks: [brandMask('terminate')],
-        },
-      ],
-    });
-    const r = renderPage(p, SEED, ctx({ vars: { var_q1: [] } }));
-
-    expect(r.terminate).toEqual({ question_id: 'qst_1', mask_id: 'msk_brands' });
+  it('an empty verdict with terminate surfaces the disposition', () => {
+    const r = renderPage(page(), SEED, ctx(maskCtx([], 'terminate')));
+    expect(r.terminate).toEqual({ question_id: 'qst_1', axis: 'options' });
   });
 
-  it('a mask on a different axis leaves options alone', () => {
-    const rowsMask: Mask = { ...brandMask('skip_question'), applies_to: 'rows' };
+  it('defaults to skip_question when no fallback is supplied', () => {
+    // C §15 gives when_empty no safe default, so the renderer picks the recoverable one: not
+    // showing a question can be recovered from, showing an unanswerable one cannot.
+    const r = renderPage(page(), SEED, ctx({ itemsFor: () => [] }));
+    expect(r.skipped).toEqual([{ question_id: 'qst_1', reason: 'masked_empty' }]);
+  });
+
+  it('a question with no items is unaffected by an empty verdict', () => {
+    // An open text question has no axis, so there is nothing for a mask to empty.
+    const p = page({
+      questions: [{ id: 'qst_t', ref: 'QT', question_type: 'text', label: 'Name?' }],
+    });
+    const r = renderPage(p, SEED, ctx(maskCtx([])));
+
+    expect(r.questions).toHaveLength(1);
+    expect(r.skipped).toEqual([]);
+  });
+
+  it('the verdict is asked per axis', () => {
+    const asked: Array<[string, Axis]> = [];
     const p = page({
       questions: [
         {
-          id: 'qst_1',
-          ref: 'Q1',
-          question_type: 'multi_select',
-          options: BRANDS,
-          masks: [rowsMask],
+          id: 'qst_m',
+          ref: 'QM',
+          question_type: 'matrix',
+          rows: BRANDS.slice(0, 2),
+          columns: BRANDS.slice(2),
         },
       ],
     });
-    const r = renderPage(p, SEED, ctx({ vars: { var_q1: [] } }));
+    renderPage(
+      p,
+      SEED,
+      ctx({
+        itemsFor: (qid, axis) => {
+          asked.push([qid, axis]);
+          return null;
+        },
+      }),
+    );
 
-    expect(codesOf(r)).toEqual([1, 2, 3, 4]);
+    expect(asked).toEqual([
+      ['qst_m', 'rows'],
+      ['qst_m', 'columns'],
+    ]);
+  });
+
+  it('masks one axis without touching another', () => {
+    const p = page({
+      questions: [
+        {
+          id: 'qst_m',
+          ref: 'QM',
+          question_type: 'matrix',
+          rows: BRANDS,
+          columns: BRANDS,
+        },
+      ],
+    });
+    const r = renderPage(
+      p,
+      SEED,
+      ctx({ itemsFor: (_q, axis) => (axis === 'rows' ? [1, 2] : null) }),
+    );
+
+    expect(r.questions[0]?.rows?.items.map(i => i.code)).toEqual([1, 2]);
+    expect(r.questions[0]?.columns?.items.map(i => i.code)).toEqual([1, 2, 3, 4]);
   });
 });
 
@@ -269,25 +338,14 @@ describe('masking', () => {
 
 describe('option state', () => {
   it('evaluates over the surviving items only', () => {
-    // Step 4 runs after masking. A rule evaluated against a masked-out item wastes work and
-    // can emit a verdict for an item the respondent never sees.
+    // Step 4 runs after masking. A rule evaluated against a masked-out item wastes work and can
+    // emit a verdict for an item the respondent never sees.
     const seen: number[] = [];
-    const p = page({
-      questions: [
-        {
-          id: 'qst_1',
-          ref: 'Q1',
-          question_type: 'multi_select',
-          options: BRANDS,
-          masks: [brandMask('show_all')],
-        },
-      ],
-    });
     renderPage(
-      p,
+      page(),
       SEED,
       ctx({
-        vars: { var_q1: [2, 4] },
+        itemsFor: () => [2, 4],
         optionState: (_q, _a, item) => {
           seen.push(item.code);
           return {};
@@ -487,43 +545,24 @@ describe('randomization', () => {
 
 describe('stage order', () => {
   it('masks before randomizing, so a shared group survives differing masks', () => {
-    // The load-bearing assertion. Randomize-then-mask passes every per-stage test and breaks
-    // exactly this: two questions in a battery would disagree on brand order the moment their
-    // masks differ.
+    // The load-bearing assertion. Filtering the randomized result instead of the base list passes
+    // every per-stage test and breaks exactly this: two questions in a battery would disagree on
+    // brand order the moment their masks differed.
     const groupSpec: RandomizationSpec = { mode: 'shuffle', group_ref: 'brands' };
     const groupFor = () => ({ ref: 'brands', canonical: BRANDS });
+    const q = (id: string) => ({
+      id,
+      ref: id.toUpperCase(),
+      question_type: 'multi_select',
+      options: BRANDS,
+      randomize_options: groupSpec,
+    });
 
-    const q5 = renderPage(
-      page({
-        questions: [
-          {
-            id: 'qst_5',
-            ref: 'Q5',
-            question_type: 'multi_select',
-            options: BRANDS,
-            randomize_options: groupSpec,
-          },
-        ],
-      }),
-      SEED,
-      ctx({ groupFor }),
-    );
-
+    const q5 = renderPage(page({ questions: [q('qst_5')] }), SEED, ctx({ groupFor }));
     const q6 = renderPage(
-      page({
-        questions: [
-          {
-            id: 'qst_6',
-            ref: 'Q6',
-            question_type: 'multi_select',
-            options: BRANDS,
-            masks: [brandMask('show_all')],
-            randomize_options: groupSpec,
-          },
-        ],
-      }),
+      page({ questions: [q('qst_6')] }),
       SEED,
-      ctx({ vars: { var_q1: [1, 3] }, groupFor }),
+      ctx({ groupFor, itemsFor: () => [1, 3] }),
     );
 
     // Q6 saw a subset; its order must be the subsequence of Q5's full order.
@@ -539,7 +578,6 @@ describe('stage order', () => {
           ref: 'Q1',
           question_type: 'multi_select',
           options: BRANDS,
-          masks: [brandMask('show_all')],
           randomize_options: { mode: 'shuffle' },
         },
       ],
@@ -548,7 +586,7 @@ describe('stage order', () => {
       p,
       SEED,
       ctx({
-        vars: { var_q1: [1, 2, 3] },
+        itemsFor: () => [1, 2, 3],
         optionState: (_q, _a, item) => ({ hidden: item.code === 2 }),
       }),
     );
@@ -556,24 +594,22 @@ describe('stage order', () => {
     expect([...codesOf(r)].sort((a, b) => a - b)).toEqual([1, 3]);
   });
 
-  it('a terminate mask stops the page render', () => {
+  it('a terminate fallback stops that question but still renders the page', () => {
     const p = page({
       questions: [
-        {
-          id: 'qst_1',
-          ref: 'Q1',
-          question_type: 'multi_select',
-          options: BRANDS,
-          masks: [brandMask('terminate')],
-        },
+        { id: 'qst_1', ref: 'Q1', question_type: 'multi_select', options: BRANDS },
         { id: 'qst_2', ref: 'Q2', question_type: 'text' },
       ],
     });
-    const r = renderPage(p, SEED, ctx({ vars: { var_q1: [] } }));
+    const r = renderPage(
+      p,
+      SEED,
+      ctx({ itemsFor: qid => (qid === 'qst_1' ? [] : null), emptyFallbackFor: () => 'terminate' }),
+    );
 
     expect(r.terminate?.question_id).toBe('qst_1');
-    // Q2 still renders — the caller finalizes, and a half-rendered page would be a lie about
-    // what the machine decided.
+    // Q2 still renders — the caller finalizes, and a half-rendered page would be a lie about what
+    // the machine decided.
     expect(r.questions.map(q => q.id)).toEqual(['qst_2']);
   });
 });
@@ -648,19 +684,8 @@ describe('render digest', () => {
   });
 
   it('changes when the item set changes (a mask moved)', () => {
-    const p = page({
-      questions: [
-        {
-          id: 'qst_1',
-          ref: 'Q1',
-          question_type: 'multi_select',
-          options: BRANDS,
-          masks: [brandMask('show_all')],
-        },
-      ],
-    });
-    const a = renderPage(p, SEED, ctx({ vars: { var_q1: [1, 2] } })).digest;
-    const b = renderPage(p, SEED, ctx({ vars: { var_q1: [1, 3] } })).digest;
+    const a = renderPage(page(), SEED, ctx({ itemsFor: () => [1, 2] })).digest;
+    const b = renderPage(page(), SEED, ctx({ itemsFor: () => [1, 3] })).digest;
 
     expect(a).not.toBe(b);
   });
@@ -744,13 +769,12 @@ describe('purity', () => {
           ref: 'Q1',
           question_type: 'multi_select',
           options: BRANDS,
-          masks: [brandMask('show_all')],
           randomize_options: { mode: 'shuffle', respect_anchors: true },
           label: 'Pick from {{q1.count}}',
         },
       ],
     });
-    const c = ctx({ vars: { var_q1: [1, 2, 3], q1: ['x'] } });
+    const c = ctx({ vars: { q1: ['x'] }, itemsFor: () => [1, 2, 3] });
 
     expect(renderPage(p, SEED, c)).toEqual(renderPage(p, SEED, c));
   });

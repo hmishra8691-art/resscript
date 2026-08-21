@@ -14,33 +14,53 @@ import {
   testSessionCreation,
 } from './entry.js';
 
-describe('ULID generation', () => {
-  it('generates 26-character alphanumeric strings', () => {
-    const ulid = generateULID();
+/**
+ * The shape `@resscript/schema`'s `asId` accepts: `[0-7]` then 25 Crockford base32 characters.
+ *
+ * The previous implementation was checked against `/^[A-Z0-9]{26}$/`, which it passed while
+ * emitting I, L, O and U — excluded from Crockford so a transcribed id cannot be misread — and ids
+ * as short as 23 characters, 0.81% of the time.
+ */
+const ULID_RE = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
-    expect(ulid).toMatch(/^[A-Z0-9]{26}$/);
+describe('ULID generation', () => {
+  it('matches the schema ULID pattern', () => {
+    expect(generateULID()).toMatch(ULID_RE);
+  });
+
+  it('is always exactly 26 characters', () => {
+    // The old implementation varied between 20 and 30 and was sliced, not padded.
+    for (let i = 0; i < 2_000; i++) expect(generateULID()).toHaveLength(26);
+  });
+
+  it('never emits an excluded Crockford character', () => {
+    for (let i = 0; i < 2_000; i++) expect(generateULID()).not.toMatch(/[ILOU]/);
+  });
+
+  it('holds the pattern over many draws', () => {
+    for (let i = 0; i < 2_000; i++) expect(generateULID()).toMatch(ULID_RE);
+  });
+
+  it('does not collide over 20,000 draws', () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 20_000; i++) seen.add(generateULID());
+    expect(seen.size).toBe(20_000);
+  });
+
+  it('sorts lexicographically by creation time', () => {
+    // The reason to prefer a ULID over a UUID for a primary key.
+    const first = generateULID();
+    const start = Date.now();
+    while (Date.now() === start) {
+      // spin until the millisecond advances
+    }
+    expect(generateULID() > first).toBe(true);
   });
 
   it('generates different ULIDs each call', () => {
     const ulid1 = generateULID();
     const ulid2 = generateULID();
 
-    expect(ulid1).not.toBe(ulid2);
-  });
-
-  it('ULIDs are sortable by timestamp', () => {
-    const ulid1 = generateULID();
-    // Small delay
-    const now = Date.now();
-    while (Date.now() === now) {
-      // Spin until time advances (millisecond granularity)
-    }
-    const ulid2 = generateULID();
-
-    // Both valid
-    expect(ulid1).toMatch(/^[A-Z0-9]{26}$/);
-    expect(ulid2).toMatch(/^[A-Z0-9]{26}$/);
-    // Different
     expect(ulid1).not.toBe(ulid2);
   });
 

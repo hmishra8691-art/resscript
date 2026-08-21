@@ -1,35 +1,35 @@
 /**
- * Conformance of `@resscript/runtime-core`'s structural types to `@resscript/schema`'s real
- * ones.
+ * Conformance of `@resscript/runtime-core`'s structural types to `@resscript/schema`'s real ones.
  *
  * `runtime-core` declares narrow structural mirrors rather than importing schema, so it stays
- * loadable in a browser and in QuickJS. That buys portability and costs a guarantee: nothing
- * stops the mirrors drifting from the shapes the compiler actually emits.
+ * loadable in a browser and in QuickJS. That buys portability and costs a guarantee: nothing stops
+ * the mirrors drifting from the shapes the compiler actually emits.
  *
- * This file is that guarantee. The values below are typed as the *schema* types and passed
- * into `runtime-core`, so a drift is a compile error here rather than a runtime failure on the
- * first respondent. An earlier draft of the masking module required a `mask.order_key` that no
- * artifact carries, and randomization declared a `fixed_order` mode the schema does not have —
- * both would have type-checked forever without this file.
+ * This file is that guarantee. The values below are typed as the *schema* types and passed into
+ * `runtime-core`, so a drift is a compile error here rather than a runtime failure on the first
+ * respondent. Two real defects would have been caught by it: a masking module that required a
+ * `mask.order_key` no artifact carries, and a `RandomizationMode` union with a `fixed_order` member
+ * the schema does not define.
  */
 
 import { describe, it, expect } from 'vitest';
-import { applyMasking, randomize } from '@resscript/runtime-core';
+import { randomize, renderPage } from '@resscript/runtime-core';
 import { asId } from '@resscript/schema';
 import type {
   CompiledItem,
+  CompiledPage,
+  CompiledQuestion,
   Mask,
   RandomizationMode,
   RandomizationSpec,
 } from '@resscript/schema';
 
-
 /* ---------------------------------------------------------------- *
  * Id helpers
  *
- * Schema ids are `<prefix>_<26-char Crockford ULID>` (C §3), so a readable literal like
- * `opt_coca` is rejected by `asId`. These map a legible name to a stable valid ULID body, so
- * the fixtures below stay readable without weakening the id contract.
+ * Schema ids are `<prefix>_<26-char Crockford ULID>` (C §3), so a readable literal like `opt_coca`
+ * is rejected by `asId`. These map a legible name to a stable valid ULID body, so the fixtures stay
+ * readable without weakening the id contract.
  * ---------------------------------------------------------------- */
 
 const ULID_BODIES = new Map<string, string>();
@@ -47,6 +47,8 @@ function ulidFor(name: string): string {
 const oid = (name: string) => asId('opt', `opt_${ulidFor(`opt:${name}`)}`);
 const mid = (name: string) => asId('msk', `msk_${ulidFor(`msk:${name}`)}`);
 const vid = (name: string) => asId('var', `var_${ulidFor(`var:${name}`)}`);
+const qid = (name: string) => asId('qst', `qst_${ulidFor(`qst:${name}`)}`);
+const pid = (name: string) => asId('pg', `pg_${ulidFor(`pg:${name}`)}`);
 
 /* ---------------------------------------------------------------- *
  * Real schema values
@@ -70,101 +72,125 @@ function compiledItems(): CompiledItem[] {
   ];
 }
 
-describe('masking accepts real schema Masks', () => {
-  it('selected_in, addressed by variable id', () => {
-    const mask: Mask = {
-      id: mid('brands'),
-      applies_to: 'options',
-      mode: 'include',
-      source: { kind: 'selected_in', variable_id: vid('q1') },
-      fallback: { when_empty: 'show_all' },
-    };
+/** A mask as the artifact carries it: provenance the renderer must NOT re-apply. */
+function authoredMask(): Mask {
+  return {
+    id: mid('brands'),
+    applies_to: 'options',
+    mode: 'include',
+    source: { kind: 'selected_in', variable_id: vid('q1') },
+    fallback: { when_empty: 'show_all' },
+  };
+}
 
-    const r = applyMasking(compiledItems(), [mask], 'options', {
-      vars: { [vid('q1')]: [1, 3] },
-    });
+function compiledQuestion(over: Partial<CompiledQuestion> = {}): CompiledQuestion {
+  return {
+    id: qid('brand'),
+    ref: 'Q1',
+    question_type: 'single_select',
+    required: true,
+    label: 'Which brand, {{name}}?',
+    config: {},
+    options: compiledItems(),
+    validation: [],
+    masks: [authoredMask()],
+    emits: [vid('q1')],
+    ...over,
+  } as CompiledQuestion;
+}
 
-    expect(r.items.map(i => i.code)).toEqual([1, 3]);
-    // The generic parameter must survive: labels are what the renderer needs.
-    expect(r.items[0]?.label).toBe('Coca-Cola');
+function compiledPage(over: Partial<CompiledPage> = {}): CompiledPage {
+  return {
+    id: pid('one'),
+    ref: 'P1',
+    block_path: [],
+    questions: [compiledQuestion()],
+    inline_rules: [],
+    settings: {},
+    ...over,
+  } as CompiledPage;
+}
+
+/* ---------------------------------------------------------------- *
+ * renderPage
+ * ---------------------------------------------------------------- */
+
+describe('renderPage accepts a real CompiledPage', () => {
+  it('renders it without a cast', () => {
+    // The seam that matters most: the loader hands `page()` a `CompiledPage` straight off disk.
+    const r = renderPage(compiledPage(), 'a'.repeat(32), { vars: {} });
+
+    expect(r.questions).toHaveLength(1);
+    expect(r.questions[0]?.ref).toBe('Q1');
+    expect(r.questions[0]?.options?.items.map(i => i.code)).toEqual([1, 2, 3, 99]);
   });
 
-  it('not_selected_in', () => {
-    const mask: Mask = {
-      id: mid('unpicked'),
-      applies_to: 'options',
-      mode: 'include',
-      source: { kind: 'not_selected_in', variable_id: vid('q1') },
-      fallback: { when_empty: 'skip_question' },
-    };
-
-    const r = applyMasking(compiledItems(), [mask], 'options', {
-      vars: { [vid('q1')]: [1, 3] },
-    });
-
-    expect(r.items.map(i => i.code)).toEqual([2, 99]);
+  it('carries CompiledItem labels through to the render', () => {
+    const r = renderPage(compiledPage(), 'a'.repeat(32), { vars: {} });
+    expect(r.questions[0]?.options?.items[0]?.label).toBe('Coca-Cola');
   });
 
-  it('explicit, addressed by OptionId', () => {
-    const mask: Mask = {
-      id: mid('handpicked'),
-      applies_to: 'options',
-      mode: 'include',
-      source: { kind: 'explicit', item_ids: [oid('pepsi'), oid('sprite')] },
-      fallback: { when_empty: 'terminate' },
-    };
-
-    const r = applyMasking(compiledItems(), [mask], 'options', { vars: {} });
-
-    expect(r.items.map(i => i.code)).toEqual([2, 3]);
+  it('pipes the label from session variable state', () => {
+    const r = renderPage(compiledPage(), 'a'.repeat(32), { vars: { name: 'Ada' } });
+    expect(r.questions[0]?.label).toBe('Which brand, Ada?');
   });
 
-  it('every MaskFallback the schema declares is handled', () => {
-    // If the schema adds a fallback, this fails to compile rather than silently falling
-    // through to a default that C §15 says must not exist.
-    const fallbacks = ['skip_question', 'show_all', 'terminate'] as const;
-    const outcomes = fallbacks.map(when_empty => {
-      const mask: Mask = {
-        id: mid('x'),
-        applies_to: 'options',
-        mode: 'include',
-        source: { kind: 'explicit', item_ids: [] },
-        fallback: { when_empty },
-      };
-      return applyMasking(compiledItems(), [mask], 'options', { vars: {} });
-    });
+  it("does NOT apply the page's own authored masks", () => {
+    // The compiler already synthesized one logic rule per authored mask (compiler rules.ts §4).
+    // Applying them here as well would double every mask: harmless for a plain include, but a
+    // show_all fallback firing in one layer and being re-emptied by the other gives an answer
+    // neither layer would give alone.
+    //
+    // The fixture's mask is include-on-selected_in with `var_q1` unset, so a renderer that applied
+    // it would resolve to zero items and hit show_all. All four items surviving is the assertion
+    // that it did not run.
+    const r = renderPage(compiledPage(), 'a'.repeat(32), { vars: {} });
 
-    expect(outcomes.map(o => o.fallback_applied)).toEqual(fallbacks);
+    expect(r.questions[0]?.options?.items).toHaveLength(4);
+    expect(r.events).toEqual([]);
   });
 
-  it('masks are applied in array order — no order_key exists to sort by', () => {
-    const drop = (ref: string, id: string): Mask => ({
-      id: mid(id),
-      applies_to: 'options',
-      mode: 'exclude',
-      source: { kind: 'explicit', item_ids: [oid(ref)] },
-      fallback: { when_empty: 'show_all' },
+  it('applies an injected item set, which is where logic attaches', () => {
+    const r = renderPage(compiledPage(), 'a'.repeat(32), {
+      vars: {},
+      itemsFor: () => [1, 3],
     });
 
-    const r = applyMasking(
-      compiledItems(),
-      [drop('coca', 'a'), drop('pepsi', 'b')],
-      'options',
-      { vars: {} },
-    );
+    expect(r.questions[0]?.options?.items.map(i => i.code)).toEqual([1, 3]);
+  });
 
-    expect(r.items.map(i => i.code)).toEqual([3, 99]);
+  it("handles a matrix question's rows and columns", () => {
+    // `options` is omitted rather than set to undefined: the compiler leaves an undeclared axis
+    // absent, because "this question has no rows" and "its rows were all masked away" are
+    // different states the runtime distinguishes (emit/pages.ts).
+    const { options: _omitted, ...base } = compiledQuestion();
+    const q = {
+      ...base,
+      question_type: 'matrix',
+      rows: compiledItems().slice(0, 2),
+      columns: compiledItems().slice(2),
+    } as CompiledQuestion;
+    const r = renderPage(compiledPage({ questions: [q] }), 'a'.repeat(32), { vars: {} });
+
+    expect(r.questions[0]?.rows?.items.map(i => i.code)).toEqual([1, 2]);
+    expect(r.questions[0]?.columns?.items.map(i => i.code)).toEqual([3, 99]);
+  });
+
+  it('produces a digest for the visit record', () => {
+    const r = renderPage(compiledPage(), 'a'.repeat(32), { vars: {} });
+    expect(r.digest).toMatch(/^[0-9a-f]{32}$/);
   });
 });
+
+/* ---------------------------------------------------------------- *
+ * randomize
+ * ---------------------------------------------------------------- */
 
 describe('randomization accepts real schema RandomizationSpecs', () => {
   it('a shuffle spec with anchors', () => {
     const spec: RandomizationSpec = { mode: 'shuffle', respect_anchors: true };
 
-    const r = randomize(compiledItems(), spec, 'a'.repeat(32), {
-      axis_key: 'qst_5.options',
-      group: { ref: 'brands', canonical: compiledItems() },
-    });
+    const r = randomize(compiledItems(), spec, 'a'.repeat(32), { axis_key: 'qst_5.options' });
 
     // "None of these" is anchored last and must stay there.
     expect(r.items[r.items.length - 1]?.code).toBe(99);
@@ -189,8 +215,7 @@ describe('randomization accepts real schema RandomizationSpecs', () => {
       { axis_key: 'qst_6.options', group: { ref: 'brands', canonical } },
     );
 
-    const shared = q5.items.map(i => i.code).filter(c => c !== 2);
-    expect(q6.items.map(i => i.code)).toEqual(shared);
+    expect(q6.items.map(i => i.code)).toEqual(q5.items.map(i => i.code).filter(c => c !== 2));
   });
 
   it('a subset spec reports the codes shown', () => {
@@ -216,8 +241,8 @@ describe('randomization accepts real schema RandomizationSpecs', () => {
   });
 
   it('every RandomizationMode the schema declares is accepted', () => {
-    // The schema's mode list is the contract. `fixed_order` — which an earlier draft of
-    // runtime-core declared — is not in it, and this loop is what would have caught that.
+    // The schema's mode list is the contract. Iterating it means adding a member fails the build
+    // until it is handled, rather than silently falling through to a passthrough.
     const modes: RandomizationMode[] = [
       'none',
       'shuffle',
@@ -244,53 +269,46 @@ describe('randomization accepts real schema RandomizationSpecs', () => {
   });
 });
 
-describe('the masking -> randomization order (E §9.2)', () => {
-  it('masks resolve which items exist, then randomization orders them', () => {
-    // Steps 2 and 5 of E §9.2, composed as the renderer will compose them. Getting the order
-    // wrong — randomize then mask — breaks the shared-group guarantee, because the canonical
-    // permutation would be filtered by a mask that ran against an already-shuffled list.
-    const canonical = compiledItems();
-    const mask: Mask = {
-      id: mid('brands'),
-      applies_to: 'options',
-      mode: 'include',
-      source: { kind: 'selected_in', variable_id: vid('q1') },
-      fallback: { when_empty: 'show_all' },
-    };
-    const spec: RandomizationSpec = {
-      mode: 'shuffle',
-      group_ref: 'brands',
-      respect_anchors: true,
-    };
-    const seed = '1'.repeat(32);
+/* ---------------------------------------------------------------- *
+ * The masking -> randomization order (E §9.2)
+ * ---------------------------------------------------------------- */
 
-    const masked = applyMasking(canonical, [mask], 'options', {
-      vars: { [vid('q1')]: [1, 2, 99] },
-    });
-    const ordered = randomize(masked.items, spec, seed, {
-      axis_key: 'qst_5.options',
-      group: { ref: 'brands', canonical },
-    });
+describe('stage order', () => {
+  it('a real CompiledQuestion can carry a randomization spec at all', () => {
+    // Until this session it could not: `emit/pages.ts` dropped all three randomize_* fields, so
+    // this line would not have compiled and no artifact could ask the runtime to randomize.
+    const q = compiledQuestion({ randomize_options: { mode: 'shuffle' } });
+    const r = renderPage(compiledPage({ questions: [q] }), 'a'.repeat(32), { vars: {} });
 
-    expect(masked.items.map(i => i.code)).toEqual([1, 2, 99]);
-    expect([...ordered.items.map(i => i.code)].sort((a, b) => a - b)).toEqual([1, 2, 99]);
-    expect(ordered.items[ordered.items.length - 1]?.code).toBe(99); // anchor survives
+    expect([...(r.questions[0]?.options?.items.map(i => i.code) ?? [])].sort((a, b) => a - b)).toEqual(
+      [1, 2, 3, 99],
+    );
   });
 
-  it('a skip_question mask short-circuits before randomization', () => {
-    const mask: Mask = {
-      id: mid('brands'),
-      applies_to: 'options',
-      mode: 'include',
-      source: { kind: 'selected_in', variable_id: vid('q1') },
-      fallback: { when_empty: 'skip_question' },
-    };
+  it('the item set is applied before randomization, not after', () => {
+    // Getting this backwards — randomize then filter — breaks the shared-group guarantee, because
+    // the canonical permutation would be filtered by a set that ran against an already-shuffled
+    // list. Asserted through renderPage so the composition is what is under test.
+    const spec: RandomizationSpec = { mode: 'shuffle', group_ref: 'brands', respect_anchors: true };
+    const canonical = compiledItems();
+    const seed = '1'.repeat(32);
+    const groupFor = () => ({ ref: 'brands', canonical });
 
-    const masked = applyMasking(compiledItems(), [mask], 'options', {
-      vars: { [vid('q1')]: [] },
-    });
+    const full = renderPage(
+      compiledPage({ questions: [compiledQuestion({ randomize_options: spec })] }),
+      seed,
+      { vars: {}, groupFor },
+    );
+    const masked = renderPage(
+      compiledPage({ questions: [compiledQuestion({ randomize_options: spec })] }),
+      seed,
+      { vars: {}, groupFor, itemsFor: () => [1, 2, 99] },
+    );
 
-    expect(masked.skip_question).toBe(true);
-    expect(masked.items).toEqual([]);
+    const fullOrder = full.questions[0]?.options?.items.map(i => i.code) ?? [];
+    const maskedOrder = masked.questions[0]?.options?.items.map(i => i.code) ?? [];
+
+    expect(maskedOrder).toEqual(fullOrder.filter(c => [1, 2, 99].includes(c)));
+    expect(maskedOrder[maskedOrder.length - 1]).toBe(99); // anchor survives
   });
 });

@@ -211,6 +211,17 @@ function compileQuestion(question: QuestionNode, ctx: PageContext): CompiledQues
     validation: question.validation ?? [],
     masks: question.masks ?? [],
     emits,
+    // Passed through unresolved. The runtime derives the order from `(seed, salt)` per session
+    // (E §8, ADR-006), so resolving it here would fix one order for every respondent. Absent stays
+    // absent: `undefined` and `{ mode: 'none' }` are the same to the renderer, and a field the
+    // artifact does not need is bytes in every page of every survey.
+    ...(question.randomize_options === undefined
+      ? {}
+      : { randomize_options: question.randomize_options }),
+    ...(question.randomize_rows === undefined ? {} : { randomize_rows: question.randomize_rows }),
+    ...(question.randomize_columns === undefined
+      ? {}
+      : { randomize_columns: question.randomize_columns }),
   };
 }
 
