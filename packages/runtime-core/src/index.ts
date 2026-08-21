@@ -33,6 +33,21 @@ export {
 } from './masking.js';
 
 export {
+  invalidateForward,
+  invalidationCost,
+  dependentVariables,
+  valueEquals,
+  type AnswersInvalidatedEvent,
+  type InvalidateInput,
+  type InvalidateProvenance,
+  type InvalidateResult,
+  type InvalidationArtifact,
+  type InvalidationCell,
+  type InvalidationVisit,
+  type RecomputeProbe,
+} from './invalidate.js';
+
+export {
   step,
   pagesForTarget,
   type Cmd,
