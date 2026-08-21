@@ -14,6 +14,7 @@
  * and the machine routes on the graph alone, so a page is fetched only when it is rendered.
  */
 
+import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createLogger, requestIdFrom } from '@resscript/observability';
 import {
@@ -547,6 +548,13 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     server_time_ms: now,
   };
 
+  // Resume token: minted at entry (E §7.3), carried in the page URL by the client. Only its
+  // HASH is ever stored or queried — the raw token exists in the respondent's URL and nowhere
+  // else, so a database read or a log line cannot leak a resumable session.
+  const resumeToken = randomBytes(32).toString('base64url');
+  const resumeHash = createHash('sha256').update(resumeToken).digest();
+  session = { ...session, resume_token_hash: resumeHash.toString('hex') };
+
   // The durable birth FIRST (E §5 step 8's order, applied at entry too): session row +
   // document + session_start event, one transaction. If the Redis write after it fails, the
   // session rebuilds from this; the reverse order can lose the birth.
@@ -557,6 +565,7 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
       random_seed: session.random_seed,
       language,
       is_test: session.is_test,
+      resume_token_hash: resumeHash,
       entry_payload: { entry_params: session.entry_params },
     });
     session = { ...session, last_event_seq: 1 };
@@ -575,6 +584,10 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
   });
 
   await ctx.deps.sessions.save(out.session);
+  // Redis fast path for the resume lookup; the sessions row is the durable one.
+  await ctx.deps.sessions.saveResumeToken(
+    out.session.session_id, resumeHash.toString('hex'), 7 * 24 * 3600,
+  );
 
   log.info('session_entered', {
     request_id: ctx.requestId,
@@ -594,7 +607,11 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     json(res, 500, { error: { code: 'no_page' }, request_id: ctx.requestId });
     return;
   }
-  json(res, 200, pageBody(out.page, out.session, ctx.requestId));
+  json(res, 200, {
+    ...pageBody(out.page, out.session, ctx.requestId),
+    // For the client to carry in the page URL. The server keeps only the hash.
+    resume_token: resumeToken,
+  });
 }
 
 /**
@@ -818,6 +835,209 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
   }
 }
 
+/**
+ * `GET /s/{token}/resume/{resume_token}` — E §7.3.
+ *
+ * The raw token is hashed IMMEDIATELY and only the hash travels further: Redis key, Postgres
+ * function argument, log lines. Rejections are all the same 404 — telling a token-guesser
+ * whether they hit an expired session versus a nonexistent one is a probe oracle.
+ */
+async function handleResume(res: ServerResponse, ctx: Ctx, resumeToken: string): Promise<void> {
+  const hashHex = createHash('sha256').update(resumeToken).digest('hex');
+
+  let sessionId = await ctx.deps.sessions.resolveResumeToken(hashHex);
+  if (!sessionId && ctx.deps.writer) {
+    sessionId = await ctx.deps.writer.findByResume(Buffer.from(hashHex, 'hex'));
+  }
+  if (!sessionId) {
+    json(res, 404, { error: { code: 'not_found' }, request_id: ctx.requestId });
+    return;
+  }
+
+  const session = await loadSessionState(ctx.deps, sessionId);
+  if (!session) {
+    json(res, 404, { error: { code: 'not_found' }, request_id: ctx.requestId });
+    return;
+  }
+
+  // E §7.3 step 2: a completed session is not resumable. ABANDONED would be — but the sweeper
+  // that sets it does not exist yet, so in practice this gate today means "finalized = no".
+  if (session.disposition !== null && session.disposition !== 'ABANDONED') {
+    json(res, 404, { error: { code: 'not_found' }, request_id: ctx.requestId });
+    return;
+  }
+
+  // Step 3: the resume window. 7 days default until settings land (E §7.3's own default).
+  const WINDOW_MS = 7 * 24 * 3600 * 1000;
+  if (ctx.deps.now() - session.last_activity_at > WINDOW_MS) {
+    json(res, 404, { error: { code: 'not_found' }, request_id: ctx.requestId });
+    return;
+  }
+
+  if (!session.current_page_id) {
+    json(res, 404, { error: { code: 'not_found' }, request_id: ctx.requestId });
+    return;
+  }
+
+  // Steps 5–7: pinned artifact, resume at 'last_page' (the default position), prefilled by
+  // rendering from the stored vars. Quota re-acquisition (step 6) joins when reserves do.
+  const source = await ctx.deps.artifacts.page(
+    session.artifact_hash, session.language, session.current_page_id,
+  );
+  if (!source) {
+    json(res, 404, { error: { code: 'page_not_found' }, request_id: ctx.requestId });
+    return;
+  }
+  const head = await ctx.deps.artifacts.head(session.artifact_hash);
+
+  const resumed: SessionState = {
+    ...session,
+    last_activity_at: ctx.deps.now(),
+    last_event_seq: session.last_event_seq + 1,
+  };
+
+  // Step 8: the resume event, durable. `respondent_id` is preserved (it lives on the session);
+  // the session id is unchanged — a resume is a continuation, not a restart.
+  if (ctx.deps.writer) {
+    await ctx.deps.writer.submitPage({
+      session_id: session.session_id,
+      expected_seq: resumed.last_event_seq,
+      event_id: `evt_${generateULID()}`,
+      event_type: 'resume',
+      page_id: null,
+      vars: session.vars as never,
+      values: null,
+      rejected_values: null,
+      payload: { at_page: session.current_page_id },
+      client_trace: null,
+      duration_ms: null,
+      status: 'active',
+      disposition: null,
+      current_page_id: session.current_page_id,
+      page_timings: session.page_timings as never,
+      revision: session.revision,
+    });
+  }
+
+  const { rendered } = evaluateAndRender(
+    source as unknown as RenderPage, resumed, logicFor(head), undefined, 'html_text',
+  );
+  const stamped = stampDigest(resumed, session.current_page_id, rendered.digest);
+  await ctx.deps.sessions.save(stamped);
+
+  json(res, 200, pageBody(rendered, stamped, ctx.requestId));
+}
+
+/**
+ * `POST /s/{token}/back?session=` — the navigation half of back (E §7).
+ *
+ * Moves the cursor to the previous SUBMITTED page and re-renders it prefilled. The DATA half
+ * — invalidate-forward — runs when the respondent re-submits that page with a change; going
+ * back to look costs nothing (E §7.2 step 2's common case).
+ */
+async function handleBack(res: ServerResponse, ctx: Ctx): Promise<void> {
+  const sessionId = ctx.url.searchParams.get('session');
+  if (!sessionId) {
+    json(res, 400, { error: { code: 'session_required' }, request_id: ctx.requestId });
+    return;
+  }
+  const session = await loadSessionState(ctx.deps, sessionId);
+  if (!session) {
+    json(res, 404, { error: { code: 'session_not_found' }, request_id: ctx.requestId });
+    return;
+  }
+  if (session.machine_state.state === 'FINALIZED') {
+    // Once COMPLETE you cannot go back; the redirect has fired and the vendor was told (E §7.4).
+    json(res, 409, { error: { code: 'finalized' }, request_id: ctx.requestId });
+    return;
+  }
+
+  const head = await ctx.deps.artifacts.head(session.artifact_hash);
+  const { next, cmds } = step(
+    session,
+    { i: 'back' },
+    asMachineArtifact(head),
+    machineCtx(session, ctx.deps.now()),
+  );
+
+  if (next === session) {
+    // The machine refused: nothing submitted yet, or history is gone after a rebuild.
+    json(res, 409, { error: { code: 'back_refused' }, request_id: ctx.requestId });
+    return;
+  }
+
+  const out = await interpret(cmds, next, pageFetcher(ctx, session.artifact_hash, session.language), {
+    logic: logicFor(head),
+    escapeContext: 'html_text',
+    ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
+  });
+  await ctx.deps.sessions.save(out.session);
+
+  if (!out.page) {
+    json(res, 500, { error: { code: 'no_page' }, request_id: ctx.requestId });
+    return;
+  }
+  // Prefill: the client re-renders the form with the stored answers for this page's variables.
+  const prefill = Object.fromEntries(
+    out.session.history
+      .filter(v => v.page_id === out.page!.page_id)
+      .flatMap(v => v.wrote)
+      .map(v => [v, (out.session.vars as Record<string, unknown>)[v]]),
+  );
+  json(res, 200, { ...pageBody(out.page, out.session, ctx.requestId), prefill });
+}
+
+/**
+ * `POST /s/{token}/event?session=` — client telemetry (timings, focus loss).
+ *
+ * Redis-only by design: E §3.2 keeps page timings out of the event log (they ride along on
+ * the next submit's payload), and a telemetry endpoint that wrote durable rows would hand
+ * anonymous clients a write amplifier. 204 whatever happens — the client must never retry
+ * telemetry.
+ */
+async function handleTelemetry(res: ServerResponse, ctx: Ctx, req: IncomingMessage): Promise<void> {
+  const done = () => {
+    res.writeHead(204, SECURITY_HEADERS);
+    res.end();
+  };
+  try {
+    const raw = (await readJsonBody(req, 16_384)) as {
+      page_id?: string; first_render_ms?: number; focus_loss_ms?: number;
+    };
+    const sessionId = ctx.url.searchParams.get('session');
+    if (!sessionId || typeof raw.page_id !== 'string') return done();
+
+    const session = await ctx.deps.sessions.load(sessionId);
+    if (!session || session.machine_state.state === 'FINALIZED') return done();
+
+    const prev = session.page_timings[raw.page_id as never];
+    const updated: SessionState = {
+      ...session,
+      last_activity_at: ctx.deps.now(),
+      page_timings: {
+        ...session.page_timings,
+        [raw.page_id]: {
+          first_render_ms: clampMs(raw.first_render_ms) ?? prev?.first_render_ms ?? 0,
+          total_ms: prev?.total_ms ?? 0,
+          submits: prev?.submits ?? 0,
+          focus_loss_ms: clampMs(raw.focus_loss_ms) ?? prev?.focus_loss_ms ?? 0,
+        },
+      } as never,
+    };
+    await ctx.deps.sessions.save(updated);
+  } catch {
+    // Malformed telemetry is dropped, not reported: an error response would teach a probing
+    // client which payloads parse.
+  }
+  done();
+}
+
+/** Telemetry numbers are clamped: a client claiming a 12-day render is lying or broken. */
+function clampMs(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return null;
+  return Math.min(v, 3_600_000);
+}
+
 /* ------------------------------------------------------------------ *
  * Router
  * ------------------------------------------------------------------ */
@@ -912,18 +1132,24 @@ export function createHandler(deps: RuntimeDeps) {
     }
 
     if (req.method === 'POST' && url.pathname === `${prefix}/event`) {
-      json(res, 501, {
-        error: { code: 'not_implemented', message: 'P1-10: POST /s/:token/event' },
-        request_id: requestId,
-      });
+      await handleTelemetry(res, ctx, req);
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === `${prefix}/back`) {
+      await handleBack(res, ctx);
       return;
     }
 
     if (req.method === 'GET' && url.pathname.startsWith(`${prefix}/resume/`)) {
-      json(res, 501, {
-        error: { code: 'not_implemented', message: 'P1-09: resume' },
-        request_id: requestId,
-      });
+      const resumeToken = decodeURIComponent(url.pathname.slice(`${prefix}/resume/`.length));
+      try {
+        await handleResume(res, ctx, resumeToken);
+      } catch (err) {
+        if (err instanceof ArtifactNotFound) throw err;
+        log.error('resume_failed', { request_id: requestId, err: String(err) });
+        json(res, 500, { error: { code: 'internal' }, request_id: requestId });
+      }
       return;
     }
 

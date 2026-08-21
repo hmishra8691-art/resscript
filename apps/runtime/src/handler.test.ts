@@ -742,17 +742,129 @@ describe('POST /s/:token/submit — E §5 end to end', () => {
   });
 });
 
+describe('resume, back, telemetry (E §7)', () => {
+  async function entered(d = deps()) {
+    const entry = await call(d, { path: `/s/${TOKEN}` });
+    return { d, sessionId: entry.body.session_id as string, resumeToken: entry.body.resume_token as string };
+  }
+  const submit = (d: RuntimeDeps, sessionId: string, body: unknown) =>
+    call(d, { method: 'POST', path: `/s/${TOKEN}/submit?session=${sessionId}`, body });
+
+  it('entry mints a resume token, and only its hash is stored', async () => {
+    const { d, sessionId, resumeToken } = await entered();
+
+    expect(typeof resumeToken).toBe('string');
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.resume_token_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(stored?.resume_token_hash).not.toContain(resumeToken);
+  });
+
+  it('resume re-renders the current page, prefill-ready, and touches the session', async () => {
+    const { d, sessionId, resumeToken } = await entered();
+    await submit(d, sessionId, { page_id: 'pg_1', values: { var_q1: 1 } });
+
+    const r = await call(d, { path: `/s/${TOKEN}/resume/${resumeToken}` });
+
+    expect(r.status).toBe(200);
+    expect(r.body.page.page_id).toBe('pg_2'); // where they were
+    expect(r.body.session_id).toBe(sessionId); // a continuation, not a restart
+  });
+
+  it('an unknown resume token is 404, indistinguishable from expired', async () => {
+    const d = deps();
+    await entered(d);
+    const r = await call(d, { path: `/s/${TOKEN}/resume/not-a-real-token` });
+    expect(r.status).toBe(404);
+  });
+
+  it('a completed session is not resumable', async () => {
+    const { d, sessionId, resumeToken } = await entered();
+    await submit(d, sessionId, { page_id: 'pg_1', values: { var_q1: 1 } });
+    await submit(d, sessionId, { page_id: 'pg_2', values: {} });
+
+    const r = await call(d, { path: `/s/${TOKEN}/resume/${resumeToken}` });
+    expect(r.status).toBe(404);
+  });
+
+  it('back returns the previous submitted page with the stored answers as prefill', async () => {
+    const { d, sessionId } = await entered();
+    await submit(d, sessionId, { page_id: 'pg_1', values: { var_q1: 2 } });
+
+    const r = await call(d, { method: 'POST', path: `/s/${TOKEN}/back?session=${sessionId}` });
+
+    expect(r.status).toBe(200);
+    expect(r.body.page.page_id).toBe('pg_1');
+    expect(r.body.prefill).toEqual({ var_q1: 2 });
+  });
+
+  it('going back to LOOK costs nothing — resubmitting unchanged keeps downstream', async () => {
+    // E §7.2 step 2's common case, end to end: back, resubmit the same answer, and the
+    // session advances as if nothing happened.
+    const { d, sessionId } = await entered();
+    await submit(d, sessionId, { page_id: 'pg_1', values: { var_q1: 2 } });
+    await call(d, { method: 'POST', path: `/s/${TOKEN}/back?session=${sessionId}` });
+    const r = await submit(d, sessionId, { page_id: 'pg_1', values: { var_q1: 2 } });
+
+    expect(r.status).toBe(200);
+    expect(r.body.page.page_id).toBe('pg_2');
+  });
+
+  it('back on a finalized session is refused — the vendor has been told', async () => {
+    const { d, sessionId } = await entered();
+    await submit(d, sessionId, { page_id: 'pg_1', values: { var_q1: 1 } });
+    await submit(d, sessionId, { page_id: 'pg_2', values: {} });
+
+    const r = await call(d, { method: 'POST', path: `/s/${TOKEN}/back?session=${sessionId}` });
+    expect(r.status).toBe(409);
+  });
+
+  it('back with nothing submitted is refused, not a crash', async () => {
+    const { d, sessionId } = await entered();
+    const r = await call(d, { method: 'POST', path: `/s/${TOKEN}/back?session=${sessionId}` });
+    expect(r.status).toBe(409);
+  });
+
+  it('telemetry updates timings in the session and answers 204', async () => {
+    const { d, sessionId } = await entered();
+    const r = await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/event?session=${sessionId}`,
+      body: { page_id: 'pg_1', first_render_ms: 340, focus_loss_ms: 1200 },
+    });
+
+    expect(r.status).toBe(204);
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.page_timings['pg_1' as never]).toMatchObject({
+      first_render_ms: 340,
+      focus_loss_ms: 1200,
+    });
+  });
+
+  it('telemetry clamps a lying client and never errors', async () => {
+    const { d, sessionId } = await entered();
+    const r = await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/event?session=${sessionId}`,
+      body: { page_id: 'pg_1', first_render_ms: 999_999_999_999 },
+    });
+
+    expect(r.status).toBe(204);
+    const stored = await d.sessions.load(sessionId);
+    expect(stored?.page_timings['pg_1' as never]?.first_render_ms).toBe(3_600_000);
+  });
+
+  it('malformed telemetry is dropped silently — 204, no oracle', async () => {
+    const { d, sessionId } = await entered();
+    const r = await call(d, {
+      method: 'POST',
+      path: `/s/${TOKEN}/event?session=${sessionId}`,
+      body: 'not-an-object',
+    });
+    expect(r.status).toBe(204);
+  });
+});
+
 describe('deferred routes', () => {
-  it('telemetry is 501', async () => {
-    const r = await call(deps(), { method: 'POST', path: `/s/${TOKEN}/event` });
-    expect(r.status).toBe(501);
-  });
-
-  it('resume is 501', async () => {
-    const r = await call(deps(), { path: `/s/${TOKEN}/resume/xyz` });
-    expect(r.status).toBe(501);
-  });
-
   it('preview is 501', async () => {
     const r = await call(deps(), { method: 'POST', path: '/preview/abc' });
     expect(r.status).toBe(501);

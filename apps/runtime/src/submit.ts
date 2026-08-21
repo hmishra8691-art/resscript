@@ -181,9 +181,17 @@ export async function handleSubmitCore(
     return { kind: 'final', session: session0, disposition: session0.disposition ?? 'TERMINATE' };
   }
 
+  // ATTEMPT is part of the key, per E §3.4's own formula — and it is load-bearing: a
+  // respondent who goes back and legitimately resubmits identical values is on attempt 2, so
+  // their submit must NOT collide with attempt 1's replay record. Omitting attempt turned
+  // that exact case into a phantom replay.
+  const attemptNow =
+    session0.history.filter(v => v.page_id === body.page_id).at(-1)?.attempt ?? 1;
   const idemKey =
     body.idempotency_key ??
-    hashString(`${session0.session_id}|${body.page_id}|${JSON.stringify(body.values)}`);
+    hashString(
+      `${session0.session_id}|${body.page_id}|${attemptNow}|${JSON.stringify(body.values)}`,
+    );
   if (session0.last_submit && session0.last_submit.key === idemKey) {
     // E §3.4: a retried identical submit returns the identical response, no second event.
     return { kind: 'replay', response: session0.last_submit.response };
