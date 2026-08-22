@@ -32,9 +32,11 @@ import '@resscript/observability/node';
 
 import { FsArtifactStore } from './artifact-store.js';
 import { Consumer } from './consumer.js';
+import { FsExportSink, PgExportStore } from './export-store.js';
 import { createHealthServer } from './health.js';
 import type { JobStore, PayloadMap } from './index.js';
 import type { CompileEnvironment } from './kinds/compile.js';
+import type { ExportEnvironment } from './kinds/export.js';
 import { buildRegistry } from './kinds/registry.js';
 import { MemoryJobStore } from './memory-job-store.js';
 import { PgJobStore, type SqlClient } from './pg-job-store.js';
@@ -113,6 +115,25 @@ function createCompileEnvironment(pool: PoolLike | null): CompileEnvironment | u
   };
 }
 
+/**
+ * The `export` job's environment, or nothing.
+ *
+ * `EXPORT_DIR` is where the CSVs land — a local directory, because object storage is not stood
+ * up in this deployment (artifact-store.ts's header); `app.exports.storage_key` records a
+ * RELATIVE key so the P5-02 move to a bucket with signed URLs replaces the sink and touches no
+ * row. `ARTIFACT_DIR` must be the SAME store the compile job publishes into: the export's
+ * column contract is read from the artifact the version names (ADR-002's content addressing is
+ * what makes "same" checkable — a wrong directory is a missing hash, never wrong columns).
+ */
+function createExportEnvironment(pool: PoolLike | null): ExportEnvironment | undefined {
+  if (pool === null) return undefined;
+  return {
+    store: new PgExportStore(poolSessions(pool)),
+    artifacts: new FsArtifactStore(env('ARTIFACT_DIR') ?? '/var/lib/resscript/artifacts'),
+    sink: new FsExportSink(env('EXPORT_DIR') ?? '/var/lib/resscript/exports'),
+  };
+}
+
 export async function main(): Promise<number> {
   const levelRaw = env('LOG_LEVEL');
   const log = createLogger({
@@ -128,7 +149,11 @@ export async function main(): Promise<number> {
 
   const { store, backend, pool } = await createStore();
   const compile = createCompileEnvironment(pool);
-  const registry = buildRegistry(compile === undefined ? {} : { compile });
+  const exportEnv = createExportEnvironment(pool);
+  const registry = buildRegistry({
+    ...(compile === undefined ? {} : { compile }),
+    ...(exportEnv === undefined ? {} : { export: exportEnv }),
+  });
 
   const consumer = new Consumer({
     store,

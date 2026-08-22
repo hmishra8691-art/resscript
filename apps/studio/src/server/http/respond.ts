@@ -101,6 +101,10 @@ const CONSTRAINT_ERRORS: Readonly<Record<string, (message: string) => AppError>>
         { path: null, code: 'last_owner', message: 'transfer ownership before removing this member' },
       ],
     }),
+  // `content.tg_draft_only`, should a redirect write reach the table on a non-draft the route's
+  // own frozen check did not see (a freeze that landed between the read and the write).
+  redirects_draft_only: () =>
+    new AppError('frozen_version', 'this survey version is frozen; clone a new draft to edit'),
   sv_one_draft: () =>
     new AppError('already_exists', 'this survey already has a draft version', {
       details: [{ path: null, code: 'one_draft', message: 'edit the existing draft' }],
@@ -164,6 +168,11 @@ const NOT_FOUND_CONSTRAINTS: readonly string[] = [
   // See the comment on `rollback_target_not_archived`: one message for "no such version", "not
   // yours" and "not permitted", and `not_found` is the only one of the three that leaks nothing.
   'rollback_not_permitted',
+  // `content.redirects`' write policies decline for "not yours", "not programmer" and "not a
+  // draft" alike, as zero rows. The route answers the two states the caller can see (403 role,
+  // 409 frozen) before writing; what remains is indistinguishable from a missing version.
+  'redirects_insert',
+  'redirects_delete',
 ];
 
 export function toAppError(err: unknown): AppError {

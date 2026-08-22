@@ -115,4 +115,31 @@ export {
   type PublishTarget,
 } from './kinds/compile.js';
 
+export { CSV_EOL, encodeCsvField, encodeCsvRow, parseCsv } from './csv.js';
+
+export {
+  EXPORT_SQL,
+  FsExportSink,
+  MemoryExportSink,
+  PgExportStore,
+  exportStorageKey,
+  type ExportRow,
+  type ExportSink,
+  type ExportSinkWriter,
+  type ExportStore,
+  type ResponseDocumentPage,
+} from './export-store.js';
+
+export {
+  EXPORT_BATCH_SIZE,
+  EXPORT_KIND,
+  EXPORT_STAGES,
+  csvLine,
+  exportJob,
+  unconfiguredExportEnvironment,
+  type ExportEnvironment,
+  type ExportJobResult,
+  type ExportPayload,
+} from './kinds/export.js';
+
 export { buildRegistry, type WorkerDependencies, type WorkerPayloads } from './kinds/registry.js';

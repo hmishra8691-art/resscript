@@ -522,6 +522,43 @@ export interface IdempotencyStore {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Redirects — where a terminated respondent is sent (API §2.9, 0010)          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `content.redirects`, flattened exactly as 0010 stores it: one row per
+ * (scope, scope key, disposition, custom key).
+ *
+ * `scope_key` is `''` for the default scope and `custom_key` is `''` for every disposition but
+ * `CUSTOM` — both pinned by 0010's biconditional CHECKs, so the empty strings are the table's
+ * own encoding of "not applicable" rather than a convention this layer defends. No
+ * `survey_version_id` on the row: the version is the method argument, and API §2.9 returns the
+ * rows flattened so "is every disposition covered" is a join, not a JSONB walk — which is also
+ * why this shape is field-for-field the worker's `AuthoringRedirectRow`: a row written here is
+ * a row `apps/worker`'s `redirectsOf` reassembles into `Survey.redirects` verbatim.
+ */
+export interface RedirectRow {
+  readonly scope: 'default' | 'vendor' | 'language';
+  readonly scope_key: string;
+  readonly disposition: string;
+  readonly custom_key: string;
+  readonly url_template: string;
+}
+
+export interface RedirectRepo {
+  /** Every redirect row of one version, in 0010's key order. Empty when none are configured. */
+  listRedirects(versionId: string): Promise<readonly RedirectRow[]>;
+  /**
+   * Whole-set replace — PUT semantics (API §2.9): delete every row of the version, insert the
+   * given set, scoped to the version and the caller's org. The route validates every template
+   * BEFORE calling this (security §12.3: "failures are 422, never stored"), so a row reaching
+   * here is one the CHECKs will accept; the store's own draft-only and role guards still apply,
+   * because `content.tg_draft_only` and the `programmer` write policies are the guarantee.
+   */
+  replaceRedirects(versionId: string, rows: readonly RedirectRow[]): Promise<readonly RedirectRow[]>;
+}
+
+/* -------------------------------------------------------------------------- */
 /* The variable registry — the type environment for the DSL endpoints          */
 /* -------------------------------------------------------------------------- */
 
@@ -591,6 +628,7 @@ export interface RegistryRepo {
 /** The bundle a route handler receives. One object so adding a repo is not 40 signatures. */
 export interface Repos {
   readonly registry: RegistryRepo;
+  readonly redirects: RedirectRepo;
   readonly orgs: OrgRepo;
   readonly members: MemberRepo;
   readonly invitations: InvitationRepo;

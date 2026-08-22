@@ -18,6 +18,10 @@ const nextConfig: NextConfig = {
     // build error nobody can attribute.
     '@resscript/rescript-dsl',
     '@resscript/logic',
+    // P1-11: the preview panel imports `parsePreviewToStudio` from `@resscript/runtime-core` —
+    // the SAME validator the preview frame runs, because two hand-maintained copies of a
+    // security-relevant contract drift silently (see that package's preview-protocol.ts).
+    '@resscript/runtime-core',
   ],
   /**
    * WHY `extensionAlias`: those packages are ESM-correct TypeScript — they import siblings as

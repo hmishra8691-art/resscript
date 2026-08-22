@@ -78,6 +78,9 @@ importers:
       '@resscript/rescript-dsl':
         specifier: workspace:*
         version: link:../../packages/rescript-dsl
+      '@resscript/runtime-core':
+        specifier: workspace:*
+        version: link:../../packages/runtime-core
       '@resscript/schema':
         specifier: workspace:*
         version: link:../../packages/schema

@@ -9,7 +9,12 @@
  */
 
 import { z } from 'zod';
-import { ORG_ROLES, type OrgRole } from '@resscript/schema';
+import {
+  ORG_ROLES,
+  REDIRECT_REQUIRED_DISPOSITIONS,
+  type Disposition,
+  type OrgRole,
+} from '@resscript/schema';
 
 /**
  * `app.org_role`, from the canonical registry. Never a hand-written string union.
@@ -162,6 +167,91 @@ export const publishVersionSchema = z
 
 /** `app.rollback_version` takes only the target; the survey and the incumbent come from it. */
 export const rollbackSurveySchema = z.object({ to_version_id: ulidIdSchema }).strict();
+
+/* -------------------------------------------------------------------------- */
+/* The preview debug session (P1-11)                                          */
+/* -------------------------------------------------------------------------- */
+
+/** E §14.1: 32 lowercase hex chars — the exact shape the runtime accepts and echoes back. */
+const previewSeedSchema = z.string().regex(/^[0-9a-f]{32}$/, '32 lowercase hex characters');
+
+/**
+ * One step of a debug session, proxied to the runtime's preview endpoints by
+ * `POST /versions/:id/debug-session`. A discriminated union rather than three routes because
+ * the three actions share everything that matters — the version resolution, the compiled-check,
+ * the server-side token mint — and the thing the route must hold in ONE place is the `pt`
+ * token, which must never reach the browser (it is minted from `PREVIEW_SIGNING_SECRET`).
+ *
+ * `values` and `vars` are `z.record(z.unknown())`: their field-level validation is the
+ * runtime's (`filterSubmit` against the variable manifest, `handlePreviewSetVars` against the
+ * same), and restating it here would be a second filter that eventually disagrees with the one
+ * that actually writes.
+ */
+export const debugSessionSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('start'),
+      seed: previewSeedSchema.optional(),
+      lang: z.string().min(2).max(16).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('submit'),
+      session_id: z.string().min(1).max(128),
+      page_id: z.string().min(1).max(128),
+      values: z.record(z.unknown()),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('setvars'),
+      session_id: z.string().min(1).max(128),
+      vars: z.record(z.unknown()),
+    })
+    .strict(),
+]);
+
+/* -------------------------------------------------------------------------- */
+/* Redirects (API §2.9, migration 0010)                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One flattened `content.redirects` row, as PUT receives it.
+ *
+ * `disposition` is the REGISTRY SUBSET K §2 marks "redirect required" — the same array 0010's
+ * `redirects_disposition_registry` CHECK is generated from — never a hand-written union: a row
+ * for `ABANDONED` or `TIMED_OUT` would be a URL nobody is there to be sent to, and the schema
+ * refuses it with the enum's own message rather than letting the CHECK refuse it as a 500.
+ *
+ * `scope_key` and `custom_key` are OPTIONAL and land as `''`, which is the table's own encoding
+ * of "not applicable" (0010's biconditional CHECKs pin it), so an author writing a default-scope
+ * COMPLETE row sends two fields, not four. Optional here and normalized in the route rather than
+ * Zod's `.default('')`, because `parseJsonBody`'s `ZodType<T>` boundary erases the
+ * output-vs-input distinction a default lives in — the route would receive `string | undefined`
+ * either way and the `??` there is the honest spelling. The biconditionals — a `vendor` row needs
+ * a ref, a `CUSTOM` row needs a key — are cross-field facts Zod cannot name per row cheaply;
+ * they are checked with the templates in `src/server/redirects.ts`, which is also what keeps
+ * every failure of one PUT in ONE 422 naming every offending row instead of the first.
+ */
+const redirectRowSchema = z
+  .object({
+    scope: z.enum(['default', 'vendor', 'language']),
+    scope_key: z.string().max(128).optional(),
+    disposition: z.enum(
+      REDIRECT_REQUIRED_DISPOSITIONS as unknown as readonly [Disposition, ...Disposition[]],
+    ),
+    custom_key: z.string().max(128).optional(),
+    // 4 KB: generous for a callback URL with a signature, small enough that a runaway paste
+    // cannot make the validator the slowest thing in the request.
+    url_template: z.string().min(1).max(4096),
+  })
+  .strict();
+
+/** Whole-set replace — PUT semantics. 500 rows is 8 scopes × the whole disposition registry, twice over. */
+export const replaceRedirectsSchema = z
+  .object({ redirects: z.array(redirectRowSchema).max(500) })
+  .strict();
 
 /* -------------------------------------------------------------------------- */
 /* The ResScript DSL endpoints (API §5)                                       */

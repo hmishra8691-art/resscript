@@ -45,6 +45,8 @@ import type {
   PageResult,
   ProjectRepo,
   ProjectRow,
+  RedirectRepo,
+  RedirectRow,
   RegistryItemRow,
   RegistryNodeRow,
   RegistryRepo,
@@ -696,6 +698,79 @@ class SupabaseRepos implements Repos {
         nodes: (nodes.data ?? []) as RegistryNodeRow[],
         items: (items.data ?? []) as RegistryItemRow[],
       };
+    },
+  };
+
+  /**
+   * `content.redirects` (0010) — API §2.9's flattened rows, verbatim.
+   *
+   * Reads and writes both run under the table's own policies: `redirects_select` is
+   * reviewer-floor + `app.can_see_version()`, the write policies are programmer-floor +
+   * `app.version_is_draft()`, and `content.tg_draft_only` catches anything that reaches the
+   * table by another route. Nothing here re-tests any of that in TypeScript — a filter written
+   * here is a filter that can be forgotten, and the policy is the guarantee.
+   *
+   * `replaceRedirects` is delete-then-insert: two statements rather than one transaction, the
+   * same honest weakness `surveys.create` records for PostgREST, and the same remedy — an RPC
+   * (`content.replace_redirects`) when a migration owns it, noted rather than faked. The
+   * failure mode is bounded: a crash between the two leaves the version with no redirect rows,
+   * which CMP-0300 refuses to publish, never with a half-merged set.
+   */
+  readonly redirects: RedirectRepo = {
+    listRedirects: async (versionId: string): Promise<readonly RedirectRow[]> => {
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('redirects')
+        .select('scope, scope_key, disposition, custom_key, url_template')
+        .eq('survey_version_id', versionId)
+        // 0010's key order — the same ORDER BY the worker's publish read uses, so what the
+        // author sees listed is ordered as what the artifact is assembled from.
+        .order('scope', { ascending: true })
+        .order('scope_key', { ascending: true })
+        .order('disposition', { ascending: true })
+        .order('custom_key', { ascending: true });
+      if (error !== null) raise(error, 'redirects_select');
+      return (data ?? []) as RedirectRow[];
+    },
+
+    replaceRedirects: async (
+      versionId: string,
+      rows: readonly RedirectRow[],
+    ): Promise<readonly RedirectRow[]> => {
+      const org = this.ctx.activeOrgId;
+      if (org === null) throw new StoreConstraintError('redirects_insert', 'no active org');
+      const { error: deleteError } = await this.ctx.client
+        .schema(CONTENT)
+        .from('redirects')
+        .delete()
+        .eq('survey_version_id', versionId);
+      if (deleteError !== null) raise(deleteError, 'redirects_delete');
+      if (rows.length === 0) return [];
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('redirects')
+        .insert(
+          rows.map((row) => ({
+            survey_version_id: versionId,
+            // Written from the CLAIM, and `redirects_insert`'s WITH CHECK re-tests it against
+            // `app.current_org()`, so a wrong value here is rejected by the database.
+            org_id: org,
+            scope: row.scope,
+            scope_key: row.scope_key,
+            disposition: row.disposition,
+            custom_key: row.custom_key,
+            url_template: row.url_template,
+          })),
+        )
+        .select('scope, scope_key, disposition, custom_key, url_template');
+      if (error !== null) raise(error, 'redirects_insert');
+      const written = (data ?? []) as RedirectRow[];
+      if (written.length === 0) {
+        // Zero rows: the policy declined (not yours, not programmer, or not a draft).
+        // Deliberately indistinguishable from a missing version, as everywhere else.
+        throw new StoreConstraintError('redirects_insert', 'no rows inserted');
+      }
+      return this.redirects.listRedirects(versionId);
     },
   };
 

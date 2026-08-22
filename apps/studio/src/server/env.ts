@@ -55,3 +55,26 @@ export function serviceRoleKey(): string | undefined {
 export function isSupabaseConfigured(): boolean {
   return supabaseEnv() !== undefined;
 }
+
+/**
+ * The preview pair (P1-11, security §3.2).
+ *
+ * `PREVIEW_SIGNING_SECRET` is shared with the runtime, which verifies tokens statelessly —
+ * see `apps/runtime/src/preview/token.ts`. It is a signing key and must never reach the
+ * browser, which is why previews are minted by an API route rather than in client code.
+ * `RUNTIME_PREVIEW_ORIGIN` is the runtime's opaque preview host (`prv-…`), e.g.
+ * `http://prv-dev.run.local:8081` in dev; the studio checks every incoming postMessage's
+ * `event.origin` against it, so a trailing slash here would break the strict equality.
+ */
+export interface PreviewEnv {
+  readonly signingSecret: string;
+  readonly runtimeOrigin: string;
+}
+
+export function previewEnv(): PreviewEnv | undefined {
+  const signingSecret = read('PREVIEW_SIGNING_SECRET');
+  const runtimeOrigin = read('RUNTIME_PREVIEW_ORIGIN');
+  if (signingSecret === undefined || runtimeOrigin === undefined) return undefined;
+  if (isPlaceholder(signingSecret) || isPlaceholder(runtimeOrigin)) return undefined;
+  return { signingSecret, runtimeOrigin: runtimeOrigin.replace(/\/+$/, '') };
+}

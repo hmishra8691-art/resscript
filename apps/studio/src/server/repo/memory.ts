@@ -49,6 +49,8 @@ import type {
   PageResult,
   ProjectRepo,
   ProjectRow,
+  RedirectRepo,
+  RedirectRow,
   RegistryRepo,
   Repos,
   RollbackResult,
@@ -82,6 +84,12 @@ export interface Actor {
   readonly userId: string;
   /** From `app_metadata.active_org_id`. Never from a request parameter. */
   readonly activeOrgId: string | null;
+}
+
+/** One row of `content.redirects`: the wire shape plus the columns the wire omits. */
+export interface MemoryRedirectRow extends RedirectRow {
+  readonly survey_version_id: string;
+  readonly org_id: string;
 }
 
 /** One live row of `runtime.survey_tokens`. `tokens_live_key`: one per (survey, is_test). */
@@ -162,6 +170,13 @@ export class MemoryDataset {
    * reconcile. What the DSL endpoints need is the registry, and this is exactly that.
    */
   readonly registries: VersionRegistryRows[] = [];
+  /**
+   * `content.redirects` (0010), held as the flattened wire rows plus the two columns the wire
+   * omits (`survey_version_id`, `org_id`). Flattened here as in the table, because the API's
+   * whole reason for the shape — "is every disposition covered is a join, not a JSONB walk" —
+   * is only testable against a store that holds rows rather than a reassembled map.
+   */
+  readonly redirects: MemoryRedirectRow[] = [];
 
   /**
    * Monotonic clock so `created_at DESC, id DESC` ordering is deterministic in tests.
@@ -1225,6 +1240,80 @@ class InMemoryRepos implements Repos {
         nodes: [],
         items: [],
       };
+    },
+  };
+
+  /* --- redirects ---------------------------------------------------------- */
+
+  readonly redirects: RedirectRepo = {
+    listRedirects: async (versionId: string): Promise<readonly RedirectRow[]> => {
+      // Visibility goes through the VERSION, as `redirects_select`'s `app.can_see_version()`
+      // does: a version in another org yields zero rows, never an error (an error is an oracle).
+      const version = await this.surveys.getVersion(versionId);
+      if (version === null) return [];
+      return this.data.redirects
+        .filter((r) => r.survey_version_id === versionId)
+        // 0010's key order, the same ORDER BY the worker's publish read uses, so a test that
+        // asserts round-trip ordering asserts the order the artifact is actually built from.
+        .sort((a, b) =>
+          `${a.scope} ${a.scope_key} ${a.disposition} ${a.custom_key}`.localeCompare(
+            `${b.scope} ${b.scope_key} ${b.disposition} ${b.custom_key}`,
+          ),
+        )
+        .map(({ scope, scope_key, disposition, custom_key, url_template }) => ({
+          scope,
+          scope_key,
+          disposition,
+          custom_key,
+          url_template,
+        }));
+    },
+
+    replaceRedirects: async (
+      versionId: string,
+      rows: readonly RedirectRow[],
+    ): Promise<readonly RedirectRow[]> => {
+      const version = await this.surveys.getVersion(versionId);
+      // `redirects_insert`'s WITH CHECK: `current_org` + `has_role('programmer')` +
+      // `can_see_version` + `version_is_draft`. One outcome for "no such version", "not yours"
+      // and "not programmer" — zero rows written, surfaced as the same not_found the policy
+      // produces — because distinguishing them is an existence oracle across tenants.
+      if (version === null || !this.hasRole('programmer')) {
+        throw new StoreConstraintError('redirects_insert', 'no rows inserted');
+      }
+      // `content.tg_draft_only`: a frozen version's redirects are part of what it published.
+      // The route answers 409 frozen_version before reaching here; this is the trigger's copy.
+      if (version.status !== 'draft') {
+        throw new StoreConstraintError('redirects_draft_only', 'version is not a draft');
+      }
+      const org = version.org_id;
+      const seen = new Set<string>();
+      for (const row of rows) {
+        // 0010's CHECKs, reproduced by name so a failing test names what a failing INSERT would.
+        // The route's validator refuses all of these with a 422 before any write; these are the
+        // trigger-and-constraint copies that catch anything reaching the store by another path.
+        if ((row.scope === 'default') !== (row.scope_key === '')) {
+          throw new StoreConstraintError('redirects_scope_key_shape', 'scope/scope_key mismatch');
+        }
+        if ((row.disposition === 'CUSTOM') !== (row.custom_key !== '')) {
+          throw new StoreConstraintError('redirects_custom_key_shape', 'disposition/custom_key mismatch');
+        }
+        if (row.url_template.trim() === '') {
+          throw new StoreConstraintError('redirects_template_nonempty', 'empty url_template');
+        }
+        const key = `${row.scope} ${row.scope_key} ${row.disposition} ${row.custom_key}`;
+        if (seen.has(key)) throw new StoreConstraintError('redirects_pkey', 'duplicate redirect row');
+        seen.add(key);
+      }
+      // Whole-set replace: delete then insert, which over PostgREST is two statements and here
+      // is the atomic thing the RPC will one day make it there.
+      for (let i = this.data.redirects.length - 1; i >= 0; i -= 1) {
+        if (this.data.redirects[i]?.survey_version_id === versionId) this.data.redirects.splice(i, 1);
+      }
+      for (const row of rows) {
+        this.data.redirects.push({ ...row, survey_version_id: versionId, org_id: org });
+      }
+      return this.redirects.listRedirects(versionId);
     },
   };
 

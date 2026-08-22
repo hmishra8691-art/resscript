@@ -61,6 +61,8 @@ export interface SurveyView {
   readonly ref: string;
   readonly name: string;
   readonly description: string | null;
+  /** The base language previews start in when no `lang` is chosen (P1-11). */
+  readonly default_language: string;
   readonly archived_at: string | null;
   readonly created_at: string;
   readonly updated_at: string;
@@ -165,4 +167,93 @@ export interface JobView {
   readonly max_attempts: number;
   readonly created_at: string;
   readonly finished_at: string | null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Preview and the debug session (P1-11)                                      */
+/* -------------------------------------------------------------------------- */
+
+/** `POST /versions/:id/preview-token`. The origin of `preview_url` doubles as the value every
+ *  incoming preview `postMessage`'s `event.origin` is checked against (security §3.2). */
+export interface PreviewTokenView {
+  readonly artifact_hash: string;
+  readonly preview_token: string;
+  readonly expires_at: string;
+  readonly preview_url: string;
+}
+
+/** One `content.variables` row, projected to what the debug panel's masking needs. */
+export interface DebugVariableView {
+  readonly name: string;
+  readonly kind: string;
+  readonly vtype: string;
+  readonly pii: boolean;
+}
+
+/** One writer inside a trace cell — `packages/logic`'s `TraceWriter`, E §14.2's verdicts. */
+export interface DebugTraceWriterView {
+  readonly rule_id: string;
+  readonly verdict: 'T' | 'F' | 'U' | 'skipped';
+  readonly collapsed?: { readonly from: 'U'; readonly to: boolean; readonly reason: string };
+  readonly suppressed?: boolean;
+}
+
+/** One cell of the E §14.2 trace — `packages/logic`'s `TraceCell`, verbatim off the wire. */
+export interface DebugTraceCellView {
+  readonly cell: string;
+  readonly topo_pos: number;
+  readonly writers: readonly DebugTraceWriterView[];
+  readonly result: unknown;
+  readonly changed: boolean;
+}
+
+/** The runtime's `debug` field for one page render (test sessions only, E §14.1). */
+export interface DebugTraceView {
+  readonly seed?: string;
+  readonly artifact_hash?: string;
+  /** Randomization decisions: `<question id>.<axis>` → the output item order. */
+  readonly orders?: Readonly<Record<string, readonly number[]>>;
+  readonly digest?: string;
+  readonly cells_evaluated?: number;
+  readonly trace?: readonly DebugTraceCellView[];
+  readonly validations?: readonly unknown[];
+  readonly termination?: {
+    readonly rule_id: string;
+    readonly disposition: string;
+    readonly custom_key?: string;
+  } | null;
+}
+
+/**
+ * One `POST /versions/:id/debug-session` response.
+ *
+ * Deliberately ONE permissive shape rather than a union per action: the route is a verbatim
+ * passthrough of three runtime responses (entry/page, validation failure, final disposition)
+ * plus the runtime's own error envelope, and the panel renders whichever fields arrived. Every
+ * field is therefore optional except `variables`' host — the one thing the proxy adds itself.
+ */
+export interface DebugStepView {
+  readonly session_id?: string;
+  readonly page?: {
+    readonly page_id: string;
+    readonly questions: readonly unknown[];
+    readonly skipped: readonly unknown[];
+  };
+  readonly progress?: { readonly visited: number; readonly revision: number };
+  readonly debug?: DebugTraceView;
+  readonly validation_failed?: readonly {
+    readonly question_id: string;
+    readonly message_key: string;
+  }[];
+  readonly disposition?: string;
+  readonly redirect_url?: string | null;
+  /** Attached by the proxy on `start` only. */
+  readonly variables?: readonly DebugVariableView[];
+  /** `setvars` acknowledgements. */
+  readonly ok?: boolean;
+  readonly set?: number;
+  readonly rejected?: readonly string[];
+  readonly page_id?: string | null;
+  /** The runtime's error envelope, passed through untranslated. */
+  readonly error?: { readonly code: string; readonly [key: string]: unknown };
 }
