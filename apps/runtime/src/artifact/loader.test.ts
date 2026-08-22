@@ -391,3 +391,33 @@ describe('warm', () => {
     await expect(loader.warm(HASH)).resolves.toBeUndefined();
   });
 });
+
+/* ---------------------------------------------------------------- *
+ * i18n bundles (open decision 5, closed here)
+ * ---------------------------------------------------------------- */
+
+describe('i18n', () => {
+  it('fetches one language bundle lazily and caches it, nulls included', async () => {
+    const source = memSource({
+      ...fullFiles(),
+      'i18n/de.json': { 'q1.label': 'Welche Marke?' },
+    });
+    const loader = createLoader({ sources: [source] });
+
+    const de = await loader.i18n(HASH, 'de');
+    expect(de).toEqual({ 'q1.label': 'Welche Marke?' });
+
+    const fr = await loader.i18n(HASH, 'fr'); // absent language: null, and CACHED null
+    expect(fr).toBeNull();
+    const before = source.fetches.length;
+    await loader.i18n(HASH, 'de');
+    await loader.i18n(HASH, 'fr');
+    expect(source.fetches.length).toBe(before); // both answers came from cache
+  });
+
+  it('refuses a language that could traverse the URL path', async () => {
+    const loader = createLoader({ sources: [memSource(fullFiles())] });
+    expect(await loader.i18n(HASH, '../manifest')).toBeNull();
+    expect(await loader.i18n(HASH, 'en/../../x')).toBeNull();
+  });
+});

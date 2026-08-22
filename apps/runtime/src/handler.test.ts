@@ -150,6 +150,7 @@ const REHYDRATED = rehydrate(EMPTY_LOGIC as never);
 interface FakeArtifact {
   readonly redirects?: Redirects;
   readonly scripts?: Record<string, string>;
+  readonly i18n?: Record<string, Record<string, string>>;
   head: ArtifactHead;
   pages: Record<string, Record<string, unknown>>;
 }
@@ -262,6 +263,9 @@ function loaderFor(artifacts: Record<string, FakeArtifact>): ArtifactLoader {
     },
     async script(hash: string, ref: string) {
       return artifacts[hash]?.scripts?.[ref] ?? null;
+    },
+    async i18n(hash: string, language: string) {
+      return artifacts[hash]?.i18n?.[language] ?? null;
     },
     async page(hash: string, language: string, pageId: string) {
       pageFetches.push(`${hash}/${language}/${pageId}`);

@@ -741,6 +741,27 @@ async function respondFinal(
 }
 
 /**
+ * The language's string bundle, fail-soft: a missing or unreachable bundle renders label KEYS
+ * instead of translations, which is visibly wrong and harmless — the alternative (failing the
+ * render) turns a CDN blip on one i18n file into a down survey. Open decision 3 (mid-survey
+ * language switch) is untouched: the language is fixed at entry, so one bundle per session.
+ */
+async function labelsFor(
+  ctx: Ctx,
+  hash: string,
+  language: string,
+): Promise<Record<string, string> | undefined> {
+  try {
+    return (await ctx.deps.artifacts.i18n(hash, language)) ?? undefined;
+  } catch (err) {
+    log.warn('i18n_bundle_unavailable', {
+      request_id: ctx.requestId, artifact_hash: hash, language, err: String(err),
+    });
+    return undefined;
+  }
+}
+
+/**
  * Load the artifact head a token pins.
  *
  * `null` means the token does not exist. An unavailable artifact throws, and the router turns
@@ -836,9 +857,11 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     asMachineArtifact(head),
     machineCtx(session, now),
   );
+  const labels = await labelsFor(ctx, head.hash, language);
   const out = await interpret(cmds, next, pageFetcher(ctx, head.hash, language), {
     logic: logicFor(head),
     escapeContext: 'html_text',
+    ...(labels ? { labels } : {}),
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
   });
 
@@ -1022,6 +1045,7 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
     const page = await ctx.deps.artifacts.page(session.artifact_hash, language, pageId);
     return page === null ? null : (page as unknown as RenderPage);
   };
+  const labels = await labelsFor(ctx, session.artifact_hash, language);
 
   const writer = ctx.ephemeral ? undefined : ctx.deps.writer;
   const runHooks = ctx.deps.scriptHost
@@ -1165,6 +1189,7 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
       const out = await interpret(outcome.cmds, outcome.session, loadPage, {
         logic,
         escapeContext: 'html_text',
+        ...(labels ? { labels } : {}),
         ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
       });
       await ctx.deps.sessions.save(out.session);
@@ -1325,7 +1350,9 @@ async function handleBack(res: ServerResponse, ctx: Ctx): Promise<void> {
     return;
   }
 
+  const backLabels = await labelsFor(ctx, session.artifact_hash, session.language);
   const out = await interpret(cmds, next, pageFetcher(ctx, session.artifact_hash, session.language), {
+    ...(backLabels ? { labels: backLabels } : {}),
     logic: logicFor(head),
     escapeContext: 'html_text',
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
@@ -1556,9 +1583,11 @@ async function handlePreviewEntry(res: ServerResponse, ctx: Ctx, hash: string): 
   };
 
   const entered = step(session, { i: 'enter' }, asMachineArtifact(head), machineCtx(session, now));
+  const labels = await labelsFor(ctx, hash, language);
   const out = await interpret(entered.cmds, entered.next, pageFetcher(ctx, hash, language), {
     logic: logicFor(head),
     escapeContext: 'html_text',
+    ...(labels ? { labels } : {}),
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
   });
   await ctx.deps.sessions.save(out.session);

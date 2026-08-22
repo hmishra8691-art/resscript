@@ -69,6 +69,12 @@ export interface ArtifactLoader {
    * never change, so a null is as cacheable as a hit.
    */
   script(hash: string, ref: string): Promise<string | null>;
+  /**
+   * One language's string bundle (`i18n/<language>.json`), or null when the artifact carries
+   * no such language. Read once per session render language, not folded into `head()` — a
+   * multi-language artifact would otherwise pay for every language on every entry.
+   */
+  i18n(hash: string, language: string): Promise<Record<string, string> | null>;
   /** Best-effort pre-warm of the head. Never throws. */
   warm(hash: string): Promise<void>;
 }
@@ -181,6 +187,8 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
   const redirects = new LruCache<Redirects | null>(opts.maxHeads ?? 64);
   // Scripts are small and few per survey; the page budget is the right order of magnitude.
   const scripts = new LruCache<string | null>(opts.maxPages ?? 512);
+  // One bundle per (artifact, language) — head-sized cardinality, not page-sized.
+  const bundles = new LruCache<Record<string, string> | null>(opts.maxHeads ?? 64);
 
   if (opts.sources.length === 0) {
     throw new Error('createLoader: at least one artifact source is required');
@@ -283,6 +291,16 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
       const source = await fetchFile(hash, `scripts/${ref}.js`);
       scripts.set(key, source);
       return source;
+    },
+
+    async i18n(hash: string, language: string): Promise<Record<string, string> | null> {
+      if (!/^[A-Za-z0-9-]{1,16}$/.test(language)) return null; // it reaches a URL path
+      const key = `${hash}/i18n/${language}`;
+      const cached = bundles.get(key);
+      if (cached !== undefined) return cached;
+      const bundle = await fetchJson<Record<string, string>>(hash, `i18n/${language}.json`);
+      bundles.set(key, bundle);
+      return bundle;
     },
 
     async warm(hash: string): Promise<void> {
