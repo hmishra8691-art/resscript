@@ -53,6 +53,7 @@ import { asVariableId, astBuilder, type Expr } from '@resscript/logic';
 import { deterministicIds } from '../../schema/src/__fixtures__/mini.js';
 import { acknowledgementKey, type CompileDiagnostic } from './diagnostics.js';
 import { buildSurvey, type FixtureSpec } from './emit/__fixtures__/artifact.js';
+import { largeSurvey } from './__fixtures__/large-survey.js';
 import { compileSurvey } from './pipeline.js';
 import type { CompileInput, CompileResult } from './types.js';
 
@@ -940,68 +941,6 @@ describe('a question-level mask draws no diagnostic about its synthesized condit
  * declared here, so the 500 names and the 500 `emits` lists are schema's own derivation and not a
  * loop in a test that could agree with itself.
  */
-function largeSurvey(questionCount: number, languages: readonly string[]): Survey {
-  const ids = deterministicIds();
-  const perPage = 10;
-  const pages: PageNode[] = [];
-  const en: { [key: string]: string } = {};
-
-  for (let i = 0; i < questionCount; i += 1) {
-    if (i % perPage === 0) {
-      pages.push({ id: ids.next('page'), type: 'page', ref: `P${String(pages.length + 1)}`, children: [] });
-    }
-    const ref = `Q${String(i + 1)}`;
-    en[`${ref}.label`] = `Question ${String(i + 1)}`;
-    const question: QuestionNode = {
-      id: ids.next('question'),
-      type: 'question',
-      ref,
-      question_type: 'numeric',
-      label: { key: `${ref}.label` },
-      required: false,
-    };
-    const current = pages[pages.length - 1];
-    if (current === undefined) continue;
-    pages[pages.length - 1] = { ...current, children: [...current.children, question] };
-  }
-
-  const blockId = ids.next('block');
-  const startId = ids.next('flow_node');
-  const endId = ids.next('flow_node');
-  const sequenceIds = pages.map(() => ids.next('flow_node'));
-  const nodes: FlowNode[] = [
-    { id: startId, type: 'start', next: sequenceIds[0] ?? endId },
-    ...pages.map((p, i): FlowNode => ({
-      id: sequenceIds[i] ?? endId,
-      type: 'sequence',
-      target_id: p.id,
-      next: sequenceIds[i + 1] ?? endId,
-    })),
-    { id: endId, type: 'end', disposition: 'COMPLETE' },
-  ];
-
-  const bundles: { [code: string]: StringBundle } = { en };
-  for (const code of languages) {
-    if (code === 'en') continue;
-    const bundle: { [key: string]: string } = {};
-    for (const key of Object.keys(en)) bundle[key] = `[${code}] ${en[key] ?? ''}`;
-    bundles[code] = bundle;
-  }
-
-  const bare = makeSurvey(ids, {
-    content: [{ id: blockId, type: 'block', ref: 'B1', children: pages }],
-    nodes,
-    languages: {
-      base: 'en',
-      available: languages.map((code) => ({ code })),
-      bundles,
-      policy: { on_missing: 'fallback_to_base', block_publish_if_incomplete: true },
-    },
-  });
-
-  return applyVariableRegistry(bare, { ids });
-}
-
 describe('the compile budget', () => {
   /**
    * One cold run, not `perf.test.ts`' warmed median.

@@ -13,12 +13,13 @@
     "lint": "turbo run lint",
     "lint:graph": "depcruise --config .dependency-cruiser.cjs packages apps",
     "lint:migrations": "node tools/ci/lint-migrations.mjs",
-    "verify": "pnpm lint:graph && pnpm lint:graph:test && pnpm lint:migrations && pnpm typecheck && pnpm build && pnpm lint:packaging && pnpm test",
+    "verify": "pnpm lint:graph && pnpm lint:graph:test && pnpm lint:migrations && pnpm lint:no-random && pnpm typecheck && pnpm build && pnpm lint:packaging && pnpm test",
     "db:up": "node tools/migrate/cli.mjs up",
     "db:reset": "node tools/migrate/cli.mjs reset",
     "db:test": "node tools/migrate/cli.mjs test",
     "lint:graph:test": "node tools/ci/test-graph-rules.mjs",
-    "lint:packaging": "node tools/ci/lint-packaging.mjs"
+    "lint:packaging": "node tools/ci/lint-packaging.mjs",
+    "lint:no-random": "node tools/ci/lint-no-random.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.7.5",
