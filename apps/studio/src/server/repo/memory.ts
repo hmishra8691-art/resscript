@@ -25,19 +25,27 @@ import type {
   AuditEventInput,
   AuditRepo,
   AuditRow,
+  CreateExportInput,
+  DispositionCount,
   EnqueueJobInput,
   EnqueuedJob,
+  ExportRepo,
+  ExportRow,
+  FieldStatsRepo,
   CreateInvitationInput,
   CreateOrganizationInput,
   CreateProjectInput,
   CreateSurveyInput,
   CreateVersionInput,
+  I18nRepo,
+  I18nStringRow,
   IdempotencyRecord,
   IdempotencyStore,
   InvitationRepo,
   InvitationRow,
   JobRepo,
   JobRow,
+  LanguageRow,
   ListProjectsQuery,
   ListSurveysQuery,
   MemberRepo,
@@ -49,11 +57,16 @@ import type {
   PageResult,
   ProjectRepo,
   ProjectRow,
+  CreateRuleInput,
+  ListRulesQuery,
   RedirectRepo,
   RedirectRow,
   RegistryRepo,
   Repos,
   RollbackResult,
+  RuleRepo,
+  RuleRow,
+  UpdateRuleInput,
   SurveyRepo,
   SurveyRow,
   SurveyVersionRow,
@@ -62,6 +75,7 @@ import type {
   UpdateProjectInput,
   UpdateSurveyInput,
   UpdateVersionInput,
+  UpsertStringInput,
   VersionRegistryRows,
 } from './types.js';
 
@@ -90,6 +104,54 @@ export interface Actor {
 export interface MemoryRedirectRow extends RedirectRow {
   readonly survey_version_id: string;
   readonly org_id: string;
+}
+
+/** One row of `content.logic_rules`: the wire shape plus `org_id` and the soft-delete column. */
+export interface MemoryRuleRow extends RuleRow {
+  readonly org_id: string;
+  readonly deleted_at: string | null;
+}
+
+/** `content.languages`: the wire shape plus the columns the wire omits. */
+export interface MemoryLanguageRow extends LanguageRow {
+  readonly survey_version_id: string;
+  readonly org_id: string;
+}
+
+/** `content.i18n_strings`, same treatment. Mutable: an upsert edits value and state in place. */
+export interface MemoryStringRow {
+  readonly survey_version_id: string;
+  readonly org_id: string;
+  readonly lang: string;
+  readonly key: string;
+  value: string | null;
+  state: I18nStringRow['state'];
+}
+
+/** One live row of `app.capability_grants`, reduced to what `app.has_capability` reads. */
+export interface MemoryCapabilityGrant {
+  readonly org_id: string;
+  readonly user_id: string;
+  readonly capability: 'pii_access' | 'custom_code';
+}
+
+/** One row of `app.exports`, plus the org the wire omits. Mutable: the worker advances it. */
+export interface MemoryExportRow extends ExportRow {
+  readonly org_id: string;
+}
+
+/**
+ * `runtime.sessions`, reduced to the four columns `app.field_stats` groups over. Modelled here
+ * even though `authoring` cannot read the real table (ADR-001's plane boundary) for the same
+ * reason `tokens` is: 0013's counter is a definer function crossing that boundary, and a store
+ * with no sessions would make "is_test excluded by default" an untestable sentence.
+ */
+export interface MemorySessionRow {
+  readonly survey_version_id: string;
+  readonly org_id: string;
+  readonly is_test: boolean;
+  /** `null` while the session is in flight — the function returns it as `'IN_PROGRESS'`. */
+  readonly disposition: string | null;
 }
 
 /** One live row of `runtime.survey_tokens`. `tokens_live_key`: one per (survey, is_test). */
@@ -177,6 +239,28 @@ export class MemoryDataset {
    * is only testable against a store that holds rows rather than a reassembled map.
    */
   readonly redirects: MemoryRedirectRow[] = [];
+  /**
+   * `content.logic_rules` (0007 §4.4), one row per rule with the two dependency-closure arrays
+   * the GIN indexes serve. Held as full rows — unlike the registry above, the rules routes ARE
+   * this milestone's (P1-12), so the store models the columns the filters actually read.
+   */
+  readonly rules: MemoryRuleRow[] = [];
+  /** `content.languages` + `content.i18n_strings` (0007 §8), the translation surface. */
+  readonly languages: MemoryLanguageRow[] = [];
+  readonly strings: MemoryStringRow[] = [];
+  /** `app.capability_grants`, reduced to what `app.has_capability` reads (K §1). */
+  readonly capabilities: MemoryCapabilityGrant[] = [];
+  /** `app.exports` (0012). */
+  readonly exports: MemoryExportRow[] = [];
+  /** `runtime.sessions`, reduced to what `app.field_stats` (0013) groups over. */
+  readonly sessions: MemorySessionRow[] = [];
+  /**
+   * What each `enqueue` was HANDED, kept beside the job rows because `JobRow` deliberately
+   * omits `payload` (`app.get_job` never returns it — a compile payload can carry survey
+   * content). A suite asserting "the route enqueued the right payload" reads it here, the way
+   * it would read `ops.jobs.payload` with a superuser psql.
+   */
+  readonly enqueuedPayloads: { readonly job_id: string; readonly kind: string; readonly payload: JsonObject }[] = [];
 
   /**
    * Monotonic clock so `created_at DESC, id DESC` ordering is deterministic in tests.
@@ -443,6 +527,43 @@ export class MemoryDataset {
     return row;
   }
 
+  /** One `content.logic_rules` row, as `POST /versions/:id/rules` would have written it. */
+  seedRule(
+    input: Partial<MemoryRuleRow> & {
+      readonly org_id: string;
+      readonly survey_version_id: string;
+      readonly kind: RuleRow['kind'];
+      readonly condition: JsonObject;
+      readonly effect: JsonObject;
+    },
+  ): MemoryRuleRow {
+    const at = this.now();
+    const row: MemoryRuleRow = {
+      id: input.id ?? this.id('rul'),
+      survey_version_id: input.survey_version_id,
+      org_id: input.org_id,
+      kind: input.kind,
+      target_kind: input.target_kind ?? 'node',
+      target_node_id: input.target_node_id ?? null,
+      target_item_id: input.target_item_id ?? null,
+      target_variable_id: input.target_variable_id ?? null,
+      condition: input.condition,
+      effect: input.effect,
+      evaluation: input.evaluation ?? 'on_change',
+      authored_in: input.authored_in ?? 'visual',
+      trivia: input.trivia ?? {},
+      notes: input.notes ?? null,
+      depends_on_variable_ids: input.depends_on_variable_ids ?? [],
+      depends_on_node_ids: input.depends_on_node_ids ?? [],
+      sort_key: input.sort_key ?? `r${String(this.rules.length).padStart(4, '0')}`,
+      created_at: input.created_at ?? at,
+      updated_at: input.updated_at ?? at,
+      deleted_at: input.deleted_at ?? null,
+    };
+    this.rules.push(row);
+    return row;
+  }
+
   /** Attach a variable registry to a version, for the `/v1/dsl/*` suite. */
   seedRegistry(rows: VersionRegistryRows): VersionRegistryRows {
     const index = this.registries.findIndex((r) => r.survey_version_id === rows.survey_version_id);
@@ -474,6 +595,99 @@ export class MemoryDataset {
     };
     this.jobs.push(row);
     return row;
+  }
+
+  /** One `content.languages` row. `languages_one_base` is enforced so a fixture cannot lie. */
+  seedLanguage(input: {
+    versionId: string;
+    orgId: string;
+    lang: string;
+    isBase?: boolean;
+    rtl?: boolean;
+    onMissing?: string;
+    blockPublishIfIncomplete?: boolean;
+  }): MemoryLanguageRow {
+    if (
+      input.isBase === true &&
+      this.languages.some((l) => l.survey_version_id === input.versionId && l.is_base)
+    ) {
+      throw new StoreConstraintError('languages_one_base', 'a base language already exists');
+    }
+    const row: MemoryLanguageRow = {
+      survey_version_id: input.versionId,
+      org_id: input.orgId,
+      lang: input.lang,
+      is_base: input.isBase ?? false,
+      rtl: input.rtl ?? false,
+      on_missing: input.onMissing ?? 'fallback_to_base',
+      block_publish_if_incomplete: input.blockPublishIfIncomplete ?? true,
+    };
+    this.languages.push(row);
+    return row;
+  }
+
+  /** One `content.i18n_strings` row. Reproduces `i18n_missing_has_no_value`. */
+  seedString(input: {
+    versionId: string;
+    orgId: string;
+    lang: string;
+    key: string;
+    value?: string | null;
+    state?: I18nStringRow['state'];
+  }): MemoryStringRow {
+    const state = input.state ?? (input.value == null ? 'missing' : 'translated');
+    const value = input.value ?? null;
+    if (state === 'missing' && value !== null && value !== '') {
+      throw new StoreConstraintError('i18n_missing_has_no_value', 'a missing string has no value');
+    }
+    const row: MemoryStringRow = {
+      survey_version_id: input.versionId,
+      org_id: input.orgId,
+      lang: input.lang,
+      key: input.key,
+      value: state === 'missing' ? null : value,
+      state,
+    };
+    this.strings.push(row);
+    return row;
+  }
+
+  /** One live `app.capability_grants` row (K §1's explicit grants, never rank). */
+  seedCapability(input: MemoryCapabilityGrant): MemoryCapabilityGrant {
+    this.capabilities.push(input);
+    return input;
+  }
+
+  /** One `runtime.sessions` row, reduced to what `app.field_stats` reads. */
+  seedSession(input: {
+    versionId: string;
+    orgId: string;
+    disposition?: string | null;
+    isTest?: boolean;
+  }): MemorySessionRow {
+    const row: MemorySessionRow = {
+      survey_version_id: input.versionId,
+      org_id: input.orgId,
+      is_test: input.isTest ?? false,
+      disposition: input.disposition ?? null,
+    };
+    this.sessions.push(row);
+    return row;
+  }
+
+  /**
+   * `app.has_capability()`: a live grant AND, for pii_access, the org setting — the function's
+   * own conjunction (0004), reproduced so 0012's trigger emulation refuses for the same two
+   * independent reasons the real one does. NO `has_role()` call, deliberately (K §1).
+   */
+  hasCapability(orgId: string, userId: string, capability: MemoryCapabilityGrant['capability']): boolean {
+    const granted = this.capabilities.some(
+      (c) => c.org_id === orgId && c.user_id === userId && c.capability === capability,
+    );
+    if (!granted) return false;
+    if (capability !== 'pii_access') return true;
+    const org = this.organizations.find((o) => o.id === orgId);
+    return org?.settings['pii_exports_enabled'] === true;
   }
 
   /** `app.tg_org_has_owner()`: a live org must retain at least one owner. */
@@ -512,6 +726,32 @@ function toMemberRow(record: MemberRecord): MemberRow {
     updated_at: record.updated_at,
     email: record.email,
   };
+}
+
+/** Strip the columns the wire omits (`org_id`, `deleted_at`); copy the arrays so a route cannot mutate the store. */
+function toRuleRow(record: MemoryRuleRow): RuleRow {
+  const { org_id: _org, deleted_at: _deleted, ...rest } = record;
+  return {
+    ...rest,
+    depends_on_variable_ids: [...record.depends_on_variable_ids],
+    depends_on_node_ids: [...record.depends_on_node_ids],
+  };
+}
+
+/** `rules_one_target`: the target kind and exactly the matching id column, biconditionally. */
+function assertOneTarget(
+  kind: RuleRow['target_kind'],
+  nodeId: string | null,
+  itemId: string | null,
+  variableId: string | null,
+): void {
+  const ok =
+    (kind === 'node') === (nodeId !== null) &&
+    (kind === 'item') === (itemId !== null) &&
+    (kind === 'variable') === (variableId !== null);
+  if (!ok) {
+    throw new StoreConstraintError('rules_one_target', 'target kind and target id disagree');
+  }
 }
 
 function toInvitationRow(record: InvitationRecord): InvitationRow {
@@ -1219,6 +1459,7 @@ class InMemoryRepos implements Repos {
           : { survey_version_id: input.survey_version_id }),
         ...(input.max_attempts === undefined ? {} : { max_attempts: input.max_attempts }),
       });
+      this.data.enqueuedPayloads.push({ job_id: row.id, kind: input.kind, payload: input.payload });
       return { id: row.id, created: true };
     },
   };
@@ -1240,6 +1481,139 @@ class InMemoryRepos implements Repos {
         nodes: [],
         items: [],
       };
+    },
+  };
+
+  /* --- logic rules -------------------------------------------------------- */
+
+  /**
+   * `content.logic_rules`, with the policies reproduced by name: `rules_select` is
+   * reviewer-floor + version-visible, the writes are programmer-floor + draft-only
+   * (`content.tg_draft_only`), and `rules_one_target` is the biconditional CHECK. The
+   * `depends_on_*` filters are JS `includes` here and `@>` over the GIN indexes in
+   * `SupabaseRepo` — same rows either way, which is what the route tests assert.
+   */
+  readonly rules: RuleRepo = {
+    list: async (versionId: string, query: ListRulesQuery): Promise<PageResult<RuleRow>> => {
+      // Visibility goes through the VERSION, as `rules_select`'s `app.can_see_version()` does.
+      const version = await this.surveys.getVersion(versionId);
+      if (version === null || !this.hasRole('reviewer')) return { rows: [], hasMore: false };
+      const rows = this.data.rules.filter(
+        (r) =>
+          r.survey_version_id === versionId &&
+          r.deleted_at === null &&
+          (query.kind === undefined || r.kind === query.kind) &&
+          (query.target_node_id === undefined || r.target_node_id === query.target_node_id) &&
+          (query.depends_on_node_id === undefined ||
+            r.depends_on_node_ids.includes(query.depends_on_node_id)) &&
+          (query.depends_on_variable_id === undefined ||
+            r.depends_on_variable_ids.includes(query.depends_on_variable_id)),
+      );
+      return paginate(rows.map(toRuleRow), query, idKey);
+    },
+
+    get: async (ruleId: string): Promise<RuleRow | null> => {
+      const found = this.orgScoped(this.data.rules).find(
+        (r) => r.id === ruleId && r.deleted_at === null,
+      );
+      if (found === undefined || !this.hasRole('reviewer')) return null;
+      const version = await this.surveys.getVersion(found.survey_version_id);
+      return version === null ? null : toRuleRow(found);
+    },
+
+    create: async (input: CreateRuleInput): Promise<RuleRow> => {
+      const version = await this.surveys.getVersion(input.survey_version_id);
+      // One outcome for "no such version", "not yours" and "not programmer" — see redirects.
+      if (version === null || !this.hasRole('programmer')) {
+        throw new StoreConstraintError('rules_insert', 'no rows inserted');
+      }
+      if (version.status !== 'draft') {
+        throw new StoreConstraintError('rules_draft_only', 'version is not a draft');
+      }
+      assertOneTarget(input.target_kind, input.target_node_id ?? null, input.target_item_id ?? null, input.target_variable_id ?? null);
+      // `rules_trivia_dsl_only`: trivia is the DSL's fidelity record, meaningless on a
+      // builder-authored rule and pinned empty by the CHECK.
+      if ((input.authored_in ?? 'visual') === 'visual' && Object.keys(input.trivia ?? {}).length > 0) {
+        throw new StoreConstraintError('rules_trivia_dsl_only', 'trivia on a visual rule');
+      }
+      const row = this.data.seedRule({ ...input, org_id: version.org_id });
+      return toRuleRow(row);
+    },
+
+    update: async (ruleId: string, input: UpdateRuleInput): Promise<RuleRow> => {
+      const index = this.data.rules.findIndex(
+        (r) => r.id === ruleId && r.org_id === this.actor.activeOrgId && r.deleted_at === null,
+      );
+      const current = index === -1 ? undefined : this.data.rules[index];
+      if (current === undefined || !this.hasRole('programmer')) {
+        throw new StoreConstraintError('rules_update', 'no rows updated');
+      }
+      const version = await this.surveys.getVersion(current.survey_version_id);
+      if (version === null) throw new StoreConstraintError('rules_update', 'no rows updated');
+      if (version.status !== 'draft') {
+        throw new StoreConstraintError('rules_draft_only', 'version is not a draft');
+      }
+      const next: MemoryRuleRow = {
+        ...current,
+        ...(input.kind === undefined ? {} : { kind: input.kind }),
+        ...(input.target_kind === undefined ? {} : { target_kind: input.target_kind }),
+        ...(input.target_node_id === undefined ? {} : { target_node_id: input.target_node_id }),
+        ...(input.target_item_id === undefined ? {} : { target_item_id: input.target_item_id }),
+        ...(input.target_variable_id === undefined ? {} : { target_variable_id: input.target_variable_id }),
+        ...(input.condition === undefined ? {} : { condition: input.condition }),
+        ...(input.effect === undefined ? {} : { effect: input.effect }),
+        ...(input.evaluation === undefined ? {} : { evaluation: input.evaluation }),
+        ...(input.authored_in === undefined ? {} : { authored_in: input.authored_in }),
+        ...(input.trivia === undefined ? {} : { trivia: input.trivia }),
+        ...(input.notes === undefined ? {} : { notes: input.notes }),
+        ...(input.depends_on_variable_ids === undefined
+          ? {}
+          : { depends_on_variable_ids: [...input.depends_on_variable_ids] }),
+        ...(input.depends_on_node_ids === undefined
+          ? {}
+          : { depends_on_node_ids: [...input.depends_on_node_ids] }),
+        updated_at: this.data.now(),
+      };
+      assertOneTarget(next.target_kind, next.target_node_id, next.target_item_id, next.target_variable_id);
+      this.data.rules[index] = next;
+      return toRuleRow(next);
+    },
+
+    remove: async (ruleId: string): Promise<void> => {
+      const index = this.data.rules.findIndex(
+        (r) => r.id === ruleId && r.org_id === this.actor.activeOrgId && r.deleted_at === null,
+      );
+      const current = index === -1 ? undefined : this.data.rules[index];
+      if (current === undefined || !this.hasRole('programmer')) {
+        throw new StoreConstraintError('rules_delete', 'no rows deleted');
+      }
+      const version = await this.surveys.getVersion(current.survey_version_id);
+      if (version === null) throw new StoreConstraintError('rules_delete', 'no rows deleted');
+      if (version.status !== 'draft') {
+        throw new StoreConstraintError('rules_draft_only', 'version is not a draft');
+      }
+      // Soft, like every content row: `deleted_at` is the editor's undo buffer (B §4.1).
+      this.data.rules[index] = { ...current, deleted_at: this.data.now() };
+    },
+
+    usagesOfVariable: async (variableId: string) => {
+      // The version is discovered THROUGH the variable, then re-checked through the version's
+      // own visibility — the same two hops `content.variables`' policy joins make.
+      const registry = this.data.registries.find((r) =>
+        r.variables.some((v) => v.id === variableId),
+      );
+      if (registry === undefined || !this.hasRole('reviewer')) return null;
+      const version = await this.surveys.getVersion(registry.survey_version_id);
+      if (version === null) return null;
+      const rules = this.data.rules
+        .filter(
+          (r) =>
+            r.survey_version_id === registry.survey_version_id &&
+            r.deleted_at === null &&
+            r.depends_on_variable_ids.includes(variableId),
+        )
+        .map(toRuleRow);
+      return { survey_version_id: registry.survey_version_id, rules };
     },
   };
 
@@ -1314,6 +1688,185 @@ class InMemoryRepos implements Repos {
         this.data.redirects.push({ ...row, survey_version_id: versionId, org_id: org });
       }
       return this.redirects.listRedirects(versionId);
+    },
+  };
+
+  /* --- languages and i18n strings ------------------------------------------ */
+
+  readonly i18n: I18nRepo = {
+    listLanguages: async (versionId: string): Promise<readonly LanguageRow[]> => {
+      // `languages_select` is reviewer-floor + `can_see_version()`. Zero rows for a version in
+      // another org OR a caller below the floor, never an error (an error is an oracle).
+      const version = await this.surveys.getVersion(versionId);
+      if (version === null || !this.hasRole('reviewer')) return [];
+      return this.data.languages
+        .filter((l) => l.survey_version_id === versionId)
+        // Base first, then tag order — the order the manager renders and the worker reads.
+        .sort((a, b) => (a.is_base === b.is_base ? a.lang.localeCompare(b.lang) : a.is_base ? -1 : 1))
+        .map(({ lang, is_base, rtl, on_missing, block_publish_if_incomplete }) => ({
+          lang,
+          is_base,
+          rtl,
+          on_missing,
+          block_publish_if_incomplete,
+        }));
+    },
+
+    addLanguage: async (versionId: string, lang: string): Promise<LanguageRow> => {
+      const version = await this.surveys.getVersion(versionId);
+      // `languages_insert`'s WITH CHECK: org + programmer + can_see_version + draft. One
+      // outcome for "no such version", "not yours" and "not programmer" — zero rows written.
+      if (version === null || !this.hasRole('programmer')) {
+        throw new StoreConstraintError('languages_insert', 'no rows inserted');
+      }
+      if (version.status !== 'draft') {
+        throw new StoreConstraintError('languages_draft_only', 'version is not a draft');
+      }
+      // `languages_tag_shape` — 0007's CHECK, verbatim.
+      if (!/^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2})?$/.test(lang)) {
+        throw new StoreConstraintError('languages_tag_shape', `${lang} is not a BCP-47-ish tag`);
+      }
+      if (this.data.languages.some((l) => l.survey_version_id === versionId && l.lang === lang)) {
+        throw new StoreConstraintError('languages_pkey', `${lang} already exists on this version`);
+      }
+      const row = this.data.seedLanguage({ versionId, orgId: version.org_id, lang });
+      const { survey_version_id: _v, org_id: _o, ...wire } = row;
+      return wire;
+    },
+
+    listStrings: async (versionId: string): Promise<readonly I18nStringRow[]> => {
+      const version = await this.surveys.getVersion(versionId);
+      if (version === null || !this.hasRole('reviewer')) return [];
+      return this.data.strings
+        .filter((s) => s.survey_version_id === versionId)
+        .sort((a, b) => (a.lang === b.lang ? a.key.localeCompare(b.key) : a.lang.localeCompare(b.lang)))
+        .map(({ lang, key, value, state }) => ({ lang, key, value, state }));
+    },
+
+    upsertStrings: async (
+      versionId: string,
+      lang: string,
+      rows: readonly UpsertStringInput[],
+    ): Promise<number> => {
+      const version = await this.surveys.getVersion(versionId);
+      // `i18n_insert`/`i18n_update`: REVIEWER floor — 0007 puts translation entry below the
+      // programmer floor on purpose (translators are reviewers), unlike every other content
+      // write. Deletes stay programmer-only and this method deliberately cannot express one.
+      if (version === null || !this.hasRole('reviewer')) {
+        throw new StoreConstraintError('i18n_insert', 'no rows written');
+      }
+      // `content.tg_draft_only`: a frozen version's strings are part of what it published.
+      if (version.status !== 'draft') {
+        throw new StoreConstraintError('i18n_draft_only', 'version is not a draft');
+      }
+      // The FK to content.languages: an upsert into a language the version does not carry is a
+      // 23503, not an invented language.
+      if (!this.data.languages.some((l) => l.survey_version_id === versionId && l.lang === lang)) {
+        throw new StoreConstraintError('i18n_strings_lang_fkey', `no language ${lang} on this version`);
+      }
+      for (const row of rows) {
+        if (row.state === 'missing' && row.value !== null && row.value !== '') {
+          throw new StoreConstraintError('i18n_missing_has_no_value', 'a missing string has no value');
+        }
+        const existing = this.data.strings.find(
+          (s) => s.survey_version_id === versionId && s.lang === lang && s.key === row.key,
+        );
+        if (existing !== undefined) {
+          existing.value = row.state === 'missing' ? null : row.value;
+          existing.state = row.state;
+        } else {
+          this.data.seedString({
+            versionId,
+            orgId: version.org_id,
+            lang,
+            key: row.key,
+            value: row.value,
+            state: row.state,
+          });
+        }
+      }
+      return rows.length;
+    },
+  };
+
+  /* --- exports --------------------------------------------------------------- */
+
+  readonly exports: ExportRepo = {
+    create: async (input: CreateExportInput): Promise<ExportRow> => {
+      const org = this.actor.activeOrgId;
+      const version = await this.surveys.getVersion(input.survey_version_id);
+      // `exports_insert`: org + analyst floor + requested_by pinned + born pending. One outcome
+      // for "no such version", "not yours" and "below the floor" — zero rows.
+      if (org === null || version === null || !this.hasRole('analyst')) {
+        throw new StoreConstraintError('exports_insert', 'no rows inserted');
+      }
+      // `app.tg_exports_pii_guard` (0012): the pii_access CAPABILITY, never rank. Raised by
+      // name so the API maps it to a 403 naming the missing grant, exactly as the trigger's
+      // 42501 message does.
+      if (input.pii_included && !this.data.hasCapability(org, this.actor.userId, 'pii_access')) {
+        throw new StoreConstraintError(
+          'exports_pii_guard',
+          'exporting PII requires an explicit pii_access capability grant',
+        );
+      }
+      const row: MemoryExportRow = {
+        id: this.data.id('exp'),
+        org_id: org,
+        survey_version_id: input.survey_version_id,
+        requested_by: this.actor.userId,
+        status: 'pending',
+        pii_included: input.pii_included,
+        include_test: input.include_test,
+        row_count: null,
+        storage_key: null,
+        error: null,
+        created_at: this.data.now(),
+        started_at: null,
+        finished_at: null,
+      };
+      this.data.exports.push(row);
+      const { org_id: _o, ...wire } = row;
+      return wire;
+    },
+
+    listForVersion: async (versionId: string): Promise<readonly ExportRow[]> => {
+      // `exports_select`: org + analyst floor, org-wide at that floor. Zero rows below it.
+      const version = await this.surveys.getVersion(versionId);
+      if (version === null || !this.hasRole('analyst')) return [];
+      return this.data.exports
+        .filter((e) => e.survey_version_id === versionId && e.org_id === this.actor.activeOrgId)
+        // `exports_version_idx` order: newest first — the dialog's history.
+        .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+        .slice(0, 50)
+        .map(({ org_id: _o, ...wire }) => wire);
+    },
+  };
+
+  /* --- field stats ------------------------------------------------------------ */
+
+  readonly fieldStats: FieldStatsRepo = {
+    forVersion: async (versionId: string, includeTest: boolean): Promise<readonly DispositionCount[]> => {
+      // `app.field_stats` (0013) re-checks the same two things in the same order: the analyst
+      // floor first (a caller with no standing learns nothing about whether the version
+      // exists), then the org match through the version row.
+      if (!this.hasRole('analyst')) {
+        throw new StoreConstraintError('field_stats_floor', 'reading field stats requires analyst');
+      }
+      const version = await this.surveys.getVersion(versionId);
+      if (version === null) {
+        throw new StoreConstraintError('field_stats_not_found', 'survey version not found');
+      }
+      const counts = new Map<string, number>();
+      for (const session of this.data.sessions) {
+        if (session.survey_version_id !== versionId) continue;
+        // E §14.1 / P1-11 acceptance: is_test rows are EXCLUDED from the default count.
+        if (session.is_test && !includeTest) continue;
+        const disposition = session.disposition ?? 'IN_PROGRESS';
+        counts.set(disposition, (counts.get(disposition) ?? 0) + 1);
+      }
+      return [...counts.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([disposition, sessions]) => ({ disposition, sessions }));
     },
   };
 

@@ -12,7 +12,9 @@
 
 import type { VersionRegistryRows } from '@/server/repo/types';
 
-const ULID = (suffix: string): string => `01JC8KX9Q2M4V7ZB3F0T5N${suffix}`;
+// 23 chars + a 3-char suffix = the 26 a real ULID has — `ulidIdSchema` now polices rule
+// TARGETS too (P1-12), so a fixture id one character short would 422 before any route logic.
+const ULID = (suffix: string): string => `01JC8KX9Q2M4V7ZB3F0T5NX${suffix}`;
 
 export const IDS = {
   blockMain: `blk_${ULID('6R1')}`,

@@ -20,7 +20,16 @@
  * verbatim, because the whole point of a repository is that the mapping happens once.
  */
 
-import type { CompileState, JsonObject, JsonValue, OrgRole, VersionStatus } from '@resscript/schema';
+import type {
+  CompileState,
+  JsonObject,
+  JsonValue,
+  OrgRole,
+  RuleAuthoredIn,
+  RuleEvaluation,
+  RuleKind,
+  VersionStatus,
+} from '@resscript/schema';
 
 /* -------------------------------------------------------------------------- */
 /* Rows                                                                        */
@@ -559,6 +568,134 @@ export interface RedirectRepo {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Languages and i18n strings — the translation surface (API §2.10, 0007 §8)   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `content.languages`, projected to the wire. Field-for-field the worker's
+ * `AuthoringLanguageRow`, for the same reason `RedirectRow` mirrors `AuthoringRedirectRow`:
+ * what the translation routes store is literally what the publish read assembles into
+ * `Survey.languages`, and a second shape would disagree with that reassembly eventually.
+ */
+export interface LanguageRow {
+  readonly lang: string;
+  readonly is_base: boolean;
+  readonly rtl: boolean;
+  readonly on_missing: string;
+  readonly block_publish_if_incomplete: boolean;
+}
+
+/**
+ * `content.i18n_strings`, projected. `value` is `null` exactly when `state = 'missing'` —
+ * 0007's `i18n_missing_has_no_value` CHECK is the table's encoding of "not translated yet",
+ * and this layer preserves it rather than inventing `''`-vs-`null` semantics of its own.
+ */
+export interface I18nStringRow {
+  readonly lang: string;
+  readonly key: string;
+  readonly value: string | null;
+  readonly state: 'missing' | 'machine' | 'translated' | 'reviewed';
+}
+
+/** One upserted string. The route derives `state` from the value; see the translations PUT. */
+export interface UpsertStringInput {
+  readonly key: string;
+  readonly value: string | null;
+  readonly state: I18nStringRow['state'];
+}
+
+export interface I18nRepo {
+  /** Every language of one version, base first then tag order. Empty when none configured. */
+  listLanguages(versionId: string): Promise<readonly LanguageRow[]>;
+  /**
+   * Add one non-base language. `languages_insert` is programmer-floor + draft-only; the base
+   * language is never added here — it is born with the version (0007's clone copies it), and
+   * `languages_one_base` makes a second one a constraint error, not a request.
+   */
+  addLanguage(versionId: string, lang: string): Promise<LanguageRow>;
+  /**
+   * Every i18n string row of one version, all languages, `(lang, key)` order. One method for
+   * the summary, the flat export and the import's base-key validation, because all three need
+   * the same rows and three shapes would be three chances to disagree about what "the key set"
+   * is. Phase-1 sizes (a few thousand keys × a handful of languages) make this one read.
+   */
+  listStrings(versionId: string): Promise<readonly I18nStringRow[]>;
+  /**
+   * Upsert by `(survey_version_id, lang, key)` — the table's PRIMARY KEY. The route validates
+   * every key against the base language's key set BEFORE calling this (a typo'd key must be a
+   * 422 naming it, never a silently invented row); the store's reviewer-floor and draft-only
+   * guards still apply, because the policies and `content.tg_draft_only` are the guarantee.
+   */
+  upsertStrings(versionId: string, lang: string, rows: readonly UpsertStringInput[]): Promise<number>;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Exports — who exported what, with or without PII (API §2.15, 0012)          */
+/* -------------------------------------------------------------------------- */
+
+/** `app.exports`, verbatim columns. `error` is `AppError.toJSON()` when status = failed. */
+export interface ExportRow {
+  readonly id: string;
+  readonly survey_version_id: string;
+  readonly requested_by: string;
+  readonly status: 'pending' | 'running' | 'succeeded' | 'failed';
+  readonly pii_included: boolean;
+  readonly include_test: boolean;
+  readonly row_count: number | null;
+  readonly storage_key: string | null;
+  readonly error: JsonValue | null;
+  readonly created_at: string;
+  readonly started_at: string | null;
+  readonly finished_at: string | null;
+}
+
+/**
+ * No `requested_by` input, per this file's header rule in miniature: `exports_insert` pins it
+ * to `app.current_user_id()`, so a body that could set it would launder the PII audit trail
+ * through a colleague.
+ */
+export interface CreateExportInput {
+  readonly survey_version_id: string;
+  readonly pii_included: boolean;
+  readonly include_test: boolean;
+}
+
+export interface ExportRepo {
+  /**
+   * Insert one born-pending row. The PII gate is NOT re-tested in TypeScript: 0012's
+   * `app.tg_exports_pii_guard` (capability, never rank) is the guarantee, and the API's job is
+   * honest defaults plus translating the trigger's `42501` into a 403 naming the grant.
+   */
+  create(input: CreateExportInput): Promise<ExportRow>;
+  /** One version's export history, newest first — the dialog's list. Capped, not paginated. */
+  listForVersion(versionId: string): Promise<readonly ExportRow[]>;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Field stats — response counts by disposition (roadmap P1-12, 0013)          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One group of `app.field_stats(version, include_test)` — counts over `runtime.sessions`.
+ * `disposition` is `runtime.disposition`'s spelling with one normalization made IN THE
+ * FUNCTION: a session still in flight stores `disposition = NULL`, and the function returns it
+ * as `'IN_PROGRESS'` (K §2's own name for that state) so the studio never renders "null".
+ */
+export interface DispositionCount {
+  readonly disposition: string;
+  readonly sessions: number;
+}
+
+export interface FieldStatsRepo {
+  /**
+   * Counts grouped by disposition for one version. `includeTest` defaults OFF everywhere —
+   * P1-11's acceptance: `is_test` rows "are excluded from the default response count shown in
+   * studio" — and the exclusion lives in the SQL, not in a filter a caller could forget.
+   */
+  forVersion(versionId: string, includeTest: boolean): Promise<readonly DispositionCount[]>;
+}
+
+/* -------------------------------------------------------------------------- */
 /* The variable registry — the type environment for the DSL endpoints          */
 /* -------------------------------------------------------------------------- */
 
@@ -625,10 +762,125 @@ export interface RegistryRepo {
   forVersion(versionId: string): Promise<VersionRegistryRows | null>;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Logic rules — the central registry (API §2.7, 0007 §4.4, roadmap P1-12)     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `content.logic_rules`, verbatim columns minus `org_id` (the header rule of this file).
+ *
+ * `condition` and `effect` stay `JsonObject` at this layer for the reason `dslPrintSchema`
+ * gives: the AST's shape is `packages/logic`'s to define, and the route validates it by
+ * CHECKING it (`checkExpr`), never by restating 58 node kinds as a second schema. The two
+ * `depends_on_*` arrays are the dependency closure DB §4.4 says is "recomputed from the AST on
+ * save" — computed by the route from the stored condition (`readsOf` + `probesOf`), written
+ * here, and served back by the two GIN indexes.
+ */
+export interface RuleRow {
+  readonly id: string;
+  readonly survey_version_id: string;
+  readonly kind: RuleKind;
+  readonly target_kind: 'node' | 'item' | 'variable';
+  readonly target_node_id: string | null;
+  readonly target_item_id: string | null;
+  readonly target_variable_id: string | null;
+  readonly condition: JsonObject;
+  readonly effect: JsonObject;
+  readonly evaluation: RuleEvaluation;
+  readonly authored_in: RuleAuthoredIn;
+  /** D §6.4's `Trivia`, kept only for DSL-authored rules (`rules_trivia_dsl_only`). */
+  readonly trivia: JsonObject;
+  readonly notes: string | null;
+  readonly depends_on_variable_ids: readonly string[];
+  readonly depends_on_node_ids: readonly string[];
+  readonly sort_key: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+export interface CreateRuleInput {
+  readonly survey_version_id: string;
+  readonly kind: RuleKind;
+  readonly target_kind: 'node' | 'item' | 'variable';
+  readonly target_node_id?: string;
+  readonly target_item_id?: string;
+  readonly target_variable_id?: string;
+  readonly condition: JsonObject;
+  readonly effect: JsonObject;
+  readonly evaluation?: RuleEvaluation;
+  readonly authored_in?: RuleAuthoredIn;
+  readonly trivia?: JsonObject;
+  readonly notes?: string;
+  readonly depends_on_variable_ids: readonly string[];
+  readonly depends_on_node_ids: readonly string[];
+}
+
+/**
+ * A partial edit. The `depends_on_*` arrays are REQUIRED whenever `condition` is present and
+ * forbidden otherwise — the closure is derived state, and an update that could change the AST
+ * without rewriting the closure is exactly the drift DB §4.4's "recomputed on save" forbids.
+ * The route owns that pairing; the type spells both halves as optional and the store trusts it.
+ */
+export interface UpdateRuleInput {
+  readonly kind?: RuleKind;
+  readonly target_kind?: 'node' | 'item' | 'variable';
+  readonly target_node_id?: string | null;
+  readonly target_item_id?: string | null;
+  readonly target_variable_id?: string | null;
+  readonly condition?: JsonObject;
+  readonly effect?: JsonObject;
+  readonly evaluation?: RuleEvaluation;
+  readonly authored_in?: RuleAuthoredIn;
+  readonly trivia?: JsonObject;
+  readonly notes?: string | null;
+  readonly depends_on_variable_ids?: readonly string[];
+  readonly depends_on_node_ids?: readonly string[];
+}
+
+/**
+ * The two questions 03 §7 centralized rules to answer, as filters (API §2.7): "what affects
+ * Q12" is `target_node_id`; "what does Q3 affect" is `depends_on_node_id` /
+ * `depends_on_variable_id` — array-containment reads the two GIN indexes serve.
+ */
+export interface ListRulesQuery extends PageQuery {
+  readonly target_node_id?: string;
+  readonly depends_on_node_id?: string;
+  readonly depends_on_variable_id?: string;
+  readonly kind?: RuleKind;
+}
+
+export interface RuleRepo {
+  /** One version's rules, filtered. Soft-deleted rows never appear. Reviewer-floor read. */
+  list(versionId: string, query: ListRulesQuery): Promise<PageResult<RuleRow>>;
+  /**
+   * By rule id alone (API §2.7's `/v1/rules/{id}` shape). The version is discovered, not
+   * supplied, because the client that holds a rule id got it from a list that already scoped it.
+   */
+  get(ruleId: string): Promise<RuleRow | null>;
+  create(input: CreateRuleInput): Promise<RuleRow>;
+  update(ruleId: string, input: UpdateRuleInput): Promise<RuleRow>;
+  /** Soft delete (`deleted_at`), per API §2.7 — the editor's undo buffer, like every content row. */
+  remove(ruleId: string): Promise<void>;
+  /**
+   * `GET /v1/variables/{id}/usages`' backing read: the variable's version plus every rule whose
+   * `depends_on_variable_ids` contains it (the `rules_depends_var_gin` lookup). `null` when the
+   * variable is not visible to the caller — a 404 upstream, never an empty list, for the same
+   * cross-tenant reason `RegistryRepo.forVersion` returns `null`.
+   */
+  usagesOfVariable(variableId: string): Promise<{
+    readonly survey_version_id: string;
+    readonly rules: readonly RuleRow[];
+  } | null>;
+}
+
 /** The bundle a route handler receives. One object so adding a repo is not 40 signatures. */
 export interface Repos {
   readonly registry: RegistryRepo;
+  readonly rules: RuleRepo;
   readonly redirects: RedirectRepo;
+  readonly i18n: I18nRepo;
+  readonly exports: ExportRepo;
+  readonly fieldStats: FieldStatsRepo;
   readonly orgs: OrgRepo;
   readonly members: MemberRepo;
   readonly invitations: InvitationRepo;

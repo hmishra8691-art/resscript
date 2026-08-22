@@ -12,8 +12,14 @@ import { z } from 'zod';
 import {
   ORG_ROLES,
   REDIRECT_REQUIRED_DISPOSITIONS,
+  RULE_ACTIONS,
+  RULE_EVALUATIONS,
+  RULE_KINDS,
   type Disposition,
   type OrgRole,
+  type RuleAction,
+  type RuleEvaluation,
+  type RuleKind,
 } from '@resscript/schema';
 
 /**
@@ -307,3 +313,143 @@ export const dslPrintSchema = z
       .optional(),
   })
   .strict();
+
+/* -------------------------------------------------------------------------- */
+/* Translations (roadmap P1-12, migration 0007 §8)                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One added language. The regex is `languages_tag_shape` (0007), verbatim — `en`, `fr-CA`,
+ * `zh-Hans-CN` — so a bad tag is a 422 with a field path rather than the CHECK's 500. No
+ * `is_base`: the base language is born with the version, and a body that could claim it would
+ * be a request `languages_one_base` exists to refuse.
+ */
+export const addLanguageSchema = z
+  .object({ lang: z.string().regex(/^[a-z]{2,3}(-[A-Z][a-z]{3})?(-[A-Z]{2})?$/, 'a BCP-47-ish tag: en, fr-CA, zh-Hans-CN') })
+  .strict();
+
+/**
+ * The import body: a FLAT key-value map, exactly the file the export handed out. `z.record`
+ * and not `.strict()` because here the unknown keys ARE the data — key validation (against the
+ * BASE language's key set, so a translator's typo is a 422 naming it rather than a silently
+ * invented row) is the route's job, since the valid set lives in the store, not the schema.
+ * `''` is legal and meaningful: it clears the string back to `missing` (0007's own encoding:
+ * state `missing`, value NULL), which is what makes an exported-then-unedited file a no-op.
+ */
+export const importTranslationsSchema = z.record(z.string().max(20_000));
+
+/* -------------------------------------------------------------------------- */
+/* Exports (roadmap P1-12, migration 0012)                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Both flags default FALSE — the same defaults the table's columns carry, and the honest ones:
+ * PII off (security §7.2) and test rows out (E §14.1). The dialog's job is these defaults; the
+ * ENFORCEMENT of `pii_included` is 0012's `app.tg_exports_pii_guard`, which this schema
+ * deliberately does not restate.
+ */
+export const createExportSchema = z
+  .object({
+    pii_included: z.boolean().optional(),
+    include_test: z.boolean().optional(),
+  })
+  .strict();
+
+/* -------------------------------------------------------------------------- */
+/* Logic rules (API §2.7, roadmap P1-12)                                      */
+/* -------------------------------------------------------------------------- */
+
+/** `content.rule_kind` / the effect registry / the evaluation CHECK — canonical arrays, never restated. */
+const ruleKindSchema = z.enum(RULE_KINDS as unknown as readonly [RuleKind, ...RuleKind[]]);
+const ruleActionSchema = z.enum(RULE_ACTIONS as unknown as readonly [RuleAction, ...RuleAction[]]);
+const ruleEvaluationSchema = z.enum(
+  RULE_EVALUATIONS as unknown as readonly [RuleEvaluation, ...RuleEvaluation[]],
+);
+
+/**
+ * `target` mirrors API §2.7's `{node_id|item_id|variable_id}` — exactly one, which is
+ * `rules_one_target` restated at the boundary so the author gets a 422 naming the field rather
+ * than a constraint error dressed as a 500.
+ */
+const ruleTargetSchema = z
+  .object({
+    node_id: ulidIdSchema.optional(),
+    item_id: ulidIdSchema.optional(),
+    variable_id: ulidIdSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (t) => [t.node_id, t.item_id, t.variable_id].filter((v) => v !== undefined).length === 1,
+    'exactly one of node_id, item_id, variable_id',
+  );
+
+/**
+ * `condition` and `effect.value` are `z.unknown()` for `dslPrintSchema`'s reason: the AST's
+ * shape is `packages/logic`'s to define, and the validator with authority is `checkExpr` — the
+ * route runs it and answers 422 with `LGC-*` codes, which no Zod restatement of 58 node kinds
+ * could match without eventually disagreeing.
+ */
+const ruleEffectSchema = z
+  .object({
+    action: ruleActionSchema,
+    value: z.unknown().optional(),
+    target_id: ulidIdSchema.optional(),
+    disposition: z.string().min(1).max(64).optional(),
+    message_key: z.string().min(1).max(256).optional(),
+    params: z
+      .object({
+        axis: z.enum(['option', 'row', 'column']).optional(),
+        codes: z.array(z.number().int()).max(500).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+/**
+ * API §2.7: "accepts either `condition` (AST) **or** `source` (ResScript)". With `source`, the
+ * server parses it and stores both the AST and the trivia — so `kind`/`condition`/`effect` come
+ * from the statement and are forbidden alongside it (a body that supplied both would be two
+ * definitions of one rule). `target` stays legal with `source` because some effects name no
+ * content target in the text (`TERMINATE`), and `rules_one_target` still wants one.
+ */
+export const createRuleSchema = z
+  .object({
+    kind: ruleKindSchema.optional(),
+    target: ruleTargetSchema.optional(),
+    condition: z.unknown().optional(),
+    effect: ruleEffectSchema.optional(),
+    evaluation: ruleEvaluationSchema.optional(),
+    notes: z.string().max(2000).optional(),
+    source: z.string().max(200_000).optional(),
+  })
+  .strict()
+  .refine((body) => (body.source === undefined) !== (body.condition === undefined), {
+    message: 'provide either source or condition, not both',
+  })
+  .refine(
+    (body) => body.source !== undefined || (body.kind !== undefined && body.effect !== undefined && body.target !== undefined),
+    { message: 'the AST path requires kind, target and effect' },
+  )
+  .refine((body) => body.source === undefined || (body.kind === undefined && body.effect === undefined), {
+    message: 'kind and effect come from the source statement; do not also send them',
+  });
+
+/** Partial edit. The same either/or applies when the condition itself is being replaced. */
+export const updateRuleSchema = z
+  .object({
+    kind: ruleKindSchema.optional(),
+    target: ruleTargetSchema.optional(),
+    condition: z.unknown().optional(),
+    effect: ruleEffectSchema.optional(),
+    evaluation: ruleEvaluationSchema.optional(),
+    notes: z.string().max(2000).nullable().optional(),
+    source: z.string().max(200_000).optional(),
+  })
+  .strict()
+  .refine((body) => body.source === undefined || body.condition === undefined, {
+    message: 'provide either source or condition, not both',
+  })
+  .refine((body) => body.source === undefined || (body.kind === undefined && body.effect === undefined), {
+    message: 'kind and effect come from the source statement; do not also send them',
+  });

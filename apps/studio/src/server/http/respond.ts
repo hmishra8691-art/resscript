@@ -105,6 +105,52 @@ const CONSTRAINT_ERRORS: Readonly<Record<string, (message: string) => AppError>>
   // own frozen check did not see (a freeze that landed between the read and the write).
   redirects_draft_only: () =>
     new AppError('frozen_version', 'this survey version is frozen; clone a new draft to edit'),
+  // The same trigger's copy on `content.logic_rules` (rules routes answer 409 before writing).
+  rules_draft_only: () =>
+    new AppError('frozen_version', 'this survey version is frozen; clone a new draft to edit'),
+  // `rules_one_target`: the route's schema already refuses a malformed TARGET; what reaches the
+  // store wrong is a kind/id disagreement, which is a caller bug worth naming.
+  rules_one_target: (message) =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [{ path: 'target', code: 'one_target', message }],
+    }),
+  rules_trivia_dsl_only: () =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [
+        {
+          path: 'trivia',
+          code: 'trivia_dsl_only',
+          message: 'trivia is the DSL fidelity record; a visual rule stores none',
+        },
+      ],
+    }),
+  // The same trigger's copies on the translation tables — the routes answer 409 before
+  // writing; these catch a freeze that landed between the read and the write.
+  languages_draft_only: () =>
+    new AppError('frozen_version', 'this survey version is frozen; clone a new draft to edit'),
+  i18n_draft_only: () =>
+    new AppError('frozen_version', 'this survey version is frozen; clone a new draft to edit'),
+  languages_tag_shape: (message) =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [{ path: 'lang', code: 'invalid_language_tag', message }],
+    }),
+  languages_pkey: () =>
+    new AppError('already_exists', 'that language already exists on this version', {
+      details: [{ path: 'lang', code: 'already_exists', message: 'edit the existing language' }],
+    }),
+  // 0012's `app.tg_exports_pii_guard`: the CAPABILITY refusal (K §1 — never rank). 403 and not
+  // 404, deliberately: the caller already proved they can see the version and hold the analyst
+  // floor, so naming the missing grant leaks nothing and tells them exactly who to ask.
+  exports_pii_guard: () =>
+    new AppError('forbidden', 'exporting PII requires an explicit pii_access capability grant', {
+      details: [{ path: 'pii_included', code: 'capability_required', message: 'pii_access' }],
+    }),
+  // `app.field_stats`' own floor (0013), should a call reach the function past the route's
+  // guard. Same wording as `requireRole`'s refusal so the two paths read as one rule.
+  field_stats_floor: () =>
+    new AppError('forbidden', 'this action requires the analyst role or higher', {
+      details: [{ path: null, code: 'role_required', message: 'analyst' }],
+    }),
   sv_one_draft: () =>
     new AppError('already_exists', 'this survey already has a draft version', {
       details: [{ path: null, code: 'one_draft', message: 'edit the existing draft' }],
@@ -173,6 +219,24 @@ const NOT_FOUND_CONSTRAINTS: readonly string[] = [
   // 409 frozen) before writing; what remains is indistinguishable from a missing version.
   'redirects_insert',
   'redirects_delete',
+  // `content.logic_rules`' write policies decline the same way — zero rows for "not yours",
+  // "not programmer" and "no such version/rule" alike (`rules_select` covers the read miss).
+  'rules_insert',
+  'rules_update',
+  'rules_delete',
+  'rules_select',
+  // The translation and export write policies decline the same way — zero rows for "not
+  // yours", "below the floor" and "no such version" alike; the routes answer the states the
+  // caller can see (403 role, 409 frozen, 404 unknown language) before the store is reached.
+  'languages_insert',
+  'i18n_insert',
+  'i18n_strings_lang_fkey',
+  'exports_insert',
+  'exports_select',
+  // `app.field_stats` raises P0002 for "no such version" AND "another org's version" — 0004's
+  // existence-oracle rule, one answer for both.
+  'field_stats_not_found',
+  'field_stats',
 ];
 
 export function toAppError(err: unknown): AppError {

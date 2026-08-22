@@ -1,6 +1,6 @@
 /**
- * The survey page — a PLACEHOLDER for the tree that lands in P1-03, plus the one bottom pane
- * that exists today: Preview (P1-11).
+ * The survey page — a PLACEHOLDER for the tree that lands in P1-03, plus the bottom panes
+ * that exist today: Preview (P1-11) and P1-12's Translations, Exports and Field.
  *
  * It renders the version list (both axes: `status` and `compile_state`, never collapsed into
  * one "state" field) and reserves the layout the editor will occupy: rail for the tree, main
@@ -17,12 +17,35 @@
 
 import Link from 'next/link';
 import { use, useState } from 'react';
-import { useSurvey } from '@/lib/queries';
+import { useOrgs, useSurvey } from '@/lib/queries';
 import { useEntitlement } from '@/hooks/useEntitlement';
 import { DebugPanel } from '@/components/preview/DebugPanel';
 import { PreviewPanel } from '@/components/preview/PreviewPanel';
+import { LanguageManager } from '@/components/i18n/LanguageManager';
+import { ExportDialog } from '@/components/exports/ExportDialog';
+import { FieldDashboard } from '@/components/field/FieldDashboard';
+import { RulesPanel } from '@/components/rules/RulesPanel';
 
-const PANES = ['Properties', 'Logic', 'Validation', 'Code', 'Problems', 'Preview'] as const;
+const PANES = [
+  'Properties',
+  'Logic',
+  'Validation',
+  'Code',
+  'Problems',
+  'Preview',
+  'Translations',
+  'Exports',
+  'Field',
+] as const;
+
+/** Preview is P1-11's; Logic/Translations/Exports/Field are P1-12's; the rest arrive with P1-03/P1-07. */
+const LIVE_PANES: readonly (typeof PANES)[number][] = [
+  'Logic',
+  'Preview',
+  'Translations',
+  'Exports',
+  'Field',
+];
 
 export default function SurveyPage({
   params,
@@ -31,6 +54,10 @@ export default function SurveyPage({
 }): React.JSX.Element {
   const { org, surveyId } = use(params);
   const survey = useSurvey(surveyId);
+  // The viewer's role in the active org, as the membership row states it — what the export
+  // dialog's floor rendering and the language manager's disabled controls explain from.
+  const orgs = useOrgs();
+  const role = orgs.data?.data.find((m) => m.is_active)?.role ?? null;
   // The seam, exercised so it cannot rot: the entitlement hook is called where the real gate
   // will be (arch §5 — one `billing.entitlement()` answer shared by UI, API and compiler).
   const advancedLogic = useEntitlement('advanced_logic');
@@ -107,7 +134,9 @@ export default function SurveyPage({
       <section
         aria-label="Editor panes"
         className="rs-card"
-        style={activePane === 'Preview' ? { flexShrink: 0 } : { height: 120, flexShrink: 0 }}
+        style={
+          LIVE_PANES.includes(activePane) ? { flexShrink: 0 } : { height: 120, flexShrink: 0 }
+        }
       >
         <div role="tablist" aria-label="Bottom pane" style={{ display: 'flex', gap: 4 }}>
           {PANES.map((tab) => (
@@ -118,8 +147,7 @@ export default function SurveyPage({
               aria-selected={tab === activePane}
               tabIndex={tab === activePane ? 0 : -1}
               className="rs-button"
-              // Preview is P1-11's; the rest arrive with P1-03 and P1-07.
-              disabled={tab !== 'Preview'}
+              disabled={!LIVE_PANES.includes(tab)}
               onClick={() => {
                 setActivePane(tab);
               }}
@@ -128,7 +156,7 @@ export default function SurveyPage({
             </button>
           ))}
         </div>
-        {activePane === 'Preview' && selectedVersionId !== null ? (
+        {LIVE_PANES.includes(activePane) && selectedVersionId !== null ? (
           <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
             <label style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
               <span className="rs-muted">Version</span>
@@ -146,17 +174,29 @@ export default function SurveyPage({
                 ))}
               </select>
             </label>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-              <div style={{ flex: 2, minWidth: 320 }}>
-                <PreviewPanel
-                  versionId={selectedVersionId}
-                  defaultLanguage={survey.data.default_language}
-                />
+            {activePane === 'Preview' ? (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                <div style={{ flex: 2, minWidth: 320 }}>
+                  <PreviewPanel
+                    versionId={selectedVersionId}
+                    defaultLanguage={survey.data.default_language}
+                  />
+                </div>
+                <div style={{ flex: 1, minWidth: 320 }}>
+                  <DebugPanel versionId={selectedVersionId} />
+                </div>
               </div>
-              <div style={{ flex: 1, minWidth: 320 }}>
-                <DebugPanel versionId={selectedVersionId} />
-              </div>
-            </div>
+            ) : activePane === 'Logic' ? (
+              // Rules are draft-writable only (content.tg_draft_only); the panel reads any
+              // visible version and the API answers 409 frozen_version on a write.
+              <RulesPanel versionId={selectedVersionId} />
+            ) : activePane === 'Translations' ? (
+              <LanguageManager versionId={selectedVersionId} role={role} />
+            ) : activePane === 'Exports' ? (
+              <ExportDialog versionId={selectedVersionId} role={role} />
+            ) : (
+              <FieldDashboard versionId={selectedVersionId} />
+            )}
           </div>
         ) : (
           <p className="rs-muted" style={{ marginTop: 4 }}>

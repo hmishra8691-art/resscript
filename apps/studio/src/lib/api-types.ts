@@ -257,3 +257,151 @@ export interface DebugStepView {
   /** The runtime's error envelope, passed through untranslated. */
   readonly error?: { readonly code: string; readonly [key: string]: unknown };
 }
+
+/* -------------------------------------------------------------------------- */
+/* Translations, exports and the field dashboard (P1-12)                      */
+/* -------------------------------------------------------------------------- */
+
+/** One language row of `GET /versions/:id/translations`, counts included — the gauge's data. */
+export interface TranslationLanguageView {
+  readonly lang: string;
+  readonly is_base: boolean;
+  readonly rtl: boolean;
+  readonly on_missing: string;
+  readonly block_publish_if_incomplete: boolean;
+  readonly total_keys: number;
+  readonly translated: number;
+  readonly reviewed: number;
+  readonly machine: number;
+  readonly missing: number;
+  /** `(translated + reviewed) / total_keys`, 0–100, computed SERVER-side (one denominator). */
+  readonly complete_pct: number;
+}
+
+/** One per-string row, present when the summary was asked with `?lang=`. */
+export interface TranslationStringView {
+  readonly key: string;
+  readonly value: string | null;
+  readonly state: 'missing' | 'machine' | 'translated' | 'reviewed';
+}
+
+export interface TranslationsSummaryView {
+  readonly survey_version_id: string;
+  readonly base_lang: string;
+  readonly total_keys: number;
+  readonly languages: readonly TranslationLanguageView[];
+  readonly strings?: readonly TranslationStringView[];
+}
+
+/** `PUT /versions/:id/translations/:lang`'s receipt. */
+export interface TranslationImportResultView {
+  readonly survey_version_id: string;
+  readonly lang: string;
+  readonly written: number;
+  readonly translated: number;
+  readonly cleared: number;
+}
+
+/** One `app.exports` row as `GET /versions/:id/exports` lists it. */
+export interface ExportView {
+  readonly id: string;
+  readonly survey_version_id: string;
+  readonly requested_by: string;
+  readonly status: 'pending' | 'running' | 'succeeded' | 'failed';
+  readonly pii_included: boolean;
+  readonly include_test: boolean;
+  readonly row_count: number | null;
+  readonly storage_key: string | null;
+  readonly error: unknown;
+  readonly created_at: string;
+  readonly started_at: string | null;
+  readonly finished_at: string | null;
+}
+
+/** `GET /versions/:id/field-stats`. `IN_PROGRESS` is the spelling for "no disposition yet". */
+export interface FieldStatsView {
+  readonly survey_version_id: string;
+  readonly include_test: boolean;
+  readonly entries: number;
+  readonly completes: number;
+  readonly screenouts: number;
+  readonly by_disposition: Readonly<Record<string, number>>;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Logic rules (P1-12)                                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One `content.logic_rules` row, verbatim off the wire. `condition` and `effect` are typed as
+ * opaque records here for `DiagnosticsView`'s reason: the shapes are owned elsewhere
+ * (`packages/logic`'s `Expr`; `RuleEffectShape` in `lib/rule-statement.ts`), were validated by
+ * the writer (`checkExpr` on every save), and the narrowing happens once, in the builder that
+ * consumes them.
+ */
+export interface RuleView {
+  readonly id: string;
+  readonly survey_version_id: string;
+  readonly kind: 'display' | 'skip' | 'mask' | 'set_variable' | 'validate' | 'option_state' | 'terminate';
+  readonly target_kind: 'node' | 'item' | 'variable';
+  readonly target_node_id: string | null;
+  readonly target_item_id: string | null;
+  readonly target_variable_id: string | null;
+  readonly condition: Record<string, unknown>;
+  readonly effect: Record<string, unknown>;
+  readonly evaluation: 'on_change' | 'on_page_enter' | 'on_submit';
+  readonly authored_in: 'visual' | 'dsl';
+  readonly trivia: Record<string, unknown>;
+  readonly notes: string | null;
+  readonly depends_on_variable_ids: readonly string[];
+  readonly depends_on_node_ids: readonly string[];
+  readonly sort_key: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+/** One LGC diagnostic as the rules routes return it alongside a saved rule. */
+export interface RuleDiagnosticView {
+  readonly code: string;
+  readonly severity: 'error' | 'warning' | 'info';
+  readonly message: string;
+  readonly path: string;
+}
+
+/** `POST /versions/:id/rules` / `PATCH /rules/:id`. */
+export interface RuleSaveView {
+  readonly rule: RuleView;
+  readonly diagnostics: readonly RuleDiagnosticView[];
+}
+
+/** `GET /variables/:id/usages` — the panels' read. Empty arrays are honest placeholders (see the route). */
+export interface VariableUsagesView {
+  readonly variable_id: string;
+  readonly survey_version_id: string;
+  readonly rules: readonly RuleView[];
+  readonly quotas: readonly unknown[];
+  readonly masks: readonly unknown[];
+  readonly pipes: readonly unknown[];
+  readonly redirects: readonly unknown[];
+}
+
+/** One `GET /versions/:id/variables` row — what the builder's pickers need. */
+export interface VariablePickView {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: string;
+  readonly vtype: 'enum' | 'boolean' | 'number' | 'text' | 'date' | 'set' | 'object';
+  readonly enum_domain: readonly { readonly code: number; readonly label_key: string }[] | null;
+  readonly source_question_id: string | null;
+  readonly pii: boolean;
+}
+
+/** One `GET /versions/:id/tree?fields=summary` row. */
+export interface TreeNodeView {
+  readonly id: string;
+  readonly kind: 'block' | 'page' | 'question' | 'text';
+  readonly parent_id: string | null;
+  readonly ref: string | null;
+  readonly required: boolean | null;
+  readonly sort_key: string;
+}

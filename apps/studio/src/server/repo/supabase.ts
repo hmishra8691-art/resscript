@@ -21,8 +21,16 @@ import type {
   AuditEventInput,
   AuditRepo,
   AuditRow,
+  CreateExportInput,
+  DispositionCount,
   EnqueueJobInput,
   EnqueuedJob,
+  ExportRepo,
+  ExportRow,
+  FieldStatsRepo,
+  I18nRepo,
+  I18nStringRow,
+  LanguageRow,
   CreateInvitationInput,
   CreateOrganizationInput,
   CreateProjectInput,
@@ -53,6 +61,11 @@ import type {
   RegistryVariableRow,
   Repos,
   RollbackResult,
+  CreateRuleInput,
+  ListRulesQuery,
+  RuleRepo,
+  RuleRow,
+  UpdateRuleInput,
   SurveyRepo,
   SurveyRow,
   SurveyVersionRow,
@@ -61,6 +74,7 @@ import type {
   UpdateProjectInput,
   UpdateSurveyInput,
   UpdateVersionInput,
+  UpsertStringInput,
   VersionRegistryRows,
 } from './types.js';
 
@@ -81,6 +95,21 @@ export interface SupabaseRepoContext {
 
 const APP = 'app';
 const CONTENT = 'content';
+
+/** The `content.logic_rules` projection every rules read returns — one list, or the shapes drift. */
+const RULE_COLUMNS =
+  'id, survey_version_id, kind, target_kind, target_node_id, target_item_id, target_variable_id, ' +
+  'condition, effect, evaluation, authored_in, trivia, notes, depends_on_variable_ids, ' +
+  'depends_on_node_ids, sort_key, created_at, updated_at';
+
+/**
+ * A `content.sort_key` (alphanumeric, ≤64) that sorts after everything minted earlier in this
+ * process: ms timestamp in base36 plus a random suffix against same-ms collisions. Server-minted
+ * because API §2.7 has no client-supplied ordering for rules — list order is authoring order.
+ */
+function nextSortKey(): string {
+  return Date.now().toString(36).padStart(9, '0') + crypto.randomUUID().replaceAll('-', '').slice(0, 4);
+}
 
 /**
  * PostgREST errors → the same `StoreConstraintError` the in-memory store raises, so the HTTP
@@ -702,6 +731,158 @@ class SupabaseRepos implements Repos {
   };
 
   /**
+   * `content.logic_rules` (0007 §4.4) — the central rule registry.
+   *
+   * The two `depends_on_*` filters are PostgREST `.contains()`, which renders as `@>` — the
+   * array-containment operator `rules_depends_var_gin` and `rules_depends_node_gin` exist for,
+   * so "what does Q3 affect" is an index lookup here exactly as DB §4.4 promises. Everything
+   * else follows the redirects pattern above: policies are the guarantee, zero rows written is
+   * one indistinguishable refusal, and the delete is soft (`deleted_at`) per API §2.7.
+   */
+  readonly rules: RuleRepo = {
+    list: async (versionId: string, query: ListRulesQuery): Promise<PageResult<RuleRow>> => {
+      let request = this.ctx.client
+        .schema(CONTENT)
+        .from('logic_rules')
+        .select(RULE_COLUMNS)
+        .eq('survey_version_id', versionId)
+        .is('deleted_at', null);
+      if (query.kind !== undefined) request = request.eq('kind', query.kind);
+      if (query.target_node_id !== undefined) request = request.eq('target_node_id', query.target_node_id);
+      if (query.depends_on_node_id !== undefined) {
+        request = request.contains('depends_on_node_ids', [query.depends_on_node_id]);
+      }
+      if (query.depends_on_variable_id !== undefined) {
+        request = request.contains('depends_on_variable_ids', [query.depends_on_variable_id]);
+      }
+      const keyset = toKeysetFilter(query);
+      if (keyset !== undefined) request = request.or(keyset);
+      const { data, error } = await request
+        .order('created_at', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(query.limit + 1);
+      if (error !== null) raise(error, 'rules_select');
+      return page((data ?? []) as unknown as RuleRow[], query);
+    },
+
+    get: async (ruleId: string): Promise<RuleRow | null> => {
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('logic_rules')
+        .select(RULE_COLUMNS)
+        .eq('id', ruleId)
+        .is('deleted_at', null)
+        .maybeSingle();
+      if (error !== null) raise(error, 'rules_select');
+      return data === null ? null : (data as unknown as RuleRow);
+    },
+
+    create: async (input: CreateRuleInput): Promise<RuleRow> => {
+      const org = this.ctx.activeOrgId;
+      if (org === null) throw new StoreConstraintError('rules_insert', 'no active org');
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('logic_rules')
+        .insert({
+          survey_version_id: input.survey_version_id,
+          // From the CLAIM; `rules_insert`'s WITH CHECK re-tests it against `app.current_org()`.
+          org_id: org,
+          kind: input.kind,
+          target_kind: input.target_kind,
+          target_node_id: input.target_node_id ?? null,
+          target_item_id: input.target_item_id ?? null,
+          target_variable_id: input.target_variable_id ?? null,
+          condition: input.condition,
+          effect: input.effect,
+          evaluation: input.evaluation ?? 'on_change',
+          authored_in: input.authored_in ?? 'visual',
+          trivia: input.trivia ?? {},
+          notes: input.notes ?? null,
+          depends_on_variable_ids: input.depends_on_variable_ids,
+          depends_on_node_ids: input.depends_on_node_ids,
+          sort_key: nextSortKey(),
+        })
+        .select(RULE_COLUMNS)
+        .maybeSingle();
+      if (error !== null) raise(error, 'rules_insert');
+      if (data === null) throw new StoreConstraintError('rules_insert', 'no rows inserted');
+      return data as unknown as RuleRow;
+    },
+
+    update: async (ruleId: string, input: UpdateRuleInput): Promise<RuleRow> => {
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('logic_rules')
+        .update({
+          ...(input.kind === undefined ? {} : { kind: input.kind }),
+          ...(input.target_kind === undefined ? {} : { target_kind: input.target_kind }),
+          ...(input.target_node_id === undefined ? {} : { target_node_id: input.target_node_id }),
+          ...(input.target_item_id === undefined ? {} : { target_item_id: input.target_item_id }),
+          ...(input.target_variable_id === undefined ? {} : { target_variable_id: input.target_variable_id }),
+          ...(input.condition === undefined ? {} : { condition: input.condition }),
+          ...(input.effect === undefined ? {} : { effect: input.effect }),
+          ...(input.evaluation === undefined ? {} : { evaluation: input.evaluation }),
+          ...(input.authored_in === undefined ? {} : { authored_in: input.authored_in }),
+          ...(input.trivia === undefined ? {} : { trivia: input.trivia }),
+          ...(input.notes === undefined ? {} : { notes: input.notes }),
+          ...(input.depends_on_variable_ids === undefined
+            ? {}
+            : { depends_on_variable_ids: input.depends_on_variable_ids }),
+          ...(input.depends_on_node_ids === undefined
+            ? {}
+            : { depends_on_node_ids: input.depends_on_node_ids }),
+        })
+        .eq('id', ruleId)
+        .is('deleted_at', null)
+        .select(RULE_COLUMNS)
+        .maybeSingle();
+      if (error !== null) raise(error, 'rules_update');
+      if (data === null) throw new StoreConstraintError('rules_update', 'no rows updated');
+      return data as unknown as RuleRow;
+    },
+
+    remove: async (ruleId: string): Promise<void> => {
+      // Soft delete. `rules_update` (not `rules_delete`) is the policy this write runs under,
+      // which is the point: the row stays for undo, and a frozen version still refuses it.
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('logic_rules')
+        .update({ deleted_at: new Date().toISOString() })
+        .eq('id', ruleId)
+        .is('deleted_at', null)
+        .select('id');
+      if (error !== null) raise(error, 'rules_delete');
+      if ((data ?? []).length === 0) {
+        throw new StoreConstraintError('rules_delete', 'no rows deleted');
+      }
+    },
+
+    usagesOfVariable: async (variableId: string) => {
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('variables')
+        .select('id, survey_version_id')
+        .eq('id', variableId)
+        .is('deleted_at', null)
+        .maybeSingle();
+      if (error !== null) raise(error, 'variables_select');
+      if (data === null) return null;
+      const versionId = (data as { survey_version_id: string }).survey_version_id;
+      const { data: ruleRows, error: rulesError } = await this.ctx.client
+        .schema(CONTENT)
+        .from('logic_rules')
+        .select(RULE_COLUMNS)
+        .eq('survey_version_id', versionId)
+        // `@>` — the exact read `rules_depends_var_gin` indexes.
+        .contains('depends_on_variable_ids', [variableId])
+        .is('deleted_at', null)
+        .order('sort_key', { ascending: true });
+      if (rulesError !== null) raise(rulesError, 'rules_select');
+      return { survey_version_id: versionId, rules: (ruleRows ?? []) as unknown as RuleRow[] };
+    },
+  };
+
+  /**
    * `content.redirects` (0010) — API §2.9's flattened rows, verbatim.
    *
    * Reads and writes both run under the table's own policies: `redirects_select` is
@@ -771,6 +952,169 @@ class SupabaseRepos implements Repos {
         throw new StoreConstraintError('redirects_insert', 'no rows inserted');
       }
       return this.redirects.listRedirects(versionId);
+    },
+  };
+
+  /**
+   * `content.languages` + `content.i18n_strings` (0007 §8) — the translation surface.
+   *
+   * All four methods run under the tables' own policies: reads are reviewer-floor +
+   * `app.can_see_version()`; string upserts are REVIEWER-floor (0007 puts translation entry
+   * below the programmer floor on purpose — translators are reviewers) and language inserts
+   * are programmer-floor, both draft-only with `content.tg_draft_only` catching anything that
+   * arrives by another path. Nothing here re-tests any of that in TypeScript.
+   */
+  readonly i18n: I18nRepo = {
+    listLanguages: async (versionId: string): Promise<readonly LanguageRow[]> => {
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('languages')
+        .select('lang, is_base, rtl, on_missing, block_publish_if_incomplete')
+        .eq('survey_version_id', versionId)
+        // Base first, then tag order — the order the manager renders and the worker reads.
+        .order('is_base', { ascending: false })
+        .order('lang', { ascending: true });
+      if (error !== null) raise(error, 'languages_select');
+      return (data ?? []) as LanguageRow[];
+    },
+
+    addLanguage: async (versionId: string, lang: string): Promise<LanguageRow> => {
+      const org = this.ctx.activeOrgId;
+      if (org === null) throw new StoreConstraintError('languages_insert', 'no active org');
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('languages')
+        // Never `is_base: true`: the base is born with the version, and `languages_one_base`
+        // refuses a second one — this method deliberately cannot even ask for it.
+        .insert({ survey_version_id: versionId, org_id: org, lang, is_base: false })
+        .select('lang, is_base, rtl, on_missing, block_publish_if_incomplete')
+        .single();
+      if (error !== null) raise(error, 'languages_insert');
+      return data as LanguageRow;
+    },
+
+    listStrings: async (versionId: string): Promise<readonly I18nStringRow[]> => {
+      // One read for the whole version, all languages: the summary, the flat export and the
+      // import validation all need the same rows. The explicit high limit overrides
+      // PostgREST's default page (commonly 1,000 rows) up to its configured max-rows; Phase-1
+      // surveys (a few thousand keys × a handful of languages) fit, and a survey that outgrows
+      // it needs a keyset read here, not a silent truncation — hence the limit is stated.
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('i18n_strings')
+        .select('lang, key, value, state')
+        .eq('survey_version_id', versionId)
+        .order('lang', { ascending: true })
+        .order('key', { ascending: true })
+        .limit(100_000);
+      if (error !== null) raise(error, 'i18n_select');
+      return (data ?? []) as I18nStringRow[];
+    },
+
+    upsertStrings: async (
+      versionId: string,
+      lang: string,
+      rows: readonly UpsertStringInput[],
+    ): Promise<number> => {
+      if (rows.length === 0) return 0;
+      const org = this.ctx.activeOrgId;
+      if (org === null) throw new StoreConstraintError('i18n_insert', 'no active org');
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('i18n_strings')
+        .upsert(
+          rows.map((row) => ({
+            survey_version_id: versionId,
+            org_id: org,
+            lang,
+            key: row.key,
+            // `i18n_missing_has_no_value`: a missing string stores NULL, the table's own
+            // encoding — materialized here once so the CHECK and the reader agree.
+            value: row.state === 'missing' ? null : row.value,
+            state: row.state,
+            updated_by: this.ctx.userId,
+          })),
+          // The table's PRIMARY KEY — an import overwrites the row it names, never duplicates.
+          { onConflict: 'survey_version_id,lang,key' },
+        )
+        .select('key');
+      if (error !== null) raise(error, 'i18n_insert');
+      const written = (data ?? []).length;
+      if (written === 0) {
+        // Zero rows: the policy declined (not yours, below reviewer, or not a draft).
+        throw new StoreConstraintError('i18n_insert', 'no rows written');
+      }
+      return written;
+    },
+  };
+
+  /**
+   * `app.exports` (0012). The PII gate is `app.tg_exports_pii_guard`, running as the INVOKING
+   * role on this very INSERT — the trigger's 42501 surfaces here as a StoreConstraintError the
+   * HTTP layer maps to a 403 naming the missing grant. Nothing is re-tested in TypeScript.
+   */
+  readonly exports: ExportRepo = {
+    create: async (input: CreateExportInput): Promise<ExportRow> => {
+      const org = this.ctx.activeOrgId;
+      if (org === null) throw new StoreConstraintError('exports_insert', 'no active org');
+      const { data, error } = await this.table('exports')
+        .insert({
+          org_id: org,
+          survey_version_id: input.survey_version_id,
+          // Pinned by `exports_insert`'s WITH CHECK; written from the verified context so the
+          // policy's re-test passes rather than filtering the insert to zero rows.
+          requested_by: this.ctx.userId,
+          pii_included: input.pii_included,
+          include_test: input.include_test,
+        })
+        .select(
+          'id, survey_version_id, requested_by, status, pii_included, include_test, row_count, storage_key, error, created_at, started_at, finished_at',
+        )
+        .single();
+      if (error !== null) {
+        // The trigger raises 42501 with a message naming the grant; PostgREST forwards the
+        // message but no constraint name, so the mapping is keyed on its distinctive phrase.
+        if (error.message.includes('pii_access')) {
+          throw new StoreConstraintError('exports_pii_guard', error.message);
+        }
+        raise(error, 'exports_insert');
+      }
+      return data as ExportRow;
+    },
+
+    listForVersion: async (versionId: string): Promise<readonly ExportRow[]> => {
+      const { data, error } = await this.table('exports')
+        .select(
+          'id, survey_version_id, requested_by, status, pii_included, include_test, row_count, storage_key, error, created_at, started_at, finished_at',
+        )
+        .eq('survey_version_id', versionId)
+        // `exports_version_idx` order: newest first — the dialog's history. 50 is a history,
+        // not an archive; API §2.15's paginated GET /v1/exports is the collection read.
+        .order('created_at', { ascending: false })
+        .limit(50);
+      if (error !== null) raise(error, 'exports_select');
+      return (data ?? []) as ExportRow[];
+    },
+  };
+
+  /**
+   * `app.field_stats` (0013) — SECURITY DEFINER, because ADR-001 gives `authoring` no path
+   * into schema `runtime` and the dashboard's counts live in `runtime.sessions`. The function
+   * re-checks the analyst floor and the org match on every call; a version in another org
+   * raises the same "not found" a version that never existed does.
+   */
+  readonly fieldStats: FieldStatsRepo = {
+    forVersion: async (versionId: string, includeTest: boolean): Promise<readonly DispositionCount[]> => {
+      const { data, error } = await this.ctx.client.schema(APP).rpc('field_stats', {
+        p_survey_version_id: versionId,
+        p_include_test: includeTest,
+      });
+      if (error !== null) raise(error, 'field_stats');
+      return ((data ?? []) as { disposition: string; sessions: number | string }[]).map((row) => ({
+        disposition: row.disposition,
+        // bigint arrives as a string over PostgREST; the counts are small, the cast is honest.
+        sessions: Number(row.sessions),
+      }));
     },
   };
 

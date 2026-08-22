@@ -36,7 +36,7 @@ export interface PageEnvelope<T> {
 }
 
 export interface ApiRequestOptions {
-  readonly method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   readonly body?: unknown;
   readonly idempotencyKey?: string;
   /** Sent as `If-Match`; required by every version-scoped mutation (API §1.7). */

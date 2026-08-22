@@ -20,6 +20,9 @@ import type { JobRow } from './repo/types.js';
 /** `apps/worker`'s `COMPILE_KIND`. See the header for why it is a literal. */
 export const COMPILE_JOB_KIND = 'compile';
 
+/** `apps/worker`'s `EXPORT_KIND` (kinds/export.ts). A literal for the same reason. */
+export const EXPORT_JOB_KIND = 'export';
+
 export interface JobEnvelope {
   readonly id: string;
   readonly kind: string;
