@@ -10,6 +10,8 @@ import { parsePreviewToStudio, parseStudioToPreview } from './preview-protocol.j
 
 const HASH = 'a'.repeat(64);
 const SEED = 'b'.repeat(32);
+/** A real ULID body: `[0-7]` then 25 Crockford characters (no I, L, O or U). */
+const SESSION = 'ses_01HQ8ZG7VYABCDEFGHJKMNPQRS';
 
 describe('parseStudioToPreview', () => {
   it('accepts every well-formed message', () => {
@@ -20,6 +22,8 @@ describe('parseStudioToPreview', () => {
       .toEqual({ t: 'preview:goto', page_id: 'pg_1' });
     expect(parseStudioToPreview({ t: 'preview:setVars', vars: { Q1: 3 } }))
       .toEqual({ t: 'preview:setVars', vars: { Q1: 3 } });
+    expect(parseStudioToPreview({ t: 'preview:replay', session_id: SESSION }))
+      .toEqual({ t: 'preview:replay', session_id: SESSION });
     expect(parseStudioToPreview({ t: 'preview:setDevice', device: 'mobile' }))
       .toEqual({ t: 'preview:setDevice', device: 'mobile' });
     expect(parseStudioToPreview({ t: 'preview:reload', artifact_hash: HASH }))
@@ -35,6 +39,13 @@ describe('parseStudioToPreview', () => {
     ['init with an invented device', { t: 'preview:init', artifact_hash: 'a'.repeat(64), language: 'en', device: 'tv' }],
     ['goto with an oversized id', { t: 'preview:goto', page_id: 'x'.repeat(65) }],
     ['setVars with an array', { t: 'preview:setVars', vars: [1, 2] }],
+    // The replay id becomes a URL PATH SEGMENT in the frame, and it is an `app.ulid` at the
+    // database boundary. Both are reasons the shape check belongs here rather than downstream.
+    ['replay with no session id', { t: 'preview:replay' }],
+    ['replay with the wrong prefix', { t: 'preview:replay', session_id: 'evt_01HQ8ZG7VYABCDEFGHJKMNPQRS' }],
+    ['replay with a path traversal', { t: 'preview:replay', session_id: '../../etc/passwd' }],
+    ['replay with a non-Crockford body', { t: 'preview:replay', session_id: 'ses_01HQ8ZG7VYABCDEFGHIKMNPQRS' }],
+    ['replay with a short body', { t: 'preview:replay', session_id: 'ses_01HQ8ZG7VY' }],
   ])('rejects %s as null, never a throw', (_label, msg) => {
     expect(parseStudioToPreview(msg)).toBeNull();
   });

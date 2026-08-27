@@ -48,6 +48,15 @@ import {
 import { resolveRedirect, type RedirectOutcome } from './redirect/index.js';
 import { makeHookRunner } from './script/hooks.js';
 import { verifyPreviewToken } from './preview/token.js';
+import {
+  initialReplayState,
+  piiVariableIds,
+  redactValues,
+  replayPage,
+  submitBodyFor,
+  type ReplayOutcome,
+  type ReplayStep,
+} from './preview/replay.js';
 import type { ScriptHost } from './script/host.js';
 import { makeCtx, step } from './machine/index.js';
 import type { SessionStore } from './session/store.js';
@@ -327,6 +336,13 @@ function logicFor(head: ArtifactHead): RehydratedLogic {
  *
  * `pageSubmitted` reads the session's own history, which is what separates `asked` from `shown`:
  * a page that was rendered but not submitted has been shown, not asked.
+ *
+ * `alwaysTrace` is the one caller-driven part of the debug decision, and it exists for replay
+ * (P1-11): a PRODUCTION session's trace capture is a 5% digest sample in the field (E §14.1), but
+ * a replay of that session must still show the verdicts, or the debug panel cannot answer the
+ * question it was opened for. It widens what is CAPTURED, never what is computed — the engine
+ * produces the trace on every evaluation regardless — and the surface that sets it sits behind a
+ * signed preview token and redacts pii before responding.
  */
 function evaluateAndRender(
   page: RenderPage,
@@ -334,6 +350,7 @@ function evaluateAndRender(
   logic: RehydratedLogic,
   labels: { readonly [key: string]: string } | undefined,
   escapeContext: EscapeContext,
+  alwaysTrace = false,
 ): { rendered: RenderedPage; evaluated: EvaluatedPage; debug?: Record<string, unknown> } {
   const submitted = new Set(
     session.history.filter(v => v.submitted_at !== null).map(v => String(v.page_id)),
@@ -357,7 +374,7 @@ function evaluateAndRender(
     ...evaluated.renderHooks,
   });
 
-  if (!session.is_test) return { rendered, evaluated };
+  if (!session.is_test && !alwaysTrace) return { rendered, evaluated };
 
   // TEST MODE: the full node-level trace, E §14.1's rightmost column. Same code path, same
   // artifact, same machine — the trace is CAPTURED here, never branched on, because divergent
@@ -419,6 +436,10 @@ export interface RenderDeps {
   readonly labels?: { readonly [key: string]: string };
   readonly escapeContext: EscapeContext;
   readonly quota?: QuotaClient;
+  /**
+   * Capture the E §14.2 trace even for a non-test session. Replay only — see `evaluateAndRender`.
+   */
+  readonly trace?: boolean;
 }
 
 /**
@@ -455,6 +476,7 @@ export async function interpret(
           opts.logic,
           opts.labels,
           opts.escapeContext,
+          opts.trace ?? false,
         );
         if (debug) lastDebug = debug;
         page = rendered;
@@ -1535,6 +1557,10 @@ async function handlePreview(
       await handlePreviewSetVars(res, ctx, req, hash);
       return;
     }
+    if (req.method === 'GET' && sub.startsWith('replay/')) {
+      await handlePreviewReplay(res, ctx, hash, decodeURIComponent(sub.slice('replay/'.length)));
+      return;
+    }
     if (req.method === 'POST' && sub === 'event') {
       await handleTelemetry(res, ctx, req);
       return;
@@ -1684,6 +1710,192 @@ async function handlePreviewSetVars(
     set: Object.keys(accepted).length,
     rejected,
     page_id: next.current_page_id,
+    request_id: ctx.requestId,
+  });
+}
+
+/**
+ * `GET /preview/:hash/replay/:session_id?pt=…` — E §12.3's `preview.replay`, server side
+ * (P1-11's last acceptance line).
+ *
+ * Load the session's seed and its recorded inputs (migration 0014's `runtime.replay_session`),
+ * then re-drive the SAME pipeline the respondent's submits ran — `handleSubmitCore` with NO
+ * `persist` — and report each page with its resolved option orders and its rule verdicts. That
+ * turns "the client says the rotation is wrong" (ADR-006) into a five-minute investigation.
+ *
+ * Three gates, each for a different mistake:
+ *   * the signed preview token, which this route inherits from `handlePreview` — the same gate
+ *     the rest of the surface sits behind, and the reason a production session's answers are
+ *     reachable here at all is that the control plane mints the token only for PRG+ (API §2.14's
+ *     `POST /v1/sessions/{id}/replay-token`);
+ *   * the session id's SHAPE, checked before the RPC — the argument is an `app.ulid` and a
+ *     malformed one should be our 404, not a domain error raised in the database;
+ *   * the artifact hash must EQUAL the session's pin. Replaying a session against a different
+ *     artifact is a category error, not a near miss: the pages, the option lists and the rules
+ *     would all be someone else's, and the resulting "replay" would be a fabrication. It is also
+ *     what keeps a token minted for artifact A from reading sessions pinned to artifact B.
+ *
+ * Nothing is written and nothing is reserved: no `persist` closure is built (the absent seam is
+ * the mechanism), no session is saved to the store, and no quota client is passed to the
+ * interpreter — a replay that committed a reservation would burn a real quota cell to answer a
+ * question about the past (E §14.1's rule, which applies with more force here than to test mode).
+ */
+async function handlePreviewReplay(
+  res: ServerResponse,
+  ctx: Ctx,
+  hash: string,
+  sessionId: string,
+): Promise<void> {
+  if (!ctx.deps.writer) {
+    // 503, not 404: "this deployment has no record to replay from" is an operational fact about
+    // us, not a statement about the session, and a programmer chasing a rotation dispute needs
+    // to know which of the two they are looking at.
+    json(res, 503, { error: { code: 'replay_unavailable' }, request_id: ctx.requestId });
+    return;
+  }
+  if (!/^ses_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(sessionId)) {
+    json(res, 404, { error: { code: 'not_found' }, request_id: ctx.requestId });
+    return;
+  }
+
+  const source = await ctx.deps.writer.replaySession(sessionId);
+  // One answer for "no such session" and "pinned to another artifact", the same reason setvars
+  // collapses its three cases: distinguishing them lets a token holder probe which sessions exist.
+  if (!source || source.artifact_hash !== hash) {
+    json(res, 404, { error: { code: 'session_not_found' }, request_id: ctx.requestId });
+    return;
+  }
+
+  const head = await ctx.deps.artifacts.head(hash);
+  const logic = logicFor(head);
+  const labels = await labelsFor(ctx, hash, source.language);
+  const pii = piiVariableIds(head.manifest.variable_manifest);
+  const loadPage = pageFetcher(ctx, hash, source.language);
+  // The session's own start time, frozen: every timestamp the replay produces comes from it, so
+  // replaying twice yields identical bytes and a diff is always a real change (ADR-006's reason
+  // for injecting the clock in the first place).
+  const clock = () => source.started_at;
+  const runHooks = ctx.deps.scriptHost
+    ? makeHookRunner(ctx.deps.scriptHost, ctx.deps.artifacts, head)
+    : undefined;
+  // Hooks DO run: a page's `onPageSubmit` script writes variables, and skipping it would drop
+  // those writes from the replayed state and change every verdict downstream of them. Re-running
+  // is safe because the QuickJS host is caged with no egress (E §13) — the same property that
+  // makes customer code auditable makes it replayable.
+  const renderOpts: RenderDeps = {
+    logic,
+    escapeContext: 'html_text',
+    // The verdicts are the point of the panel; a production session's field trace is a 5% digest
+    // sample (E §14.1), so replay asks for the full one explicitly.
+    trace: true,
+    ...(labels ? { labels } : {}),
+  };
+
+  let session = initialReplayState(source, head.manifest.survey_id);
+  const entered = step(
+    session, { i: 'enter' }, asMachineArtifact(head), machineCtx(session, source.started_at),
+  );
+  let out = await interpret(entered.cmds, entered.next, loadPage, renderOpts);
+  session = out.session;
+
+  const steps: ReplayStep[] = [];
+  let disposition: string | null = out.disposition;
+  // The page rendered but not yet accounted for. Every iteration pushes it with the input that
+  // was submitted against it, so the step the respondent stopped on is pushed after the loop with
+  // `unsubmitted` — a replay must never end by silently dropping the last page they saw.
+  let pending = out.page ? replayPage(1, out.page, out.debug, pii) : null;
+
+  for (const ev of source.events) {
+    if (ev.event_type !== 'page_submit') continue; // resume / invalidation / disposition: context
+    if (!pending || disposition !== null) break;
+
+    const body = submitBodyFor(ev, session.current_page_id);
+    const outcome = await handleSubmitCore(session, body as SubmitBody, {
+      head,
+      logic,
+      loadPage,
+      now: clock,
+      ...(runHooks ? { runHooks } : {}),
+      // NO persist. This is the structural half of "a replay writes nothing": there is no seam.
+    });
+
+    const record = (
+      result: ReplayOutcome,
+      failures?: readonly { question_id: string; message_key: string }[],
+    ): void => {
+      steps.push({
+        ...pending!,
+        submitted: redactValues(ev.values, pii),
+        outcome: result,
+        ...(failures ? { failures } : {}),
+      });
+    };
+
+    switch (outcome.kind) {
+      case 'advanced': {
+        session = outcome.session;
+        out = await interpret(outcome.cmds, outcome.session, loadPage, renderOpts);
+        session = out.session;
+        if (out.disposition) {
+          disposition = out.disposition;
+          record('final');
+          pending = null;
+          break;
+        }
+        record('submitted');
+        pending = out.page ? replayPage(ev.seq, out.page, out.debug, pii) : null;
+        break;
+      }
+      case 'final':
+        disposition = outcome.disposition;
+        session = outcome.session;
+        record('final');
+        pending = null;
+        break;
+      case 'validation_failed':
+        // The pipeline refused a value the ORIGINAL run accepted. On a pinned artifact that is a
+        // real finding — a validation whose verdict depends on something outside seed and inputs
+        // — so it is reported with its failures rather than smoothed over, and the replay stops:
+        // every later step would be a fiction.
+        record('validation_failed', outcome.failures.map(f => ({
+          question_id: f.question_id, message_key: f.message_key,
+        })));
+        pending = null;
+        break;
+      case 'replay':
+        record('replayed');
+        pending = null;
+        break;
+      case 'stale':
+        record('stale');
+        pending = null;
+        break;
+      case 'back_refused':
+        record('back_refused');
+        pending = null;
+        break;
+    }
+  }
+
+  if (pending) steps.push({ ...pending, submitted: null, outcome: 'unsubmitted' });
+
+  log.info('replay_served', {
+    request_id: ctx.requestId,
+    session_id: source.session_id,
+    artifact_hash: hash,
+    is_test: source.is_test,
+    steps: steps.length,
+    disposition,
+  });
+
+  json(res, 200, {
+    session_id: source.session_id,
+    artifact_hash: source.artifact_hash,
+    seed: source.random_seed,
+    language: source.language,
+    is_test: source.is_test,
+    steps,
+    disposition,
     request_id: ctx.requestId,
   });
 }

@@ -162,6 +162,43 @@ export interface SubmitWrite {
   readonly revision: number;
 }
 
+/**
+ * One recorded event of a session, as `runtime.replay_session` returns it (migration 0014).
+ *
+ * `values` is what the server ACCEPTED for that submit, post-filter — the input replay re-drives
+ * with. The rejections are deliberately not here: 0014 §0 keeps them on the audit read, because
+ * feeding a discarded value back in would replay a state no respondent ever had.
+ */
+export interface ReplayEvent {
+  readonly seq: number;
+  readonly event_type: string;
+  /** Null when the page id was not an `app.ulid` (a fixture id the typed column cannot hold). */
+  readonly page_id: string | null;
+  readonly values: Record<string, unknown> | null;
+  readonly payload: Record<string, unknown>;
+}
+
+/**
+ * Everything a replay needs and nothing else (E §12.3): the seed, the pin, and the inputs.
+ *
+ * The session fields are repeated on every row the RPC returns and collapsed here, because the
+ * function is a join — a session with no events cannot exist (0011 writes the row and its
+ * `session_start` event in one transaction), so the collapse never has to invent a session.
+ */
+export interface ReplaySource {
+  readonly session_id: string;
+  readonly survey_version_id: string;
+  /** ADR-006's replay key. Without it a replay would be a re-simulation with fresh randomness. */
+  readonly random_seed: string;
+  /** E §3.3's pin. The replay URL's hash must equal this or the request is a category error. */
+  readonly artifact_hash: string;
+  readonly language: string;
+  readonly is_test: boolean;
+  /** Epoch ms. The replay's fixed clock, so two replays of one session are byte-identical. */
+  readonly started_at: number;
+  readonly events: readonly ReplayEvent[];
+}
+
 export interface RuntimeWriter {
   resolveToken(token: string): Promise<{
     survey_version_id: string; artifact_hash: string; is_test: boolean; status: string;
@@ -175,6 +212,14 @@ export interface RuntimeWriter {
   /** Returns the document's last_event_seq after the call — see 0011's guard semantics. */
   submitPage(w: SubmitWrite): Promise<number>;
   findByResume(resumeTokenHash: Buffer): Promise<string | null>;
+  /**
+   * E §12.3's replay read (migration 0014). `null` for a session that does not exist — the id,
+   * reached through a signed replay token, IS the capability, so "no such session" and "not
+   * yours" are one answer. This is the ONLY read on this interface that returns respondent
+   * ANSWERS, which is why its caller redacts pii before anything leaves the process (security
+   * §8.1) and why the RPC is granted to `runtime_writer` alone.
+   */
+  replaySession(sessionId: string): Promise<ReplaySource | null>;
   close(): Promise<void>;
 }
 
@@ -261,6 +306,38 @@ export function createPgWriter(databaseUrl: string): RuntimeWriter {
       const r = await pool.query('SELECT runtime.find_session_by_resume($1) AS sid',
         [resumeTokenHash]);
       return (r.rows[0]?.sid ?? null) as string | null;
+    },
+
+    async replaySession(sessionId) {
+      // The columns are named, not `SELECT *`: the RPC's shape is a contract, and a widened
+      // function must not start feeding a column nobody here decided to serve.
+      const r = await pool.query(
+        'SELECT session_id, survey_version_id, random_seed, artifact_hash, language, is_test, ' +
+          'started_at, seq, event_type, page_id, "values", payload ' +
+          'FROM runtime.replay_session($1)',
+        [sessionId],
+      );
+      const first = r.rows[0];
+      if (!first) return null;
+      return {
+        session_id: first.session_id,
+        survey_version_id: first.survey_version_id,
+        random_seed: first.random_seed,
+        artifact_hash: first.artifact_hash,
+        language: first.language,
+        is_test: first.is_test,
+        // `timestamptz` arrives as a Date; the replay clock is a number everywhere else.
+        started_at: new Date(first.started_at).getTime(),
+        // Already ordered by seq inside the function — 0014 orders there rather than here so
+        // every caller of the RPC gets the ordering, not only this one.
+        events: r.rows.map(row => ({
+          seq: row.seq as number,
+          event_type: row.event_type as string,
+          page_id: (row.page_id ?? null) as string | null,
+          values: (row.values ?? null) as Record<string, unknown> | null,
+          payload: (row.payload ?? {}) as Record<string, unknown>,
+        })),
+      };
     },
 
     async close() {

@@ -53,7 +53,10 @@ interface SubmitResponse {
   const base = new URL(form.action);
   const prefixPath = base.pathname.replace(/\/submit$/, '');
   const pt = base.searchParams.get('pt');
-  const q = (rest: string) => (pt ? `pt=${encodeURIComponent(pt)}&${rest}` : rest);
+  // `rest` is optional so a sub-route that needs no query (replay, whose session id is in the
+  // path) does not end up with a dangling separator.
+  const q = (rest: string) =>
+    pt ? `pt=${encodeURIComponent(pt)}${rest ? `&${rest}` : ''}` : rest;
   const urlFor = (sub: string, rest: string) => `${base.origin}${prefixPath}${sub}?${q(rest)}`;
   const eventUrl = urlFor('/event', `session=${session}`);
 
@@ -163,6 +166,13 @@ interface SubmitResponse {
       switch (msg.t) {
         case 'preview:goto':
           location.assign(urlFor(`/p/${encodeURIComponent(msg.page_id)}`, `session=${session}`));
+          return;
+        case 'preview:replay':
+          // A navigation, not a fetch: the replay response is a whole recorded interview, and the
+          // panel reads it from the frame's own document rather than through this script. The
+          // signed token rides along in `q()`, and the server refuses any session not pinned to
+          // this artifact — so a forged session id here reaches a 404, never another survey.
+          location.assign(urlFor(`/replay/${encodeURIComponent(msg.session_id)}`, ''));
           return;
         case 'preview:setVars':
           void fetch(urlFor('/setvars', `session=${session}`), {

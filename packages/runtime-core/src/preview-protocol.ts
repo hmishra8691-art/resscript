@@ -21,6 +21,14 @@
  * dot names (`preview.init`) and a few extra messages. The file the security doc names wins
  * on naming; E's extra messages (`setSeed` as an init field, `stepBack`, trace levels) are
  * carried where Phase 1 has server behaviour to back them.
+ *
+ * `preview:replay` is the first of those extras to be carried, and the rule above is why it is
+ * here NOW and was not before: the server behaviour exists as of migration 0014
+ * (`runtime.replay_session`) and `GET /preview/:hash/replay/:session_id`. E §12.3 calls it "the
+ * highest-value message in the list" — a real session id in, the exact pages, option orders and
+ * rule verdicts that respondent saw out. `stepBack` and `debug.setTraceLevel` are still absent for
+ * the same reason they were: no endpoint answers them yet, and a message the frame can only
+ * refuse is worse than a message the studio knows it cannot send.
  */
 
 /* ------------------------------------------------------------------ *
@@ -37,6 +45,14 @@ export type StudioToPreview =
   | { readonly t: 'preview:goto'; readonly page_id: string }
   /** Jump into a variable state. Test-mode only; re-validated server-side (security §3.2). */
   | { readonly t: 'preview:setVars'; readonly vars: Readonly<Record<string, unknown>> }
+  /**
+   * Replay a recorded session (E §12.3, roadmap P1-11). The frame navigates to the runtime's
+   * replay endpoint for this artifact; the runtime loads the session's seed and its recorded
+   * inputs and re-drives the pipeline. Refused server-side unless the session is pinned to the
+   * artifact this frame holds a signed token for, so the message cannot be used to read a
+   * session belonging to some other survey.
+   */
+  | { readonly t: 'preview:replay'; readonly session_id: string }
   | { readonly t: 'preview:setDevice'; readonly device: DeviceClass }
   | { readonly t: 'preview:reload'; readonly artifact_hash: string };
 
@@ -64,6 +80,13 @@ function isRecord(x: unknown): x is Record<string, unknown> {
 
 const DEVICES: readonly string[] = ['desktop', 'tablet', 'mobile'];
 const HASH = /^[0-9a-f]{64}$/;
+/**
+ * A session id, shape-checked here rather than only at the endpoint: `ses_` + a Crockford ULID
+ * body, which is what `app.ulid` accepts. Validating it in the protocol keeps a hostile message
+ * from turning into a URL — the frame builds a path from this string — and keeps the runtime from
+ * having to map a database domain error into an HTTP status.
+ */
+const SESSION_ID = /^ses_[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
 
 /**
  * `null` for anything that is not a well-formed studio message — including near-misses with
@@ -95,6 +118,9 @@ export function parseStudioToPreview(x: unknown): StudioToPreview | null {
       if (entries.length > 256) return null; // a hostile message is bounded before it is parsed
       return { t: 'preview:setVars', vars: Object.fromEntries(entries) };
     }
+    case 'preview:replay':
+      if (typeof x['session_id'] !== 'string' || !SESSION_ID.test(x['session_id'])) return null;
+      return { t: 'preview:replay', session_id: x['session_id'] };
     case 'preview:setDevice':
       if (typeof x['device'] !== 'string' || !DEVICES.includes(x['device'])) return null;
       return { t: 'preview:setDevice', device: x['device'] as DeviceClass };
