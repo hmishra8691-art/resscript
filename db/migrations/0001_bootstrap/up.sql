@@ -140,9 +140,33 @@ BEGIN
       EXECUTE format('CREATE ROLE %I NOLOGIN NOINHERIT NOBYPASSRLS', r);
     END IF;
     -- Idempotent even when the role pre-existed from a previous `reset` (roles are
-    -- cluster-global and survive DROP DATABASE).
-    EXECUTE format('ALTER ROLE %I NOINHERIT NOBYPASSRLS', r);
+    -- cluster-global and survive DROP DATABASE). NOINHERIT only, deliberately not
+    -- NOBYPASSRLS here: Postgres requires the SESSION role to already have BYPASSRLS
+    -- before it may touch anyone's BYPASSRLS attribute at all — even to re-assert a
+    -- value that role already has. A local superuser always has it, which is why this
+    -- line originally re-asserted NOBYPASSRLS unconditionally and it never failed in CI;
+    -- Supabase's own `postgres` role correctly does NOT have BYPASSRLS, so the identical
+    -- statement fails there outright. Nothing anywhere in this schema ever grants
+    -- BYPASSRLS to these roles — CREATE ROLE above already pins NOBYPASSRLS at birth —
+    -- so this reassertion was defending against a state that cannot occur, at the cost
+    -- of making the migration unrunnable on the one target it matters most for.
+    EXECUTE format('ALTER ROLE %I NOINHERIT', r);
   END LOOP;
+
+  -- `runtime_rpc_owner` and `analytics_owner` exist to OWN schema runtime / schema export
+  -- (below) and every table and SECURITY DEFINER function the runtime pipeline creates in
+  -- this file and in later migrations — not to be logged into. Transferring ownership TO a
+  -- role requires the current session to already be a member of it. That is unconditionally
+  -- true for a local superuser (which is why this never failed against a bare Postgres in
+  -- CI), but the entire reason it is safe to run migrations as Supabase's own `postgres`
+  -- role is that it is NOT a superuser there — so on a hosted Supabase project every
+  -- `ALTER ... OWNER TO runtime_rpc_owner` / `analytics_owner` below and in every later
+  -- migration failed with "must be able to SET ROLE", because `postgres` was never granted
+  -- membership. NOINHERIT on the target roles (set above) means this membership does not
+  -- silently widen what the migrating role can do by default — it only makes `SET ROLE` and
+  -- `ALTER ... OWNER TO` possible, which is exactly what the rest of this migration needs.
+  EXECUTE format('GRANT runtime_rpc_owner TO %I', current_user);
+  EXECUTE format('GRANT analytics_owner TO %I', current_user);
 END $$;
 
 COMMENT ON ROLE authoring IS
