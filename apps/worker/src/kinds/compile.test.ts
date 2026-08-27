@@ -278,6 +278,7 @@ function fixtureRows(options: { readonly withRules?: boolean } = {}): AuthoringR
           ]
         : [],
     redirects: REDIRECT_ROWS,
+    themeChain: [],
   };
 }
 
@@ -561,6 +562,77 @@ describe('a survey that passes the static gate', () => {
     expect(published?.targetStatus).toBe('staging');
     expect(h.publish.version).toMatchObject({ hash, state: 'compiled', status: 'staging' });
     expect(h.publish.tokens.size).toBe(1);
+  });
+
+  it('uploads theme.css, and it carries the accessibility contract', async () => {
+    // The end of P2-12's chain on the publish side. `themeCss` used to be a compiler input this
+    // worker never set, so no artifact carried a stylesheet at all and `.rs-target` — the class
+    // question-kit asserts on 6,601 times for the WCAG touch-target floor — was defined nowhere.
+    const h = harness(fixtureRows());
+    const outcome = await h.run(publishPayload());
+    const hash = String((outcome.result as JsonObject)['artifact_hash']);
+
+    expect(h.artifacts.puts).toContain(artifactKey(hash, 'theme.css'));
+    const css = await h.artifacts.get(artifactKey(hash, 'theme.css'));
+    expect(css).toContain('.rs-target');
+    expect(css).toContain('min-height: 44px');
+  });
+
+  it('applies the survey THEME, resolving inheritance root-first', async () => {
+    // The wiring that stops app.themes being another table with no reader. The chain arrives
+    // root-first from publish-store.ts' recursive CTE, so the child's value must win and the
+    // parent's uninherited value must survive.
+    const rows = fixtureRows();
+    const h = harness({
+      ...rows,
+      themeChain: [
+        { id: 'thm_parent', name: 'Base', tokens: { 'color-brand': '#111111', radius: '2px' } },
+        { id: 'thm_child', name: 'Child', tokens: { 'color-brand': '#222222' } },
+      ],
+    });
+    const outcome = await h.run(publishPayload());
+    const hash = String((outcome.result as JsonObject)['artifact_hash']);
+    const css = await h.artifacts.get(artifactKey(hash, 'theme.css'));
+
+    expect(css).toContain('--rs-color-brand: #222222;'); // the child overrides
+    expect(css).toContain('--rs-radius: 2px;'); // and inherits what it did not set
+  });
+
+  it('DROPS a token value that would break out of the declaration', async () => {
+    // A token is interpolated into a stylesheet, so it is an injection site that the CSS sanitizer
+    // never sees — a token is not an author stylesheet. resolveTokens is the second layer, and this
+    // asserts the payload cannot reach the emitted bytes even when it reached the database.
+    const rows = fixtureRows();
+    const h = harness({
+      ...rows,
+      themeChain: [
+        { id: 'thm_evil', name: 'Evil', tokens: { 'color-brand': 'red;} body{display:none} .x{' } },
+      ],
+    });
+    const outcome = await h.run(publishPayload());
+    const hash = String((outcome.result as JsonObject)['artifact_hash']);
+    const css = await h.artifacts.get(artifactKey(hash, 'theme.css'));
+
+    expect(css).not.toContain('display:none');
+    expect(css).toContain('--rs-color-brand: #0057b8;'); // fell back to the vocabulary's default
+  });
+
+  it('changes the artifact hash when the theme changes, and only then', async () => {
+    // theme.css is inside the content hash (ADR-002). Two properties at once: a theme edit produces
+    // a genuinely different artifact, and recompiling the same theme produces the same one — a hash
+    // that moved when nothing changed would make every republish look like an edit.
+    const rows = fixtureRows();
+    const plain = await harness(rows).run(publishPayload());
+    const themedRows = {
+      ...rows,
+      themeChain: [{ id: 'thm_a', name: 'A', tokens: { 'color-brand': '#abcdef' } }],
+    };
+    const themed = await harness(themedRows).run(publishPayload());
+    const themedAgain = await harness(themedRows).run(publishPayload());
+
+    const hashOf = (o: { result: unknown }) => String((o.result as JsonObject)['artifact_hash']);
+    expect(hashOf(themed)).not.toBe(hashOf(plain));
+    expect(hashOf(themedAgain)).toBe(hashOf(themed));
   });
 
   it('reports progress once per pipeline stage, so "step N of M" has something to render', async () => {

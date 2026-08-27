@@ -61,6 +61,7 @@ import type {
   AuthoringRuleRow,
   AuthoringStringRow,
   AuthoringSurveyRow,
+  AuthoringThemeRow,
   AuthoringVariableRow,
   AuthoringVersionRow,
 } from './authoring-model.js';
@@ -277,6 +278,33 @@ export const PUBLISH_SQL = {
     'SELECT scope::text AS scope, scope_key, disposition, custom_key, url_template ' +
     'FROM content.redirects WHERE survey_version_id = $1::app.ulid ' +
     'ORDER BY scope, scope_key, disposition, custom_key',
+  /**
+   * The theme's token layers, ROOT-FIRST, walking `parent_theme_id` up from the survey's theme.
+   *
+   * Root-first because that is the order `resolveTokens(...layers)` expects — nearest-last — so the
+   * ordering decision is made once, here, in the query that knows the chain. A reversal in the
+   * caller would be invisible until a child theme mysteriously failed to override its parent.
+   *
+   * A recursive CTE rather than a loop of round trips: the depth is bounded at 16 by 0021's trigger,
+   * so this is one query with a known ceiling, and `ORDER BY depth DESC` puts the root first.
+   *
+   * Reads app.themes LIVE rather than content.version_theme, deliberately: this runs at PUBLISH, and
+   * publishing is exactly the moment a client's current theme is supposed to be captured. The
+   * snapshot is what the publish then WRITES, and it is what protects versions already in field —
+   * see 0021's header.
+   */
+  themeTokens:
+    'WITH RECURSIVE chain AS (' +
+    '  SELECT t.id, t.parent_theme_id, t.tokens, t.name, 0 AS depth' +
+    '    FROM app.themes t' +
+    '    JOIN app.surveys s ON s.theme_id = t.id' +
+    '    JOIN app.survey_versions v ON v.survey_id = s.id' +
+    '   WHERE v.id = $1::app.ulid' +
+    '  UNION ALL' +
+    '  SELECT p.id, p.parent_theme_id, p.tokens, p.name, c.depth + 1' +
+    '    FROM app.themes p JOIN chain c ON c.parent_theme_id = p.id' +
+    '   WHERE c.depth < 16' +
+    ') SELECT id, name, tokens, depth FROM chain ORDER BY depth DESC',
 
   // 0009 §5's "deliberately NOT a function" path. Two columns and nothing else — no status, no
   // artifact_hash (0004's sv_compiled_needs_artifact would refuse a hash without a compile
@@ -384,6 +412,9 @@ export class PgPublishStore implements PublishStore {
       const redirects = await session.query<Record<string, unknown>>(PUBLISH_SQL.redirects, [
         versionId,
       ]);
+      const themeChain = await session.query<Record<string, unknown>>(PUBLISH_SQL.themeTokens, [
+        versionId,
+      ]);
 
       return {
         version: versionRowOf(version),
@@ -396,6 +427,7 @@ export class PgPublishStore implements PublishStore {
         strings: strings.rows.map(stringRowOf),
         rules: rules.rows.map(ruleRowOf),
         redirects: redirects.rows.map(redirectRowOf),
+        themeChain: themeChain.rows.map(themeRowOf),
       };
     });
   }
@@ -701,6 +733,27 @@ function ruleRowOf(row: Record<string, unknown>): AuthoringRuleRow {
     notes: nullableStr(row['notes']),
     sort_key: str(row['sort_key']),
   };
+}
+
+/**
+ * One link in the theme inheritance chain.
+ *
+ * The token map is narrowed to `string -> string` here rather than passed through as `unknown`:
+ * 0021's `content.is_token_map` already guarantees a flat string map at the storage boundary, and
+ * re-checking it at the read boundary means a row written before that constraint existed — or by a
+ * superuser script that bypassed it — cannot reach the CSS emitter as a nested object it would have
+ * to defend against. Anything that is not a string is dropped, not coerced: `String({})` is
+ * "[object Object]", which would be interpolated into a stylesheet as a token value.
+ */
+function themeRowOf(row: Record<string, unknown>): AuthoringThemeRow {
+  const raw = row['tokens'];
+  const tokens: { [k: string]: string } = {};
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof v === 'string') tokens[k] = v;
+    }
+  }
+  return { id: str(row['id']), name: str(row['name']), tokens };
 }
 
 function redirectRowOf(row: Record<string, unknown>): AuthoringRedirectRow {

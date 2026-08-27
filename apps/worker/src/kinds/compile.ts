@@ -329,6 +329,14 @@ async function runCompile(
     // this choice is about the in-memory artifact and the audit trail agreeing with each other.
     compiledAt: ctx.job.created_at.toISOString(),
     acknowledgedWarnings: [...acknowledgedWarnings],
+    // The survey's theme, root-first, as the compiler's token layers. Loaded by
+    // `loadAuthoringRows` (publish-store.ts' recursive CTE), which resolves the inheritance chain
+    // in one query and returns it in the order `compileTheme` expects.
+    //
+    // An EMPTY chain is the normal case and is not a gap: a survey that pins no theme gets the
+    // compiler's default vocabulary, which since P2-12 is a real stylesheet rather than nothing at
+    // all. `env.themeCss` still overrides everything, for a caller holding bytes.
+    themeTokens: rows.themeChain.map((link) => link.tokens),
     ...(env.themeCss === undefined || env.themeCss === null ? {} : { themeCss: env.themeCss }),
     ...(env.entitlements === undefined ? {} : { entitlements: env.entitlements }),
   });

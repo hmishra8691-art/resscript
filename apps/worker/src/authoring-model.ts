@@ -244,6 +244,12 @@ export interface AuthoringStringRow {
  * `CUSTOM` — both pinned by biconditional CHECKs, so the empty strings are the table's own
  * encoding of "not applicable" rather than a convention this file has to defend.
  */
+export interface AuthoringThemeRow {
+  readonly id: string;
+  readonly name: string;
+  readonly tokens: { readonly [k: string]: string };
+}
+
 export interface AuthoringRedirectRow {
   readonly scope: 'default' | 'vendor' | 'language';
   readonly scope_key: string;
@@ -279,6 +285,12 @@ export interface AuthoringRows {
   readonly strings: readonly AuthoringStringRow[];
   readonly rules: readonly AuthoringRuleRow[];
   readonly redirects: readonly AuthoringRedirectRow[];
+  /**
+   * The survey's theme and its ancestors, ROOT-FIRST — the order `compileTheme`'s `layers` expects
+   * (nearest-last). Empty when the survey pins no theme, which is the common case and means the
+   * compiler's own default vocabulary is the whole theme.
+   */
+  readonly themeChain: readonly AuthoringThemeRow[];
 }
 
 /* -------------------------------------------------------------------------- */
