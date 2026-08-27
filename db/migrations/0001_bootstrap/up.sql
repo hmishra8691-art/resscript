@@ -48,20 +48,42 @@ END $$;
 -- not depend on the Supabase CLI (there is no vendor lock-in in the migration path), so
 -- this block creates the same shapes only when they are absent. On a Supabase project it
 -- is a no-op; on a bare PostgreSQL 16 it is what makes the tenancy FKs resolvable.
-CREATE SCHEMA IF NOT EXISTS auth;
-COMMENT ON SCHEMA auth IS
-  'Identity. Provided by Supabase Auth in hosted environments; created here as a compatible '
-  'shim so that migrations run against a bare PostgreSQL (CI, local dev) without the '
-  'Supabase CLI. See db/README.md "The auth shim".';
+--
+-- MUST be a real existence check, not just `IF NOT EXISTS` on the CREATE statements: on a
+-- hosted Supabase project the `auth` schema and `auth.users` table already exist and are
+-- owned by `supabase_auth_admin`, not by the migrating role. `CREATE ... IF NOT EXISTS`
+-- silently skips the create either way, but an unconditional `COMMENT ON` right after it
+-- does not — it always runs, and Postgres requires ownership for COMMENT ON, so the whole
+-- migration used to fail on a real Supabase project with "must be owner of schema auth"
+-- even though the CREATE itself had already been a no-op. Guarding the COMMENT calls the
+-- same way section 7b already guards `auth.uid()` below is what makes this section 3
+-- actually the no-op its own comment above claims it is.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'auth') THEN
+    EXECUTE 'CREATE SCHEMA auth';
+    EXECUTE $c1$ COMMENT ON SCHEMA auth IS
+      'Identity. Provided by Supabase Auth in hosted environments; created here as a compatible '
+      'shim so that migrations run against a bare PostgreSQL (CI, local dev) without the '
+      'Supabase CLI. See db/README.md "The auth shim".' $c1$;
+  END IF;
 
-CREATE TABLE IF NOT EXISTS auth.users (
-  id         uuid PRIMARY KEY,
-  email      text,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-COMMENT ON TABLE auth.users IS
-  'Shim for Supabase auth.users. Only `id` is load-bearing: app.org_members.user_id and '
-  'every audit actor column reference it (Deliverable B §1).';
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'auth' AND c.relname = 'users'
+  ) THEN
+    EXECUTE $t1$
+      CREATE TABLE auth.users (
+        id         uuid PRIMARY KEY,
+        email      text,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    $t1$;
+    EXECUTE $c2$ COMMENT ON TABLE auth.users IS
+      'Shim for Supabase auth.users. Only `id` is load-bearing: app.org_members.user_id and '
+      'every audit actor column reference it (Deliverable B §1).' $c2$;
+  END IF;
+END $$;
 
 -- auth.uid() is created in section 7b, once app.current_user_id() exists for it to
 -- delegate to.
