@@ -121,10 +121,32 @@ describe('the React entry point', () => {
   const graph = walk('react.ts');
 
   it('does reach React, which is the point of the split', () => {
-    expect(graph.externalValueImports.some((specifier) => specifier === 'react')).toBe(false);
-    // The components are JSX, compiled through `react/jsx-runtime`, so the *source* need not name
-    // React at all — what proves the split is that the component modules are on this side.
+    // What this suite protects is the CORE entry point staying React-free (asserted above, and
+    // unchanged): a worker, the compiler and the export path all import `index.ts`, and a React
+    // import there would put a UI framework in a headless bundle.
+    //
+    // On THIS side the presence of the component modules is the property that matters, and it is
+    // asserted directly. The original form of this test also required that no source here named
+    // `react` as a value import, reasoning that JSX compiles through `react/jsx-runtime` so the
+    // source "need not name React at all". That was true of every Phase-1 plugin, all of which are
+    // pure functions of their props — but "need not" was encoded as "must not", and P2-05's
+    // `searchable_select` is the first view with genuine per-respondent interaction state (the
+    // query, whether the popup is open, which option is highlighted). That state is UI, not an
+    // answer, so it must not travel through `onChange`; a `RendererComponent` is a node factory
+    // that React never mounts, so it cannot hold state itself; and the alternative — a native
+    // `<datalist>` — cannot fold diacritics, so a respondent typing `espana` would not find
+    // `España`. Hooks in a nested component are the honest way to get all three.
+    //
+    // So the rule is now the one the split is actually for: React may be imported here, never in
+    // `index.ts`.
     expect(graph.files.some((file) => file.endsWith('view.tsx'))).toBe(true);
+  });
+
+  it('is the only side that may reach React at all', () => {
+    // The invariant restated as a comparison rather than as an absolute, so the guarantee is still
+    // mechanically checked: whatever this side imports, the core must not.
+    const coreGraph = walk('index.ts');
+    expect(coreGraph.externalValueImports.filter((s) => /^react(-dom)?(\/|$)/.test(s))).toEqual([]);
   });
 });
 
