@@ -7,6 +7,7 @@
 
 import Link from 'next/link';
 import { useOrgs, useSwitchOrg } from '@/lib/queries';
+import { browserSupabase } from '@/lib/supabase-browser';
 
 export default function OrgsPage(): React.JSX.Element {
   const orgs = useOrgs();
@@ -55,7 +56,13 @@ export default function OrgsPage(): React.JSX.Element {
                       disabled={switchOrg.isPending}
                       onClick={() =>
                         switchOrg.mutate(org.org_id, {
-                          onSuccess: () => window.location.assign('/' + org.org_id),
+                          // The re-minted claim only reaches the browser via a fresh access
+                          // token — refresh before navigating or the destination page's writes
+                          // still carry the old (wrong-org) token (see orgs/new/page.tsx).
+                          onSuccess: async () => {
+                            await browserSupabase()?.auth.refreshSession();
+                            window.location.assign('/' + org.org_id);
+                          },
                         })
                       }
                     >

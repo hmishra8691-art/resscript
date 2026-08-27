@@ -11,6 +11,7 @@
 
 import { useState } from 'react';
 import { ApiError, apiFetch, newIdempotencyKey } from '@/lib/api-client';
+import { browserSupabase } from '@/lib/supabase-browser';
 
 /** Slug rules mirror `org_slug_fmt`, so the client refuses what the CHECK would refuse. */
 function slugify(name: string): string {
@@ -42,6 +43,13 @@ export default function NewOrgPage(): React.JSX.Element {
         // A double-submit must not create two orgs, each with the caller as owner.
         idempotencyKey: newIdempotencyKey(),
       });
+      // Creating the org re-mints `app_metadata.active_org_id` server-side (ctx.minter), but the
+      // access token already in this browser was issued before any org existed. Postgres RLS
+      // reads that token's OWN embedded claims via PostgREST's `request.jwt.claims` — not a live
+      // lookup — so `app.current_org()` stays NULL and every org-scoped write 404s as
+      // "resource not found" until the session is refreshed. Refresh here, before navigating, so
+      // the token this page lands on already carries the new org.
+      await browserSupabase()?.auth.refreshSession();
       window.location.assign('/' + created.data.id);
     } catch (err: unknown) {
       setBusy(false);

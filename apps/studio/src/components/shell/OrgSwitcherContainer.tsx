@@ -8,6 +8,7 @@
 import { useRouter } from 'next/navigation';
 import { OrgSwitcher } from './OrgSwitcher';
 import { useOrgs, useSwitchOrg } from '@/lib/queries';
+import { browserSupabase } from '@/lib/supabase-browser';
 
 export function OrgSwitcherContainer(): React.JSX.Element {
   const orgs = useOrgs();
@@ -22,10 +23,14 @@ export function OrgSwitcherContainer(): React.JSX.Element {
       onCreate={() => router.push('/orgs/new')}
       onSwitch={(orgId) => {
         switchOrg.mutate(orgId, {
-          onSuccess: () => {
+          onSuccess: async () => {
             // The new claim only reaches the browser with a new access token, so the whole app
             // is reloaded rather than a cache being invalidated. A partial refresh would leave
-            // React state describing org A while requests resolved in org B.
+            // React state describing org A while requests resolved in org B. Fetch that new
+            // token BEFORE reloading — the previous version reloaded on the still-stale token,
+            // so every request on the destination org still carried the old org's (or no org's)
+            // claims and every RLS-checked write 404'd as "resource not found".
+            await browserSupabase()?.auth.refreshSession();
             window.location.assign('/' + orgId);
           },
         });

@@ -16,6 +16,7 @@
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { useOrgs, useSwitchOrg } from '@/lib/queries';
+import { browserSupabase } from '@/lib/supabase-browser';
 
 export function OrgGuard({ orgId, children }: { orgId: string; children: ReactNode }): React.JSX.Element {
   const orgs = useOrgs();
@@ -49,7 +50,12 @@ export function OrgGuard({ orgId, children }: { orgId: string; children: ReactNo
             disabled={switchOrg.isPending}
             onClick={() =>
               switchOrg.mutate(orgId, {
-                onSuccess: () => window.location.reload(),
+                // Same reason as orgs/new/page.tsx: the re-minted claim only reaches the
+                // browser via a fresh access token, so refresh before reloading.
+                onSuccess: async () => {
+                  await browserSupabase()?.auth.refreshSession();
+                  window.location.reload();
+                },
               })
             }
           >
