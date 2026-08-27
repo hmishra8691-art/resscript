@@ -117,7 +117,10 @@ function buildSeat(
   }
   const child = resolvedPlugin.plugin;
   const childConfig = applySchemaDefaults(child.configSchema as JsonSchema, control.config ?? {});
-  const childItems: readonly AuthoredItem[] = control.use_columns === true ? question.columns : [];
+  // Same two sources `declare.ts` uses, and it MUST stay the same — see this file's header on
+  // why two constructions of "what does the child see" eventually disagree in one place.
+  const childItems: readonly AuthoredItem[] =
+    control.use_columns === true ? question.columns : (control.options ?? []);
 
   // The same context shape declare.ts's compose builds — the agreement the header promises.
   const scopedNamer = createScopedNamer(spec, scope);

@@ -242,8 +242,8 @@ function compose<Config>(
     );
   }
 
-  /**
-   * `use_columns`: the child's *options* are the parent's columns.
+/**
+   * `use_columns`: the child's *options* are the parent's columns; otherwise its own `options`.
    *
    * F §3.1 does this by writing `config.__injectedOptions` into the child's config. That cannot
    * work: F §2's reference config schema — and every schema written like it — sets
@@ -251,8 +251,13 @@ function compose<Config>(
    * rule 3 requires to pass. Handing the columns over as the child's `options` is what
    * "choice controls draw their options from matrix columns" means anyway, and it keeps the
    * child's config exactly what its author declared.
+   *
+   * `control.options` is the second source, added for `matrix_side_by_side` — see `CellControl`'s
+   * own note on why `[]` was not a viable default for an enum child. `use_columns` wins, so no
+   * existing cell changes: an absent `options` is still `[]`.
    */
-  const childItems: readonly AuthoredItem[] = control.use_columns === true ? question.columns : [];
+  const childItems: readonly AuthoredItem[] =
+    control.use_columns === true ? question.columns : (control.options ?? []);
 
   const childContext: VariableDeclContext<unknown> = {
     ref: question.ref,

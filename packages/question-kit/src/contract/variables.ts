@@ -311,6 +311,25 @@ export interface CellControl {
   readonly config?: JsonObject;
   /** Choice controls draw their options from the parent's shared column list. */
   readonly use_columns?: boolean;
+  /**
+   * The child's own option list, used when `use_columns` is not set.
+   *
+   * **Why this exists.** Before it, a composed child's options were `question.columns` under
+   * `use_columns` and `[]` otherwise — which is correct for a `numeric` or `text` cell and wrong
+   * for every enum-typed one, because every enum child in the kit builds its domain from
+   * `ctx.options` (`single_select`, `rating`, `binary` all do). `[]` therefore meant "an enum
+   * variable with an empty domain", which `declareVariables`' own invariant rejects.
+   *
+   * That was invisible while `matrix` was the only composing plugin, because a matrix's choice rows
+   * always use the shared columns. `matrix_side_by_side` is the case that cannot: its COLUMNS are
+   * its blocks (one control each), so the shared column list is already spent and a rating block
+   * inside it had no way to declare a scale at all.
+   *
+   * The two sources are mutually exclusive by construction — `use_columns` wins — so this widens
+   * what a cell can be without changing what any existing cell IS: an absent `options` still
+   * resolves to `[]`, exactly as before.
+   */
+  readonly options?: readonly AuthoredItem[];
 }
 
 /**
