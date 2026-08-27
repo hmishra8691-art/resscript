@@ -63,6 +63,7 @@ export const CMP_DIAGNOSTIC_CODES = {
   'CMP-0500': 'author HTML did not survive sanitization',
   'CMP-0501': 'a script asset declares no execution target, or an incompatible one',
   'CMP-0502': 'a media or template asset referenced by content does not exist',
+  'CMP-0503': 'author CSS contains a construct that can execute, fetch or exfiltrate',
 
   'CMP-0600': 'the survey requires an entitlement the plan does not include',
 
@@ -112,6 +113,7 @@ export const CMP_SEVERITY: { readonly [K in CmpCode]: CompileSeverity } = {
   'CMP-0500': 'error',
   'CMP-0501': 'error',
   'CMP-0502': 'error',
+  'CMP-0503': 'error',
 
   'CMP-0600': 'error',
 

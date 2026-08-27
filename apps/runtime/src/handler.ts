@@ -1334,6 +1334,7 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
       actionBase: ctx.basePath,
       variableOf: variableOfFactory(logicFor(head)),
       clientScriptUrl: '/client.js',
+      themeCssUrl: `/theme/${out.session.artifact_hash}.css`,
     }));
     return;
   }
@@ -1431,6 +1432,7 @@ async function handlePageRender(
       prefill,
       variableOf: variableOfFactory(logicFor(pinned.head)),
       clientScriptUrl: '/client.js',
+      themeCssUrl: `/theme/${stamped.artifact_hash}.css`,
     }));
     return;
   }
@@ -2067,6 +2069,7 @@ async function handlePreviewEntry(res: ServerResponse, ctx: Ctx, hash: string): 
       actionBase: ctx.basePath,
       variableOf: variableOfFactory(logicFor(head)),
       clientScriptUrl: '/client.js',
+      themeCssUrl: `/theme/${out.session.artifact_hash}.css`,
       ...(ctx.deps.studioOrigin
         ? { preview: { studioOrigin: ctx.deps.studioOrigin, artifactHash: hash } }
         : {}),
@@ -2355,6 +2358,33 @@ export function createHandler(deps: RuntimeDeps) {
         'x-content-type-options': 'nosniff',
       });
       res.end(bundle);
+      return;
+    }
+
+    // `GET /theme/{hash}.css` — the compiled stylesheet, content-addressed.
+    //
+    // The hash in the PATH is what makes this immutably cacheable: an artifact's bytes never change
+    // (ADR-002), so `immutable` is a statement of fact rather than a hope, and a client that has
+    // seen this artifact never asks again. A single `/theme.css` would have to be revalidated on
+    // every page of every session, and would serve one survey's theme to another.
+    const themeMatch = /^\/theme\/([0-9a-f]{64})\.css$/.exec(url.pathname);
+    if (req.method === 'GET' && themeMatch) {
+      const hash = themeMatch[1] as string;
+      // Read through the loader, so a 64-hex path that names no artifact is a 404 rather than a
+      // reflected fetch of an arbitrary key.
+      const css = await deps.artifacts.themeCss(hash);
+      if (css === null) {
+        json(res, 404, { error: { code: 'not_found' }, request_id: requestId });
+        return;
+      }
+      const body = Buffer.from(css, 'utf8');
+      res.writeHead(200, {
+        'content-type': 'text/css; charset=utf-8',
+        'content-length': body.length,
+        'cache-control': 'public, max-age=31536000, immutable',
+        'x-content-type-options': 'nosniff',
+      });
+      res.end(body);
       return;
     }
 

@@ -99,6 +99,15 @@ export interface ArtifactLoader {
    */
   script(hash: string, ref: string): Promise<string | null>;
   /**
+   * The compiled stylesheet (`theme.css`), or null for an artifact compiled before P2-12.
+   *
+   * NOT part of `head()`, and not fetched on the session path at all: the browser fetches it from
+   * a content-addressed URL, so it is cached by the CDN and by the client across sessions and
+   * across surveys sharing an artifact. Folding it into the head would put a stylesheet's bytes
+   * through this process on every entry to save the browser one request it makes once.
+   */
+  themeCss(hash: string): Promise<string | null>;
+  /**
    * One language's string bundle (`i18n/<language>.json`), or null when the artifact carries
    * no such language. Read once per session render language, not folded into `head()` — a
    * multi-language artifact would otherwise pay for every language on every entry.
@@ -364,6 +373,17 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
       const cached = scripts.get(key);
       if (cached !== undefined) return cached;
       const source = await fetchFile(hash, `scripts/${ref}.js`);
+      scripts.set(key, source);
+      return source;
+    },
+
+    async themeCss(hash: string): Promise<string | null> {
+      const key = `${hash}/theme.css`;
+      const cached = scripts.get(key);
+      if (cached !== undefined) return cached;
+      const source = await fetchFile(hash, 'theme.css');
+      // Shares the `scripts` cache, which holds verbatim text keyed by full path. A separate LRU
+      // for one file per artifact would halve the useful size of both.
       scripts.set(key, source);
       return source;
     },

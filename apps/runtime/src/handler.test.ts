@@ -287,6 +287,9 @@ function loaderFor(artifacts: Record<string, FakeArtifact>): ArtifactLoader {
     async script(hash: string, ref: string) {
       return artifacts[hash]?.scripts?.[ref] ?? null;
     },
+    async themeCss(hash: string) {
+      return artifacts[hash] === undefined ? null : ':root{--rs-color-bg:#fff}.rs-target{min-height:44px}';
+    },
     async i18n(hash: string, language: string) {
       return artifacts[hash]?.i18n?.[language] ?? null;
     },
@@ -974,6 +977,52 @@ describe('no-JavaScript flow — the P1-09 acceptance line', () => {
     } as never);
   }
 
+  it('links the content-addressed stylesheet, so the theme actually reaches the browser', async () => {
+    // The end of the chain P2-12 built. Before it, `themeCss` was a compiler input nothing supplied,
+    // no artifact carried a stylesheet, and `.rs-target` — the class question-kit asserts on 6,601
+    // times to satisfy the WCAG 2.2 AA touch-target floor — was defined in no stylesheet anywhere.
+    // Every link in that chain is now tested; this is the one that says a browser receives it.
+    const d = deps();
+    const r = await browse(d, `/s/${TOKEN}`);
+
+    expect(r.raw).toContain(`<link rel="stylesheet" href="/theme/${HASH}.css">`);
+    // And the pre-P2-12 inline fallback is NOT also emitted — two stylesheets would mean the
+    // fallback's `body{font:16px…}` fighting the theme's tokens, with the winner decided by order.
+    expect(r.raw).not.toContain('font:16px/1.5 system-ui');
+  });
+
+  it('serves that stylesheet, immutably cacheable', async () => {
+    const d = deps();
+    const r = await browse(d, `/theme/${HASH}.css`);
+
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toContain('text/css');
+    expect(r.raw).toContain('.rs-target');
+    // `immutable` is a statement of fact, not a hope: an artifact's bytes never change (ADR-002),
+    // which is exactly why the hash is in the path rather than a single /theme.css being
+    // revalidated on every page of every session.
+    expect(r.headers['cache-control']).toContain('immutable');
+    expect(r.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  it('404s a theme path that names no artifact, rather than reflecting the fetch', async () => {
+    // Read through the loader, so a well-formed 64-hex path cannot be used to probe arbitrary keys
+    // in the artifact store.
+    const d = deps();
+    // Not `'f'.repeat(64)` — that is HASH in this file, so the first version of this test asked for
+    // the artifact that DOES exist and asserted it was missing.
+    const r = await browse(d, `/theme/${'a'.repeat(64)}.css`);
+    expect(r.status).toBe(404);
+  });
+
+  it('does not answer a malformed theme path at all', async () => {
+    const d = deps();
+    for (const path of ['/theme/../secret.css', '/theme/abc.css', '/theme/.css']) {
+      const r = await browse(d, path);
+      expect(r.status).not.toBe(200);
+    }
+  });
+
   it('entry renders an HTML form that names the submit endpoint', async () => {
     const d = deps();
     const r = await browse(d, `/s/${TOKEN}`);
@@ -984,7 +1033,19 @@ describe('no-JavaScript flow — the P1-09 acceptance line', () => {
     expect(r.raw).toContain('type="radio"');
     expect(r.raw).toContain('Coca-Cola');
     // The seed never reaches the browser (E §4 step 10) — only derived orders, as DOM order.
-    expect(r.raw).not.toMatch(/[0-9a-f]{32}/);
+    //
+    // Asserted against the SESSION'S ACTUAL SEED rather than "no 32-hex run anywhere", which is
+    // what this line used to say. That broader form fired when P2-12 added the content-addressed
+    // stylesheet link (`/theme/<64-hex>.css`) — a false positive, since the artifact hash is not a
+    // secret: it identifies compiled survey content the respondent is already reading, and the
+    // preview surface has always put it in the DOM as `data-artifact`. Naming the seed keeps the
+    // assertion testing the property it was written for instead of a proxy for it.
+    // The session id is in the rendered page rather than a JSON body on this surface.
+    const sessionId = /data-session="([^"]+)"/.exec(r.raw)?.[1] ?? '';
+    expect(sessionId).not.toBe('');
+    const seeded = await d.sessions.load(sessionId);
+    expect(seeded?.random_seed).toMatch(/^[0-9a-f]{32}$/);
+    expect(r.raw).not.toContain(seeded?.random_seed ?? '<no seed>');
   });
 
   it('completes a survey with JavaScript disabled: form post, 303, form post, terminal', async () => {

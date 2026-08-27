@@ -54,7 +54,23 @@ export interface CompileInput {
    * publishable on purpose.
    */
   readonly entitlements?: ReadonlySet<string> | undefined;
-  /** Compiled theme CSS. P1-08 ships one default theme; the theme compiler is P2-12. */
+  /**
+   * Theme token layers, nearest-last, for `compileTheme` — typically `[parentTheme, theme]`.
+   *
+   * Tokens rather than CSS, and that is the P2-12 decision. `themeCss` below stays for a caller
+   * that already has bytes, but the compiler now DEFAULTS to compiling a theme rather than emitting
+   * nothing: before this, `themeCss` was a parameter nothing supplied, so no artifact ever carried
+   * a stylesheet and `.rs-target` — the class question-kit asserts on 6,601 times, whose whole
+   * purpose is the WCAG touch-target floor — was defined nowhere at all.
+   */
+  readonly themeTokens?: readonly { readonly [k: string]: string }[];
+  /**
+   * Pre-compiled theme CSS, overriding `themeTokens`.
+   *
+   * Kept for a caller holding bytes it did not generate from tokens. NOT the default path any more:
+   * an optional string that nothing set is how the theme went missing for two milestones, and a
+   * default of "no stylesheet at all" is never the safe one for an accessibility guarantee.
+   */
   readonly themeCss?: string | null;
   /**
    * `acknowledgementKey()` values the author has already accepted. Warnings whose key appears

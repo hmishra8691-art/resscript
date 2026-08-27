@@ -143,6 +143,8 @@ import { buildFlowGraph } from './flow.js';
 import { buildTypeEnvFor } from './registry.js';
 import { buildRules, synthesizedMaskRuleId } from './rules.js';
 import { analyzeAssets } from './analyses/assets.js';
+import { analyzeCss } from './analyses/css.js';
+import { compileTheme } from './emit/theme.js';
 import { analyzeEntitlements } from './analyses/entitlements.js';
 import { analyzeForwardReferences, buildVariableSites } from './analyses/forward-ref.js';
 import { analyzePlugins, resolvePlugins } from './analyses/plugins.js';
@@ -260,6 +262,10 @@ export function compileSurvey(input: CompileInput): CompileResult {
     ...analyzeRedirects({ survey, graph, rules }),
     ...analyzePlugins({ survey, plugins: input.plugins }),
     ...analyzeAssets({ survey }),
+    // CMP-0503. Separate from analyzeAssets because CSS's dangerous constructs are its own — that
+    // module's header says so explicitly and declined to guess at them. Until P2-12 nothing checked
+    // author CSS at all, which made a stylesheet the one author-supplied surface with no gate.
+    ...analyzeCss({ survey }),
     ...analyzeEntitlements({ survey, entitlements: input.entitlements, plugins: resolution }),
   );
 
@@ -299,9 +305,14 @@ export function compileSurvey(input: CompileInput): CompileResult {
       : { redirects: survey.redirects }),
     ...(designs === undefined ? {} : { designs }),
     ...(scripts === undefined ? {} : { scripts }),
-    ...(input.themeCss === undefined || input.themeCss === null
-      ? {}
-      : { themeCss: input.themeCss }),
+    // ALWAYS a stylesheet. Explicit bytes win; otherwise the theme is compiled from tokens, and a
+    // survey that pins no theme still gets the default — which is what makes `.rs-target` exist.
+    // The previous behaviour (emit nothing when `themeCss` was unset, which was always) shipped
+    // every survey without the class its own a11y contract is built around.
+    themeCss:
+      input.themeCss === undefined || input.themeCss === null
+        ? compileTheme({ layers: input.themeTokens ?? [] }).css
+        : input.themeCss,
   });
 
   return {

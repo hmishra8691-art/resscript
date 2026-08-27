@@ -960,10 +960,17 @@ describe('the compile budget', () => {
     if (!result.ok) {
       throw new Error(`compile failed: ${JSON.stringify(codes(result))}`);
     }
-    // 50 pages in 5 languages: 250 page files, plus the manifest, graph, logic, redirects and
-    // five bundles.
+    // 50 pages in 5 languages: 250 page files, plus the manifest, graph, logic, redirects, five
+    // bundles — and theme.css.
+    //
+    // This count was 259 and went to 260 when P2-12 made the compiler always emit a theme. The
+    // change is the point rather than an accident: `themeCss` had been an optional input that
+    // nothing supplied, so NO artifact carried a stylesheet, and `.rs-target` — the class
+    // question-kit asserts on 6,601 times to satisfy the WCAG touch-target floor — was defined in
+    // no stylesheet in the repository. An exact file count is what noticed.
     expect(Object.keys(result.bundle.artifact.pages).length).toBe(50);
-    expect(result.bundle.files.length).toBe(259);
+    expect(result.bundle.files.length).toBe(260);
+    expect(result.bundle.files.some((f) => f.path.endsWith('theme.css'))).toBe(true);
     expect(result.bundle.artifact.manifest.variable_manifest.length).toBe(500);
     // Printed rather than silently passed: a regression should show the number it regressed to,
     // since a test that only says "over 5000 ms" hides whether it was 5.1 s or 40 s.

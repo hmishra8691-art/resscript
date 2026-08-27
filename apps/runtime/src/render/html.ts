@@ -43,6 +43,15 @@ export interface HtmlPageInput {
   /** Serve the enhancement bundle? Absent in environments that have not built it. */
   readonly clientScriptUrl?: string;
   /**
+   * The compiled stylesheet's content-addressed URL (`/theme/<hash>.css`).
+   *
+   * Absent means the inline fallback below is used, which is the pre-P2-12 behaviour and is kept for
+   * exactly one case: an artifact compiled before the theme existed. It is NOT the normal path —
+   * the fallback cannot define `.rs-target`, because that class's pixel value lives in one place
+   * (the theme compiler) and duplicating it here would give the accessibility floor two values.
+   */
+  readonly themeCssUrl?: string;
+  /**
    * Where the form posts. Defaults to the survey origin's `/s/<token>`; the preview surface
    * (P1-11) passes `/preview/<hash>?pt=…`-shaped bases because a preview session has no
    * survey token to build the default from.
@@ -102,6 +111,37 @@ ${control}
 </div>`;
 }
 
+/**
+ * The stylesheet element, or the legacy inline block.
+ *
+ * The linked theme is the normal path and the inline block is a fallback for an artifact compiled
+ * before P2-12. Keeping the fallback matters — an old artifact must still render — but it is
+ * deliberately NOT a copy of the theme: it cannot define `.rs-target`, because that class's pixel
+ * value lives in exactly one place (`compiler/emit/theme.ts`) and a second copy here would be a
+ * WCAG floor with two values, of which the stale one ships.
+ *
+ * `<link>` rather than an inline `<style>` for the compiled theme, even though inlining saves a
+ * request: the URL is content-addressed, so the browser caches it across every page of every session
+ * and across surveys sharing an artifact, while inlining pays for the bytes on every page render.
+ */
+function themeLink(input: HtmlPageInput): string {
+  if (input.themeCssUrl !== undefined) {
+    return `<link rel="stylesheet" href="${esc(input.themeCssUrl)}">`;
+  }
+  return `<style>
+  /* Fallback for an artifact compiled before the theme compiler existed (P2-12). Deliberately does
+     NOT define .rs-target — see themeLink(). */
+  body{font:16px/1.5 system-ui,sans-serif;margin:0 auto;max-width:640px;padding:1rem}
+  fieldset{border:none;padding:0;margin:0 0 1.5rem}
+  legend,label.q{font-weight:600}
+  .opt{display:block;padding:.4rem 0}
+  .opt.disabled{opacity:.5}
+  .instruction{color:#555;font-size:.9em}
+  .error{color:#b00020;font-weight:600}
+  button{font-size:1rem;padding:.6rem 2rem}
+</style>`;
+}
+
 export function renderHtmlPage(input: HtmlPageInput): string {
   const { page } = input;
   const base = input.actionBase ?? `/s/${input.token}`;
@@ -118,16 +158,7 @@ export function renderHtmlPage(input: HtmlPageInput): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <title>Survey</title>
-<style>
-  body{font:16px/1.5 system-ui,sans-serif;margin:0 auto;max-width:640px;padding:1rem}
-  fieldset{border:none;padding:0;margin:0 0 1.5rem}
-  legend,label.q{font-weight:600}
-  .opt{display:block;padding:.4rem 0}
-  .opt.disabled{opacity:.5}
-  .instruction{color:#555;font-size:.9em}
-  .error{color:#b00020;font-weight:600}
-  button{font-size:1rem;padding:.6rem 2rem}
-</style>
+${themeLink(input)}
 </head>
 <body>
 <main>
