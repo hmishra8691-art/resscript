@@ -26,6 +26,9 @@
     },
     {
       "path": "../../packages/observability"
+    },
+    {
+      "path": "../../packages/egress"
     }
   ],
   "exclude": [

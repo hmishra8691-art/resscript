@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@resscript/compiler": "workspace:*",
+    "@resscript/egress": "workspace:*",
     "@resscript/observability": "workspace:*",
     "@resscript/schema": "workspace:*",
     "pg": "^8.13.0"

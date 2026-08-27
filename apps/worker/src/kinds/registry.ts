@@ -8,8 +8,8 @@
  * helpers can use.
  *
  * P1-08 added `compile`; P1-12 added `export` (which DID come with a migration — 0012 — but for
- * `app.exports` and its read RPC, not for the kind string). `design` (P1-13) and `reconcile`
- * (P2 quotas) each add one line here plus one file next to `noop.ts` — the kinds enumerated in
+ * `app.exports` and its read RPC, not for the kind string). P2-10 added `webhook`; `design` (P1-13) and
+ * `reconcile` (P2 quotas) each add one line here plus one file next to `noop.ts` — the kinds enumerated in
  * DB §10.1's `kind` comment. Nothing on the database side is needed for the kind itself: 0003
  * made `ops.jobs.kind` free text with a format CHECK on purpose, "because job kinds are an
  * implementation detail of apps/worker and adding one must not require a migration", and
@@ -48,21 +48,40 @@ import {
   type ExportEnvironment,
   type ExportPayload,
 } from './export.js';
+import {
+  webhookJob,
+  WEBHOOK_KIND,
+  unconfiguredWebhookEnvironment,
+  type WebhookEnvironment,
+  type WebhookPayload,
+} from './webhook.js';
 
 /** What the kinds that need more than a payload are given. One field per such kind. */
 export interface WorkerDependencies {
   readonly compile?: CompileEnvironment;
   readonly export?: ExportEnvironment;
+  readonly webhook?: WebhookEnvironment;
 }
 
 export function buildRegistry(
   deps: WorkerDependencies = {},
-): JobRegistry<{ noop: NoopPayload; compile: CompilePayload; export: ExportPayload }> {
+): JobRegistry<{
+  noop: NoopPayload;
+  compile: CompilePayload;
+  export: ExportPayload;
+  webhook: WebhookPayload;
+}> {
   return JobRegistry.create()
     .register(NOOP_KIND, noopJob)
     .register(COMPILE_KIND, compileJob(deps.compile ?? unconfiguredCompileEnvironment()))
-    .register(EXPORT_KIND, exportJob(deps.export ?? unconfiguredExportEnvironment()));
+    .register(EXPORT_KIND, exportJob(deps.export ?? unconfiguredExportEnvironment()))
+    .register(WEBHOOK_KIND, webhookJob(deps.webhook ?? unconfiguredWebhookEnvironment()));
 }
 
 /** kind → parsed payload type, derived from the registry rather than restated. */
-export type WorkerPayloads = { noop: NoopPayload; compile: CompilePayload; export: ExportPayload };
+export type WorkerPayloads = {
+  noop: NoopPayload;
+  compile: CompilePayload;
+  export: ExportPayload;
+  webhook: WebhookPayload;
+};

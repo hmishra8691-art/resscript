@@ -28,6 +28,8 @@
  * resolves once, validates every returned address, and then connects to a **pinned address** with
  * the original `Host` header — which is what makes the check and the connection the same decision.
  *
+ * The address rules themselves live in `@resscript/egress`, shared with the webhook deliverer.
+ *
  * ## What is deliberately refused rather than supported
  *
  * Redirects are not followed. A 30x is returned to the script as-is, because following one means
@@ -41,6 +43,10 @@
 import { lookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { createLogger } from '@resscript/observability';
+// The SHARED predicate. apps/worker's webhook delivery imports the same one, because a webhook URL
+// and a survey.http URL are the same SSRF sink and two blocklists is strictly worse than one — see
+// that package's header.
+import { isBlockedAddress } from '@resscript/egress';
 
 const log = createLogger({ service: 'runtime-egress' });
 
@@ -117,56 +123,6 @@ const FORBIDDEN_HEADERS = new Set([
   'forwarded',
 ]);
 
-/** The metadata addresses, by name, because they are the target this whole module exists to stop. */
-const METADATA_ADDRESSES = new Set([
-  '169.254.169.254', // AWS / Azure / GCP / DigitalOcean / Oracle
-  '169.254.170.2', // AWS ECS task metadata
-  '100.100.100.200', // Alibaba Cloud
-  'fd00:ec2::254', // AWS IMDSv6
-]);
-
-/**
- * Is this a resolved address a survey script must never reach?
- *
- * Exported because it is the security-critical predicate and deserves to be tested directly rather
- * than only through a live request. Written against the parsed octets, not against a regex on the
- * string: `010.0.0.1` and `0x0a000001` are both `10.0.0.1` to a resolver, and a string check would
- * pass them.
- */
-export function isBlockedAddress(address: string, family: number): boolean {
-  if (METADATA_ADDRESSES.has(address.toLowerCase())) return true;
-
-  if (family === 4) {
-    const octets = address.split('.').map(part => Number(part));
-    if (octets.length !== 4 || octets.some(o => !Number.isInteger(o) || o < 0 || o > 255)) {
-      // Unparseable is blocked, not allowed: an address this function cannot reason about is one
-      // it cannot vouch for.
-      return true;
-    }
-    const [a, b] = octets as [number, number, number, number];
-    if (a === 0) return true; // 0.0.0.0/8 — "this host"
-    if (a === 10) return true; // RFC1918
-    if (a === 127) return true; // loopback
-    if (a === 169 && b === 254) return true; // link-local, incl. every metadata endpoint
-    if (a === 172 && b >= 16 && b <= 31) return true; // RFC1918
-    if (a === 192 && b === 168) return true; // RFC1918
-    if (a === 100 && b >= 64 && b <= 127) return true; // RFC6598 CGNAT
-    if (a === 192 && b === 0) return true; // 192.0.0.0/24 IETF protocol assignments
-    if (a >= 224) return true; // multicast and reserved
-    return false;
-  }
-
-  const lower = address.toLowerCase();
-  if (lower === '::' || lower === '::1') return true; // unspecified, loopback
-  if (lower.startsWith('fe80')) return true; // link-local
-  if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // ULA
-  if (lower.startsWith('ff')) return true; // multicast
-  // An IPv4-mapped IPv6 address is an IPv4 address wearing a hat, and checking only the v6 rules
-  // would let ::ffff:169.254.169.254 straight through.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-  if (mapped?.[1]) return isBlockedAddress(mapped[1], 4);
-  return false;
-}
 
 /**
  * Build the performer `createScriptHost` takes as `input.http`.
@@ -296,3 +252,7 @@ export function createEgressProxy(policy: EgressPolicy) {
     },
   };
 }
+
+// Re-exported so this module remains the single import site for a caller doing egress, and so the
+// address rules can be tested from here as well as from the package.
+export { isBlockedAddress };

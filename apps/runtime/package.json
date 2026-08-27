@@ -11,6 +11,7 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
+    "@resscript/egress": "workspace:*",
     "@resscript/logic": "workspace:*",
     "@resscript/observability": "workspace:*",
     "@resscript/runtime-core": "workspace:*",

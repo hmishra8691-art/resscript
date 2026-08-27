@@ -4,13 +4,28 @@
     "outDir": "dist",
     "rootDir": "src",
     "tsBuildInfoFile": "dist/.tsbuildinfo",
-    "lib": ["ES2022"],
-    "types": ["node"]
+    "lib": [
+      "ES2022"
+    ],
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/**/*"
+  ],
   "references": [
-    { "path": "../../packages/observability" },
-    { "path": "../../packages/schema" },
-    { "path": "../../packages/compiler" }
+    {
+      "path": "../../packages/observability"
+    },
+    {
+      "path": "../../packages/schema"
+    },
+    {
+      "path": "../../packages/compiler"
+    },
+    {
+      "path": "../../packages/egress"
+    }
   ]
 }

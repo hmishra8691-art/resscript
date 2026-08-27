@@ -49,10 +49,15 @@ describe('JobRegistry', () => {
 
   it('buildRegistry registers every shipped kind', () => {
     // The list `registry.kinds()` returns is what the consumer passes to `ops.claim_job`, so a
-    // kind missing here is a queue that silently never drains. `compile` and `export` are
-    // present even with no environment supplied — see `kinds/registry.ts` for why that is
+    // kind missing here is a queue that silently never drains. `compile`, `export` and `webhook`
+    // are present even with no environment supplied — see `kinds/registry.ts` for why that is
     // deliberate.
-    expect(buildRegistry().kinds()).toEqual(['noop', 'compile', 'export']);
+    //
+    // An exact list rather than a `toContain` per kind, deliberately: this assertion is meant to
+    // fail when a kind is ADDED as well as when one goes missing, so that adding one is a
+    // decision somebody made rather than something that happened. It failed on `webhook` (P2-10),
+    // which is the check doing its job.
+    expect(buildRegistry().kinds()).toEqual(['noop', 'compile', 'export', 'webhook']);
   });
 });
 

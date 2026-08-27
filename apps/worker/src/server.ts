@@ -38,6 +38,8 @@ import type { JobStore, PayloadMap } from './index.js';
 import type { CompileEnvironment } from './kinds/compile.js';
 import type { ExportEnvironment } from './kinds/export.js';
 import { buildRegistry } from './kinds/registry.js';
+import { createPgWebhookStore } from './webhook/store.js';
+import type { WebhookEnvironment } from './kinds/webhook.js';
 import { MemoryJobStore } from './memory-job-store.js';
 import { PgJobStore, type SqlClient } from './pg-job-store.js';
 import { PgPublishStore, poolSessions, type PoolLike } from './publish-store.js';
@@ -134,6 +136,22 @@ function createExportEnvironment(pool: PoolLike | null): ExportEnvironment | und
   };
 }
 
+/**
+ * The `webhook` job's environment, or nothing.
+ *
+ * Takes the database URL rather than the shared pool, because the store's own comment explains why
+ * it wants a small dedicated pool: the unit of work is one delivery, so more connections would only
+ * open more sockets to a receiver that is already slow.
+ */
+function createWebhookEnvironment(): WebhookEnvironment | undefined {
+  const url = env('DATABASE_URL');
+  if (url === undefined) return undefined;
+  return {
+    store: createPgWebhookStore({ databaseUrl: url }),
+    ...(env('WEBHOOK_TIMEOUT_MS') ? { timeoutMs: Number(env('WEBHOOK_TIMEOUT_MS')) } : {}),
+  };
+}
+
 export async function main(): Promise<number> {
   const levelRaw = env('LOG_LEVEL');
   const log = createLogger({
@@ -150,9 +168,11 @@ export async function main(): Promise<number> {
   const { store, backend, pool } = await createStore();
   const compile = createCompileEnvironment(pool);
   const exportEnv = createExportEnvironment(pool);
+  const webhook = createWebhookEnvironment();
   const registry = buildRegistry({
     ...(compile === undefined ? {} : { compile }),
     ...(exportEnv === undefined ? {} : { export: exportEnv }),
+    ...(webhook === undefined ? {} : { webhook }),
   });
 
   const consumer = new Consumer({

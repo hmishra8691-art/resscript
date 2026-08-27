@@ -29,6 +29,9 @@ importers:
 
   apps/runtime:
     dependencies:
+      '@resscript/egress':
+        specifier: workspace:*
+        version: link:../../packages/egress
       '@resscript/logic':
         specifier: workspace:*
         version: link:../../packages/logic
@@ -178,6 +181,9 @@ importers:
       '@resscript/compiler':
         specifier: workspace:*
         version: link:../../packages/compiler
+      '@resscript/egress':
+        specifier: workspace:*
+        version: link:../../packages/egress
       '@resscript/observability':
         specifier: workspace:*
         version: link:../../packages/observability
@@ -225,6 +231,15 @@ importers:
       '@resscript/schema':
         specifier: workspace:*
         version: link:../schema
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.3
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(lightningcss@1.32.0)
+
+  packages/egress:
     devDependencies:
       typescript:
         specifier: ^5.6.3
