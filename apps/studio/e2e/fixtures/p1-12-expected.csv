@@ -1,0 +1,26 @@
+# p1-12-expected.csv — the committed expectation for the MVP journey's CSV export (P1-12:
+# "export CSV and diff it against a committed expected file").
+#
+# THE COLUMN-ORDER CONTRACT. Columns are the artifact's variable_manifest entries with
+# export_include, in MANIFEST ARRAY ORDER — the compiler emits the manifest in document order
+# (content.variables read ORDER BY sort_key), and the export worker never re-sorts
+# (apps/worker/src/kinds/export.ts: "the array order IS the roadmap's 'sort_key order'").
+# So this header IS the seeded survey's document order: Q1..Q25, one scalar column per
+# question, export_column = ref. The seed declares no hidden, system, derived, pii or set
+# variables, so there are no extra columns and no packed ';' cells.
+#
+# ROWS are one per response document, in session_id (= session start) order. The spec
+# completes the qualifier before the screenout and session ids are ULIDs (time-ordered),
+# so the qualifier row sorts first. Values are CODES: an enum answer (Q2..Q5) exports its
+# numeric option code; numerics export String(value). The empty cell is NULL — the
+# screenout answered Q1=17, was terminated by the screener rule on page 1, and never saw
+# pages 2..10, so every other cell is empty.
+#
+# Lines starting with '#' are stripped by the spec's fixture loader before diffing (the
+# worker's own output carries no comments — RFC 4180, CRLF, no BOM; the loader compares
+# line arrays so the EOL convention and trailing newline cannot fail the diff). Volatile
+# columns (session ids, *_at timestamps) would be normalized to '<volatile>' by the loader
+# on both sides if the manifest ever grows them — today it has none.
+Q1,Q2,Q3,Q4,Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,Q14,Q15,Q16,Q17,Q18,Q19,Q20,Q21,Q22,Q23,Q24,Q25
+42,1,2,1,2,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25
+17,,,,,,,,,,,,,,,,,,,,,,,,
