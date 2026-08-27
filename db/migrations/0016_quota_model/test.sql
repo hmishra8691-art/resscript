@@ -33,17 +33,19 @@ BEGIN
 END $$;
 
 -- A legible id from a legible tag.
---
--- The tag is folded through Crockford base32's OWN aliasing rules rather than the caller being
--- asked to avoid I/L/O/U — I and L decode as 1, O decodes as 0, and U is excluded outright (the
--- alphabet drops it to avoid accidental obscenity), so V is the nearest safe substitute. Doing
--- this in the helper rather than in every call site is the difference between a fixture that
--- reads (`qid('qp','plan')`) and one that fails at runtime because a reviewer had to remember
--- four forbidden letters. The first draft of this file did not, and every id built from `main`,
--- `both` and `nopol` violated the domain.
 CREATE FUNCTION pg_temp.qid(p_prefix text, p_tag text) RETURNS app.ulid LANGUAGE sql IMMUTABLE AS
+-- The 'V' is a TERMINATOR, not decoration, and it is the difference between this fixture working
+-- and lying to you. Zero-padding alone is not injective: rpad('S1',25,'0') and rpad('S10',25,'0')
+-- are the SAME string, so sessions `s1` and `s10` would share an id — and in 0017's suite that
+-- made s10's reservation silently EXTEND s1's hold through the holds table's ON CONFLICT, so the
+-- "reservable again after expiry" assertion passed for the wrong reason and the sweep found
+-- nothing to reclaim. A non-'0' terminator makes the tag's length part of the id.
+--
+-- The translate() is Crockford base32's own aliasing (I/L decode as 1, O as 0; U is excluded from
+-- the alphabet, so V is the nearest safe substitute), applied here rather than asking every call
+-- site to remember four forbidden letters.
 $$ SELECT (p_prefix || '_0'
-           || rpad(translate(upper(p_tag), 'ILOU', '110V'), 25, '0'))::app.ulid $$;
+           || rpad(translate(upper(p_tag), 'ILOU', '110V') || 'V', 25, '0'))::app.ulid $$;
 
 -- ---------------------------------------------------------------------------
 -- 1. Structure
