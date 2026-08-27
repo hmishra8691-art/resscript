@@ -11,6 +11,8 @@
  */
 
 export { singleSelect, SingleSelectEditor, SingleSelectRenderer } from './plugins/single-select/react.js';
+export { constantSum, ConstantSumEditor, ConstantSumRenderer } from './plugins/constant-sum/react.js';
+export { currency, CurrencyEditor, CurrencyRenderer } from './plugins/currency/react.js';
 export { ranking, RankingEditor, RankingRenderer } from './plugins/ranking/react.js';
 export { slider, SliderEditor, SliderRenderer } from './plugins/slider/react.js';
 export { multiSelect, MultiSelectEditor, MultiSelectRenderer } from './plugins/multi-select/react.js';
@@ -39,6 +41,8 @@ import { multiSelect } from './plugins/multi-select/react.js';
 import { nps } from './plugins/nps/react.js';
 import { numeric } from './plugins/numeric/react.js';
 import { numericList } from './plugins/numeric-list/react.js';
+import { constantSum } from './plugins/constant-sum/react.js';
+import { currency } from './plugins/currency/react.js';
 import { ranking } from './plugins/ranking/react.js';
 import { rating } from './plugins/rating/react.js';
 import { singleSelect } from './plugins/single-select/react.js';
@@ -63,5 +67,5 @@ export const FIRST_PARTY_PLUGINS: readonly AnyPlugin[] = [
   matrix,
   contentText, contentMedia, consent,
   // ---- Phase 2 (P2-05) ----
-  slider, ranking,
+  slider, ranking, constantSum, currency,
 ];
