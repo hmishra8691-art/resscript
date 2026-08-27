@@ -116,6 +116,7 @@ function run(opts: {
     logic: emptyLogic({ ...(opts.withItemsCell ? { withItemsCell: true } : {}) }),
     seed: SEED,
     vars: {},
+    taggedVars: {},
     evaluate,
     varStateOf: values => values,
   });
@@ -296,6 +297,7 @@ describe('branch conditions', () => {
         logic: emptyLogic(),
         seed: SEED,
         vars: {},
+        taggedVars: {},
         evaluate: () => verdict(),
         varStateOf: v => v,
         evalCondition: () => tri,
@@ -320,6 +322,7 @@ describe('branch conditions', () => {
       logic: emptyLogic(),
       seed: SEED,
       vars: {},
+      taggedVars: {},
       evaluate: () => verdict({ visible: id => id !== 'qst_1' }),
       varStateOf: v => v,
       evalCondition: (_c, e) => {
@@ -340,6 +343,7 @@ describe('branch conditions', () => {
       logic: emptyLogic(),
       seed: SEED,
       vars: {},
+      taggedVars: {},
       evaluate: () => verdict(),
       varStateOf: v => v,
       evalCondition: (_c, e) => {
@@ -363,6 +367,7 @@ describe('branch conditions', () => {
       logic: emptyLogic(),
       seed: SEED,
       vars: {},
+      taggedVars: {},
       evaluate: () => verdict(),
       varStateOf: v => v,
       evalCondition: (_c, e) => {
@@ -382,6 +387,7 @@ describe('branch conditions', () => {
       logic: emptyLogic(),
       seed: SEED,
       vars: {},
+      taggedVars: {},
       evaluate: () =>
         verdict({
           validations: [

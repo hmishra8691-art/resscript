@@ -24,6 +24,7 @@
 import { createLogger } from '@resscript/observability';
 import {
   evaluatePage,
+  tagVars,
   filterSubmit,
   hashString,
   invalidateForward,
@@ -35,6 +36,7 @@ import {
   type RenderPage,
   type RenderedPage,
 } from '@resscript/runtime-core';
+import type { ArtifactManifest } from '@resscript/schema';
 import { evalCondition, evaluate, varStateOf } from '@resscript/logic';
 import type { ArtifactHead } from './artifact/loader.js';
 import type { RehydratedLogic } from '@resscript/runtime-core';
@@ -120,6 +122,7 @@ function evaluateWith(
   session: SessionState,
   logic: RehydratedLogic,
   vars: Record<string, unknown>,
+  manifest: Pick<ArtifactManifest, 'variable_manifest'>,
 ): EvaluatedPage {
   const submitted = new Set(
     session.history.filter(v => v.submitted_at !== null).map(v => String(v.page_id)),
@@ -129,6 +132,10 @@ function evaluateWith(
     logic,
     seed: session.random_seed,
     vars,
+    // The engine's shape, from the manifest's declared types (`var-values.ts`). Step 2 of E §5
+    // is the AUTHORITATIVE re-evaluation; it is authoritative only if it can actually compare a
+    // stored answer to a literal.
+    taggedVars: tagVars(vars, manifest, id => logic.schema.ownerQuestion(id as never) as string | undefined),
     pageSubmitted: id => submitted.has(id),
     evaluate: evaluate as never,
     varStateOf: varStateOf as never,
@@ -230,7 +237,7 @@ export async function handleSubmitCore(
   if (!page) return { kind: 'stale', current_page_id: session0.current_page_id };
 
   // ---- 2. RE-EVALUATE, authoritative, from STORED vars --------------------
-  const before = evaluateWith(page, session0, deps.logic, session0.vars as never);
+  const before = evaluateWith(page, session0, deps.logic, session0.vars as never, deps.head.manifest);
   const shown = shownSet(page, before);
 
   // ---- 3. ANTI-TAMPER FILTER ---------------------------------------------
@@ -257,7 +264,7 @@ export async function handleSubmitCore(
 
   // ---- 4/5. APPLY candidates, then VALIDATE over them ----------------------
   const candidateVars = { ...(session0.vars as Record<string, unknown>), ...filter.accepted };
-  const after = evaluateWith(page, session0, deps.logic, candidateVars);
+  const after = evaluateWith(page, session0, deps.logic, candidateVars, deps.head.manifest);
 
   const failures = [
     ...runValidations({

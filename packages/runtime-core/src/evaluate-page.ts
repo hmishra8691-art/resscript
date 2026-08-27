@@ -105,7 +105,21 @@ export interface EvaluatePageInput {
   readonly logic: RehydratedLogic;
   /** The session seed. Fixed at entry and never changed (ADR-006). */
   readonly seed: string;
+  /**
+   * The session's RAW vars, as stored. Used for piping and rendering, which want the value a
+   * respondent would recognise (a number, a string) rather than a tagged one.
+   */
   readonly vars: { readonly [variableId: string]: unknown };
+  /**
+   * The same vars TAGGED for the engine (`{k:'num',v:34}`), from `tagVars`.
+   *
+   * Required, and that is the whole point: the raw map and the tagged map are both
+   * `Record<string, unknown>` to TypeScript, so an optional field with a raw fallback would let
+   * a call site keep passing raw values and evaluate every comparison against a respondent's
+   * answer as FALSE — which is exactly the defect this field exists to make unrepresentable.
+   * A new caller that forgets it does not compile. See `var-values.ts`' header.
+   */
+  readonly taggedVars: { readonly [variableId: string]: unknown };
   /** Resolved i18n bundle for the session's language, keyed by `label_key`. */
   readonly labels?: { readonly [labelKey: string]: string };
   /** True when a page was submitted. What separates `asked` from `shown`. */
@@ -176,7 +190,7 @@ export function evaluatePage(input: EvaluatePageInput): EvaluatedPage {
     return (items ?? []).map(item => ({ option_id: item.id as never, code: item.code }));
   });
 
-  const verdict = input.evaluate(program, input.varStateOf(input.vars), {
+  const verdict = input.evaluate(program, input.varStateOf(input.taggedVars), {
     orders,
     ...(input.labels ? { labels: input.labels } : {}),
     ...(input.pageSubmitted ? { pageSubmitted: input.pageSubmitted } : {}),
@@ -233,7 +247,7 @@ export function evaluatePage(input: EvaluatePageInput): EvaluatedPage {
   const evalCondition = evalConditionFn
     ? (condition: unknown): boolean | null => {
         const tri = evalConditionFn(condition, {
-          vars: input.varStateOf(input.vars),
+          vars: input.varStateOf(input.taggedVars),
           ctx: {
             orders,
             ...(input.labels ? { labels: input.labels } : {}),

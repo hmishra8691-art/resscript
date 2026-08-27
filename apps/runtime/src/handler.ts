@@ -22,6 +22,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createLogger, requestIdFrom } from '@resscript/observability';
 import {
   deriveKey,
+  tagVars,
   evaluatePage,
   invalidateForward,
   randomAt,
@@ -35,6 +36,7 @@ import {
   type RenderedPage,
 } from '@resscript/runtime-core';
 import { evalCondition, evaluate, varStateOf } from '@resscript/logic';
+import type { ArtifactManifest } from '@resscript/schema';
 import { ArtifactNotFound, type ArtifactHead, type ArtifactLoader } from './artifact/loader.js';
 import { createSession, generateULID } from './entry.js';
 import { rebuildSession, type RuntimeWriter } from './session/durable.js';
@@ -350,6 +352,9 @@ function evaluateAndRender(
   logic: RehydratedLogic,
   labels: { readonly [key: string]: string } | undefined,
   escapeContext: EscapeContext,
+  // The variable manifest, for `tagVars` — the declared TYPE of each variable is the fact the
+  // engine cannot guess and must not (see `var-values.ts`).
+  manifest: Pick<ArtifactManifest, 'variable_manifest'>,
   alwaysTrace = false,
 ): { rendered: RenderedPage; evaluated: EvaluatedPage; debug?: Record<string, unknown> } {
   const submitted = new Set(
@@ -361,6 +366,15 @@ function evaluateAndRender(
     logic,
     seed: session.random_seed,
     vars: session.vars as Record<string, unknown>,
+    // Tagged for the engine, raw for the renderer. `tagVars`' header explains why the two maps
+    // are separate and why this one is not optional.
+    taggedVars: tagVars(
+      session.vars as Record<string, unknown>,
+      manifest,
+      // The engine's own variable→question inverse, so the domain id a value is tagged with is
+      // the one the engine will compare it against.
+      id => logic.schema.ownerQuestion(id as never) as string | undefined,
+    ),
     ...(labels ? { labels } : {}),
     pageSubmitted: pageId => submitted.has(pageId),
     evaluate: evaluate as never,
@@ -433,6 +447,8 @@ export type PageFetcher = (pageId: string) => Promise<RenderPage | null>;
 /** What the interpreter needs to evaluate logic while performing a `render` command. */
 export interface RenderDeps {
   readonly logic: RehydratedLogic;
+  /** The pinned artifact's variable manifest, for tagging vars before evaluation. */
+  readonly manifest: Pick<ArtifactManifest, 'variable_manifest'>;
   readonly labels?: { readonly [key: string]: string };
   readonly escapeContext: EscapeContext;
   readonly quota?: QuotaClient;
@@ -476,6 +492,7 @@ export async function interpret(
           opts.logic,
           opts.labels,
           opts.escapeContext,
+          opts.manifest,
           opts.trace ?? false,
         );
         if (debug) lastDebug = debug;
@@ -882,6 +899,7 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
   const labels = await labelsFor(ctx, head.hash, language);
   const out = await interpret(cmds, next, pageFetcher(ctx, head.hash, language), {
     logic: logicFor(head),
+    manifest: head.manifest,
     escapeContext: 'html_text',
     ...(labels ? { labels } : {}),
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
@@ -994,6 +1012,7 @@ async function handlePageRender(
     logicFor(pinned.head),
     undefined,
     'html_text',
+    pinned.head.manifest,
   );
   // Re-rendering re-stamps the digest. It must, or a mask that moved between the first render and
   // a refresh would leave a digest describing a page the respondent is no longer looking at.
@@ -1193,6 +1212,7 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
       if (outcome.cmds && outcome.cmds.length > 0) {
         await interpret(outcome.cmds, outcome.session, loadPage, {
           logic,
+          manifest: head.manifest,
           escapeContext: 'html_text',
           ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
         });
@@ -1210,6 +1230,7 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
       // late finalize out of the flow walk.
       const out = await interpret(outcome.cmds, outcome.session, loadPage, {
         logic,
+        manifest: head.manifest,
         escapeContext: 'html_text',
         ...(labels ? { labels } : {}),
         ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
@@ -1327,6 +1348,7 @@ async function handleResume(res: ServerResponse, ctx: Ctx, resumeToken: string):
 
   const { rendered } = evaluateAndRender(
     source as unknown as RenderPage, resumed, logicFor(head), undefined, 'html_text',
+    head.manifest,
   );
   const stamped = stampDigest(resumed, session.current_page_id, rendered.digest);
   await ctx.deps.sessions.save(stamped);
@@ -1376,6 +1398,7 @@ async function handleBack(res: ServerResponse, ctx: Ctx): Promise<void> {
   const out = await interpret(cmds, next, pageFetcher(ctx, session.artifact_hash, session.language), {
     ...(backLabels ? { labels: backLabels } : {}),
     logic: logicFor(head),
+    manifest: head.manifest,
     escapeContext: 'html_text',
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
   });
@@ -1612,6 +1635,7 @@ async function handlePreviewEntry(res: ServerResponse, ctx: Ctx, hash: string): 
   const labels = await labelsFor(ctx, hash, language);
   const out = await interpret(entered.cmds, entered.next, pageFetcher(ctx, hash, language), {
     logic: logicFor(head),
+    manifest: head.manifest,
     escapeContext: 'html_text',
     ...(labels ? { labels } : {}),
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
@@ -1784,6 +1808,7 @@ async function handlePreviewReplay(
   // makes customer code auditable makes it replayable.
   const renderOpts: RenderDeps = {
     logic,
+    manifest: head.manifest,
     escapeContext: 'html_text',
     // The verdicts are the point of the panel; a production session's field trace is a 5% digest
     // sample (E §14.1), so replay asks for the full one explicitly.

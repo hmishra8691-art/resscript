@@ -29,7 +29,15 @@ import {
 
 const HASH = 'ab'.repeat(32);
 
-const MANIFEST = { base_language: 'en', languages: ['en'], artifact_hash: '' };
+const MANIFEST = {
+  base_language: 'en',
+  languages: ['en'],
+  artifact_hash: '',
+  // Present because `head()` now refuses a manifest without it: an empty variable world
+  // evaluates every rule to UNKNOWN with no error anywhere, which is the failure the loader
+  // already refuses for `graph.nodes`.
+  variable_manifest: [],
+};
 const GRAPH = {
   page_order: ['pg_1', 'pg_2'],
   nodes: [
@@ -419,5 +427,20 @@ describe('i18n', () => {
     const loader = createLoader({ sources: [memSource(fullFiles())] });
     expect(await loader.i18n(HASH, '../manifest')).toBeNull();
     expect(await loader.i18n(HASH, 'en/../../x')).toBeNull();
+  });
+});
+
+/* ---------------------------------------------------------------- *
+ * The head's own validation
+ * ---------------------------------------------------------------- */
+
+describe('a truncated head is refused, not served', () => {
+  it('refuses a manifest with no variable_manifest', async () => {
+    // The variable manifest is the closed world the anti-tamper filter reads and the types
+    // `tagVars` needs. Without it every rule evaluates against no variables — no error, every
+    // condition UNKNOWN — so the loader treats its absence the way it treats a missing graph.
+    const files = { ...fullFiles(), 'manifest.json': { base_language: 'en', artifact_hash: '' } };
+    const loader = createLoader({ sources: [memSource(files)] });
+    await expect(loader.head(HASH)).rejects.toThrow(/variable_manifest/);
   });
 });

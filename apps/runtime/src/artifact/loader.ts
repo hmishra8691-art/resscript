@@ -250,6 +250,13 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
       if (typeof graph.page_entry !== 'object' || graph.page_entry === null) {
         throw new Error(`Artifact graph has no page_entry index: ${hash}`);
       }
+      // The variable manifest is the closed world the anti-tamper filter reads and the types
+      // `tagVars` needs to hand the engine comparable values. A head without one evaluates every
+      // rule against an empty variable world — no error, no answer, every condition UNKNOWN —
+      // which is the safe-direction-wrong failure this loader already refuses for `graph.nodes`.
+      if (!Array.isArray(manifest.variable_manifest)) {
+        throw new Error(`Artifact manifest has no variable_manifest: ${hash}`);
+      }
 
       const head: ArtifactHead = { hash, manifest, graph, logic };
       heads.set(hash, head);

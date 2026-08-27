@@ -132,3 +132,10 @@ export {
   type PreviewToStudio,
   type StudioToPreview,
 } from './preview-protocol.js';
+
+export {
+  domainIdFor,
+  tagValue,
+  tagVars,
+  type TaggedValue,
+} from './var-values.js';

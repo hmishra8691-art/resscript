@@ -143,6 +143,20 @@ const EMPTY_LOGIC = {
 const REHYDRATED = rehydrate(EMPTY_LOGIC as never);
 
 /**
+ * The manifest a direct `interpret` call needs, for `tagVars`: the declared type of each
+ * variable, which is what turns a stored `1` into the `{k:'enum',v:1,d:…}` the engine compares.
+ */
+const INTERPRET_MANIFEST = {
+  variable_manifest: [
+    {
+      id: 'var_q1', name: 'Q1', kind: 'response', type: 'enum',
+      export_column: 'Q1', export_include: true, pii: false, persist: true,
+      enum_domain: [{ code: 1, label_key: 'q1.o1' }, { code: 2, label_key: 'q1.o2' }],
+    },
+  ],
+} as never;
+
+/**
  * A fake artifact: a head plus a per-language page tree, which is the shape the loader actually
  * serves (C §17). Keeping the fixture split the same way as the real file tree is what makes
  * these tests able to catch a loader that fetches too much.
@@ -220,7 +234,15 @@ function screenoutArtifact(): FakeArtifact {
   return {
     head: {
       hash: HASH,
-      manifest: { base_language: 'en', artifact_hash: HASH },
+      // A real artifact ALWAYS carries a variable manifest (the compiler emits it and the loader
+      // now refuses a head without one). A two-field stub here was the same unrealistic-fixture
+      // trap that once made `filterSubmit` crash — see the status doc's defect list.
+      manifest: {
+        base_language: 'en',
+        artifact_hash: HASH,
+        survey_id: 'svy_0A000000000000000000000000',
+        variable_manifest: [],
+      },
       graph: {
         page_order: [],
         nodes: [
@@ -1073,6 +1095,7 @@ describe('interpret', () => {
     };
     const out = await interpret([{ c: 'render', page_id: 'pg_1' }], s, fetcher(), {
       logic: REHYDRATED,
+      manifest: INTERPRET_MANIFEST,
       escapeContext: 'none',
     });
 
@@ -1090,6 +1113,7 @@ describe('interpret', () => {
     };
     await interpret([{ c: 'render', page_id: 'pg_1' }], session(), counting, {
       logic: REHYDRATED,
+      manifest: INTERPRET_MANIFEST,
       escapeContext: 'none',
     });
 
@@ -1099,6 +1123,7 @@ describe('interpret', () => {
   it('reports a missing page rather than throwing', async () => {
     const out = await interpret([{ c: 'render', page_id: 'pg_ghost' }], session(), fetcher(), {
       logic: REHYDRATED,
+      manifest: INTERPRET_MANIFEST,
       escapeContext: 'none',
     });
 
@@ -1111,7 +1136,7 @@ describe('interpret', () => {
       [{ c: 'finalize', disposition: 'COMPLETE' }],
       session(),
       fetcher(),
-      { logic: REHYDRATED, escapeContext: 'none' },
+      { logic: REHYDRATED, manifest: INTERPRET_MANIFEST, escapeContext: 'none' },
     );
 
     expect(out.disposition).toBe('COMPLETE');
@@ -1123,7 +1148,7 @@ describe('interpret', () => {
       [{ c: 'finalize', disposition: 'CUSTOM', custom_key: 'over_budget' }],
       session(),
       fetcher(),
-      { logic: REHYDRATED, escapeContext: 'none' },
+      { logic: REHYDRATED, manifest: INTERPRET_MANIFEST, escapeContext: 'none' },
     );
 
     expect(out.events).toContainEqual({
@@ -1146,7 +1171,7 @@ describe('interpret', () => {
       ],
       session(),
       fetcher(),
-      { logic: REHYDRATED, escapeContext: 'none' },
+      { logic: REHYDRATED, manifest: INTERPRET_MANIFEST, escapeContext: 'none' },
     );
 
     expect(out.events.map(e => e.kind)).toEqual([
@@ -1165,7 +1190,7 @@ describe('interpret', () => {
       [{ c: 'commit_quota' }, { c: 'release_quota' }],
       session(),
       fetcher(),
-      { logic: REHYDRATED, escapeContext: 'none', quota: quota as never },
+      { logic: REHYDRATED, manifest: INTERPRET_MANIFEST, escapeContext: 'none', quota: quota as never },
     );
 
     expect(calls).toEqual(['commit:S', 'release:S']);
@@ -1184,7 +1209,7 @@ describe('interpret', () => {
       [{ c: 'commit_quota' }],
       session(),
       fetcher(),
-      { logic: REHYDRATED, escapeContext: 'none', quota: quota as never },
+      { logic: REHYDRATED, manifest: INTERPRET_MANIFEST, escapeContext: 'none', quota: quota as never },
     );
 
     expect(out.events.map(e => e.kind)).toContain('quota.commit_unavailable');
@@ -1194,6 +1219,7 @@ describe('interpret', () => {
   it('records a deferred api_call with its node', async () => {
     const out = await interpret([{ c: 'call_api', node_id: 'fn_api' }], session(), fetcher(), {
       logic: REHYDRATED,
+      manifest: INTERPRET_MANIFEST,
       escapeContext: 'none',
     });
 
@@ -1209,7 +1235,7 @@ describe('interpret', () => {
       [{ c: 'emit_event', event: { kind: 'flow.dangling_edge' } }],
       session(),
       fetcher(),
-      { logic: REHYDRATED, escapeContext: 'none' },
+      { logic: REHYDRATED, manifest: INTERPRET_MANIFEST, escapeContext: 'none' },
     );
 
     expect(out.events).toContainEqual({ kind: 'flow.dangling_edge' });
@@ -1227,6 +1253,7 @@ describe('interpret', () => {
 
     const out = await interpret([{ c: 'render', page_id: 'pg_1' }], s, one, {
       logic: REHYDRATED,
+      manifest: INTERPRET_MANIFEST,
       escapeContext: 'html_text',
     });
 
@@ -1624,3 +1651,4 @@ describe('the preview surface', () => {
     expect('var_q1' in (stored?.vars ?? {})).toBe(false);
   });
 });
+
