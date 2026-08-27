@@ -211,6 +211,18 @@ export const debugSessionSchema = z.discriminatedUnion('action', [
     .strict(),
   z
     .object({
+      /**
+       * Replay a RECORDED session (P1-11's acceptance, E §12.3). Unlike the other three actions
+       * this one starts nothing: the runtime loads the session's seed and its stored events and
+       * re-drives the pipeline, writing nothing. The id is shape-checked here because it becomes
+       * a URL path segment upstream and an `app.ulid` at the database boundary.
+       */
+      action: z.literal('replay'),
+      session_id: z.string().regex(/^ses_[0-7][0-9A-HJKMNP-TV-Z]{25}$/),
+    })
+    .strict(),
+  z
+    .object({
       action: z.literal('setvars'),
       session_id: z.string().min(1).max(128),
       vars: z.record(z.unknown()),

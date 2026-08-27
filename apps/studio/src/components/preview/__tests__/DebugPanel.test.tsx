@@ -151,3 +151,87 @@ describe('DebugPanel', () => {
     expect(screen.getByTestId('debug-current-page')).toHaveTextContent('pg_1');
   });
 });
+
+/* ---------------------------------------------------------------- *
+ * Replay — P1-11's acceptance line
+ * ---------------------------------------------------------------- */
+
+const SESSION = 'ses_01HQ8ZG7VYABCDEFGHJKMNPQRS';
+
+/** What `GET /preview/:hash/replay/:session_id` answers, as the proxy passes it through. */
+const replayBody = {
+  session_id: SESSION,
+  artifact_hash: 'a'.repeat(64),
+  seed: 'a3f9c1d2e4b6a8f0c2d4e6b8a0f2c4d6',
+  disposition: 'COMPLETE',
+  steps: [
+    {
+      seq: 2,
+      page_id: 'pg_1',
+      outcome: 'submitted',
+      questions: [{ question_id: 'qst_1', ref: 'Q1', order: { options: [5, 3, 2, 4, 1] } }],
+    },
+    { seq: 3, page_id: 'pg_2', outcome: 'final', questions: [] },
+  ],
+};
+
+describe('DebugPanel replay', () => {
+  function renderPanel(): void {
+    render(<DebugPanel versionId="sv_01JC8KX9Q2M4V7ZB3F0T5N6R2W" />);
+  }
+
+  it('the button is refused until the id is a real session id', () => {
+    stubApi([replayBody]);
+    renderPanel();
+    const field = screen.getByTestId('debug-replay-id');
+    const button = screen.getByTestId('debug-replay-start') as HTMLButtonElement;
+
+    expect(button.disabled).toBe(true);
+    fireEvent.change(field, { target: { value: 'not-a-session' } });
+    expect(button.disabled).toBe(true);
+    // A shape check in the UI as well as in the schema and the endpoint: the id becomes a URL
+    // path segment two hops away, and refusing it here costs the operator nothing.
+    fireEvent.change(field, { target: { value: SESSION } });
+    expect(button.disabled).toBe(false);
+  });
+
+  it('renders the replayed pages and their orders AS RENDERED', async () => {
+    stubApi([replayBody]);
+    renderPanel();
+    fireEvent.change(screen.getByTestId('debug-replay-id'), { target: { value: SESSION } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('debug-replay-start'));
+    });
+
+    expect(screen.getByTestId('debug-replay')).toBeTruthy();
+    expect(screen.getByTestId('replay-seed').textContent).toBe('a3f9c1d2e4b6a8f0c2d4e6b8a0f2c4d6');
+    expect(screen.getByTestId('replay-disposition').textContent).toBe('COMPLETE');
+    // The orders are the point: "the exact pages, option orders and rule verdicts that
+    // respondent saw" is the acceptance sentence, and an order rendered as codes is the half a
+    // programmer actually compares against a client's complaint.
+    const step = screen.getByTestId('replay-step-2');
+    expect(step.textContent).toContain('pg_1');
+    expect(step.textContent).toContain('[5,3,2,4,1]');
+  });
+
+  it('a runtime refusal is shown as data, not a crash', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async (): Promise<Response> =>
+          new Response(JSON.stringify({ error: { code: 'not_found', message: 'no', details: [] } }), {
+            status: 404,
+            headers: { 'content-type': 'application/json' },
+          }),
+      ),
+    );
+    renderPanel();
+    fireEvent.change(screen.getByTestId('debug-replay-id'), { target: { value: SESSION } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('debug-replay-start'));
+    });
+
+    expect(screen.getByRole('alert').textContent).toContain('not_found');
+    expect(screen.queryByTestId('debug-replay')).toBeNull();
+  });
+});

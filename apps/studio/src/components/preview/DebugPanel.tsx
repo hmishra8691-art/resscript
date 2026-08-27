@@ -51,6 +51,29 @@ export function maskedValue(
   return typeof value === 'string' ? value : JSON.stringify(value) ?? 'undefined';
 }
 
+/**
+ * The replay endpoint's answer, as this panel reads it. Declared locally rather than in
+ * `lib/api-types.ts` for the reason the file header gives about wire types this session: the
+ * shape belongs to the runtime's `GET /preview/:hash/replay/:session_id`, and only this
+ * component consumes it. Fields the panel does not render are deliberately absent — reading
+ * fewer fields than the endpoint sends is how a UI survives the endpoint growing.
+ */
+interface ReplayView {
+  readonly session_id: string;
+  readonly seed: string;
+  readonly disposition?: string | null;
+  readonly steps: readonly {
+    readonly seq: number;
+    readonly page_id?: string | null;
+    readonly outcome: string;
+    readonly questions?: readonly {
+      readonly question_id: string;
+      readonly ref?: string;
+      readonly order?: Readonly<Record<string, readonly number[] | undefined>>;
+    }[];
+  }[];
+}
+
 interface SessionState {
   readonly sessionId: string;
   readonly variables: readonly DebugVariableView[];
@@ -65,6 +88,9 @@ interface SessionState {
 export function DebugPanel({ versionId }: DebugPanelProps): React.JSX.Element {
   const [session, setSession] = useState<SessionState | null>(null);
   const [seed, setSeed] = useState('');
+  /** A recorded session's id, for replay (P1-11's acceptance: paste an id, step through it). */
+  const [replayId, setReplayId] = useState('');
+  const [replay, setReplay] = useState<ReplayView | null>(null);
   const [payloadText, setPayloadText] = useState('{}');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +117,24 @@ export function DebugPanel({ versionId }: DebugPanelProps): React.JSX.Element {
     },
     [versionId],
   );
+
+  /**
+   * Replay a RECORDED session — the P1-11 acceptance line, and the one action that reads rather
+   * than drives: the runtime loads that session's seed and its stored events and re-runs the
+   * pipeline, writing nothing. It refuses a session pinned to another artifact, so pasting an id
+   * from a different survey is a 404 rather than a confusing trace.
+   */
+  const startReplay = useCallback(async (): Promise<void> => {
+    setReplay(null);
+    const result = await post({ action: 'replay', session_id: replayId.trim() });
+    if (result === null) return;
+    const asReplay = result as unknown as ReplayView;
+    if (!Array.isArray(asReplay.steps)) {
+      setError('the runtime answered without steps');
+      return;
+    }
+    setReplay(asReplay);
+  }, [post, replayId]);
 
   const start = useCallback(async (): Promise<void> => {
     const step = await post({
@@ -215,6 +259,92 @@ export function DebugPanel({ versionId }: DebugPanelProps): React.JSX.Element {
           {session === null ? 'Start debug session' : 'Restart debug session'}
         </button>
       </div>
+
+      {/* Replay: the acceptance line is "paste a session id and step through what that
+          respondent saw", so the control is literally a field and a button. */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap', marginTop: 8 }}>
+        <label>
+          <span className="rs-muted">Replay session</span>{' '}
+          <input
+            className="rs-input"
+            data-testid="debug-replay-id"
+            value={replayId}
+            placeholder="ses_…"
+            size={34}
+            onChange={(event) => {
+              setReplayId(event.target.value.trim());
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          className="rs-button"
+          data-testid="debug-replay-start"
+          disabled={busy || !/^ses_[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(replayId.trim())}
+          onClick={() => {
+            void startReplay();
+          }}
+        >
+          Replay
+        </button>
+      </div>
+
+      {replay === null ? null : (
+        <section data-testid="debug-replay" style={{ marginTop: 8 }}>
+          <h4 style={{ margin: '4px 0' }}>
+            Replay of <code>{replay.session_id}</code>
+          </h4>
+          <dl style={{ display: 'flex', gap: 16, flexWrap: 'wrap', margin: 0 }}>
+            <div>
+              <dt className="rs-muted">Seed</dt>
+              <dd>
+                <code data-testid="replay-seed">{replay.seed}</code>
+              </dd>
+            </div>
+            <div>
+              <dt className="rs-muted">Disposition</dt>
+              <dd data-testid="replay-disposition">{replay.disposition ?? '—'}</dd>
+            </div>
+            <div>
+              <dt className="rs-muted">Steps</dt>
+              <dd>{replay.steps.length}</dd>
+            </div>
+          </dl>
+          <table className="rs-table" data-testid="replay-steps">
+            <thead>
+              <tr>
+                <th scope="col">seq</th>
+                <th scope="col">page</th>
+                <th scope="col">outcome</th>
+                <th scope="col">orders as rendered</th>
+              </tr>
+            </thead>
+            <tbody>
+              {replay.steps.map((step) => (
+                <tr key={String(step.seq)} data-testid={'replay-step-' + String(step.seq)}>
+                  <td>{step.seq}</td>
+                  <td>
+                    <code>{step.page_id ?? '—'}</code>
+                  </td>
+                  <td>{step.outcome}</td>
+                  <td>
+                    {(step.questions ?? []).map((q) => (
+                      <div key={q.question_id}>
+                        <code>{q.ref ?? q.question_id}</code>{' '}
+                        {Object.entries(q.order ?? {}).map(([axis, codes]) => (
+                          <span key={axis} className="rs-muted">
+                            {axis}: [{(codes ?? []).join(',')}]{' '}
+                          </span>
+                        ))}
+                      </div>
+                    ))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
 
       {error === null ? null : <p role="alert">{error}</p>}
 

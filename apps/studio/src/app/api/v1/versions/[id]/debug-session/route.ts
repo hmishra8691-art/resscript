@@ -70,6 +70,14 @@ export const POST = route<{ id: string }>(async (ctx, req, params) => {
       upstream = await fetch(`${base}?${search(extra)}`, {
         headers: { accept: 'application/json' },
       });
+    } else if (value.action === 'replay') {
+      // The one action that reads rather than drives: the runtime refuses it unless the session
+      // is pinned to THIS artifact, so a replay cannot reach another survey's data through a
+      // token minted here.
+      upstream = await fetch(
+        `${base}/replay/${encodeURIComponent(value.session_id)}?${search({})}`,
+        { headers: { accept: 'application/json' } },
+      );
     } else if (value.action === 'submit') {
       upstream = await fetch(`${base}/submit?${search({ session: value.session_id })}`, {
         method: 'POST',

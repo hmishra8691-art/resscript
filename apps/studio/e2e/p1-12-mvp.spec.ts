@@ -644,9 +644,10 @@ test.describe('P1-12 MVP journey', () => {
   });
 
   /* ------------------------------------------------------------------------ */
-  /* The one leg the product cannot walk yet. Do not fake green.              */
+  /* ALL THREE GAPS THIS FILE ONCE CARRIED ARE CLOSED. The record is kept     */
+  /* here because the next reader of this spec will look for it, and because  */
+  /* what a spec once could not walk is part of how it should be read.        */
   /*                                                                          */
-  /* TWO GAPS THIS FILE ONCE CARRIED ARE CLOSED, and the record of that is    */
   /* worth keeping where the next reader of this spec will look:              */
   /*                                                                          */
   /*  - AUTHORING THE 25 QUESTIONS. P1-03's tree editor and the §2.5 node     */
@@ -665,17 +666,11 @@ test.describe('P1-12 MVP journey', () => {
   /*    attempting a publish. The journey drives the dialog now.              */
   /* ------------------------------------------------------------------------ */
 
-  test.fixme('gap — replay the qualifier session BY ID in the debug panel', () => {
-    // MISSING CAPABILITY: session replay. The P1-11 acceptance reads: "A programmer takes a
-    // session id from a completed test response, pastes it into the debug panel, and steps
-    // through the exact pages, option orders and rule verdicts that respondent saw."
-    // DebugPanel.tsx states what exists instead, verbatim: "this panel drives a PARALLEL test
-    // session over POST /versions/:id/debug-session". The preview protocol deliberately
-    // carries only what has server behaviour ("E's extra messages (`setSeed` as an init field,
-    // `stepBack`, trace levels) are carried where Phase 1 has server behaviour to back them" —
-    // packages/runtime-core/src/preview-protocol.ts), and the runtime has no endpoint that
-    // loads a stored session's events and replays them. The main test's final step asserts
-    // what CAN be asserted: a fresh seed-pinned debug session stepping through the same pages
-    // with rule verdicts and the COMPLETE disposition rendered.
-  });
+  /*  - REPLAY BY SESSION ID. Migration 0014's `runtime.replay_session`,
+   *    `GET /preview/:hash/replay/:session_id`, the `replay` action on the
+   *    debug-session proxy and the panel's own field and table all exist now.
+   *    The journey's final step pastes the qualifier's id and asserts the
+   *    replayed pages, orders and disposition — E §12.3's "highest-value
+   *    message", walkable at last.
+   */
 });
