@@ -20,6 +20,8 @@ import { createArtifactLoader } from './artifact/loader.js';
 import { generateSeed, generateULID } from './entry.js';
 import { createHandler, type RuntimeDeps } from './handler.js';
 import { createScriptHost } from './script/host.js';
+import { createEgressProxy } from './script/egress.js';
+import { withEgress } from './script/egress-bridge.js';
 import { createMemorySessionStore } from './session/store.js';
 import { createPgWriter, createRedisSessionStore } from './session/durable.js';
 import { createQuotaClient } from './quota/index.js';
@@ -113,7 +115,12 @@ export function buildDeps(): RuntimeDeps {
     vendorSecret: makeVendorSecretLookup(process.env['RUNTIME_VENDOR_SECRETS']),
     // The WASM module loads lazily on the first script run, so surveys without scripts pay
     // nothing for this being always-on.
-    scriptHost: createScriptHost(),
+    //
+    // `withEgress` is what makes `survey.http` work at all: without a performer the host denies
+    // every call (`host.ts`, E §13.3), and that is the default here too — an unset
+    // `SCRIPT_EGRESS_ALLOWLIST` means scripts have no network, rather than an unrestricted fetch
+    // with server privileges. Configuring the allowlist is a deliberate act.
+    scriptHost: withEgress(createScriptHost(), makeEgressPerformer()),
     // The preview gate (P1-11). Absent = the preview surface 404s; the control plane that
     // mints preview tokens holds the same secret.
     ...(process.env['PREVIEW_SIGNING_SECRET']
@@ -121,6 +128,35 @@ export function buildDeps(): RuntimeDeps {
       : {}),
     ...(process.env['STUDIO_ORIGIN'] ? { studioOrigin: process.env['STUDIO_ORIGIN'] } : {}),
   };
+}
+
+/**
+ * The egress performer, or `undefined` — which denies every `survey.http` call.
+ *
+ * A comma-separated host allowlist, deliberately one list per deployment rather than per org: the
+ * per-org list belongs in the control plane and is not built yet, and an env var that pretends to be
+ * per-org would be a security control nobody could audit. Stated plainly here so the gap is visible
+ * rather than assumed closed.
+ *
+ * In production an unset allowlist is not an error — it is the correct state for a deployment whose
+ * customers do not use custom JS — so this warns rather than throwing, unlike the secrets above.
+ */
+function makeEgressPerformer(): { perform: ReturnType<typeof createEgressProxy>['perform'] } | undefined {
+  const hosts = (process.env['SCRIPT_EGRESS_ALLOWLIST'] ?? '')
+    .split(',')
+    .map(h => h.trim().toLowerCase())
+    .filter(h => h.length > 0);
+  if (hosts.length === 0) return undefined;
+
+  const proxy = createEgressProxy({
+    hosts,
+    ...(process.env['SCRIPT_EGRESS_TIMEOUT_MS']
+      ? { timeoutMs: Number(process.env['SCRIPT_EGRESS_TIMEOUT_MS']) }
+      : {}),
+  });
+  // Bound rather than passed as the object: `perform` calls `this.check`, so handing over a
+  // detached method reference would lose the receiver and throw on the first call.
+  return { perform: req => proxy.perform(req) };
 }
 
 function makeVendorSecretLookup(raw: string | undefined): (ref: string) => string | null {

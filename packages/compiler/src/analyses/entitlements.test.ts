@@ -54,6 +54,25 @@ function surveyOf(reqs: readonly string[]): Survey {
   };
 }
 
+/** The same survey with `n` script assets, which is what derives the `custom_js` requirement. */
+function surveyWithScripts(reqs: readonly string[], refs: readonly string[]): Survey {
+  const base = surveyOf(reqs);
+  const ids = deterministicIds();
+  return {
+    ...base,
+    assets: {
+      scripts: refs.map((ref) => ({
+        id: ids.next('asset'),
+        ref,
+        scope: 'page' as const,
+        hooks: ['onPageLoad' as const],
+        source: 'survey.log("hi");',
+        runs_on: 'server' as const,
+      })),
+    },
+  };
+}
+
 /** What `resolvePlugins` hands over, as the narrow interface this pass declares. */
 function plugins(entries: readonly (readonly [string, string])[]): PluginEntitlementIndex {
   return { entitlementKeys: new Map(entries) };
@@ -209,5 +228,93 @@ describe('collectEntitlements', () => {
     );
     expect(forwards).toEqual(backwards);
     expect(forwards).toEqual(['a_feature', 'b_feature']);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* custom_js is DERIVED from the assets (roadmap P2-11)                        */
+/* -------------------------------------------------------------------------- */
+
+describe('custom_js', () => {
+  it('is required by the presence of a script, with nothing stored', () => {
+    // The whole point of deriving it: custom JavaScript is the highest-privilege thing an author
+    // can add, and a requirement living only in an editable field would be removable by the same
+    // API call that adds the script.
+    const diagnostics = analyzeEntitlements({
+      survey: surveyWithScripts([], ['tracker']),
+      entitlements: new Set(),
+      plugins: NO_PLUGINS,
+    });
+
+    expect(codes(diagnostics)).toEqual(['CMP-0600']);
+    expect(detailOf(diagnostics, 'CMP-0600')['entitlement_key']).toBe('custom_js');
+    // And the source is named as derived-from-assets, so a UI can link the script rather than
+    // pointing an author at a field they did not fill in.
+    expect(
+      (detailOf(diagnostics, 'CMP-0600')['sources'] as { source: string }[])[0]?.source,
+    ).toBe('custom_js');
+  });
+
+  it('is satisfied when the plan grants it', () => {
+    expect(
+      analyzeEntitlements({
+        survey: surveyWithScripts([], ['tracker']),
+        entitlements: new Set(['custom_js']),
+        plugins: NO_PLUGINS,
+      }),
+    ).toEqual([]);
+  });
+
+  it('is not required by a survey with no scripts', () => {
+    expect(
+      analyzeEntitlements({
+        survey: surveyOf([]),
+        entitlements: new Set(),
+        plugins: NO_PLUGINS,
+      }),
+    ).toEqual([]);
+  });
+
+  it('is ONE diagnostic however many scripts there are', () => {
+    // The entitlement is the capability, not a per-script licence. Five rows for one purchase
+    // decision is the shape that gets a gate switched off wholesale.
+    const diagnostics = analyzeEntitlements({
+      survey: surveyWithScripts([], ['a', 'b', 'c', 'd', 'e']),
+      entitlements: new Set(),
+      plugins: NO_PLUGINS,
+    });
+
+    expect(diagnostics).toHaveLength(1);
+  });
+
+  it('cannot be edited away by stripping the stored list', () => {
+    // A survey that removed `custom_js` from `entitlement_reqs` while keeping the script still
+    // fails — which is the property that makes the derivation worth having.
+    const stripped = surveyWithScripts([], ['tracker']);
+    expect(stripped.entitlement_reqs).toEqual([]);
+
+    const diagnostics = analyzeEntitlements({
+      survey: stripped,
+      entitlements: new Set(),
+      plugins: NO_PLUGINS,
+    });
+
+    expect(codes(diagnostics)).toEqual(['CMP-0600']);
+  });
+
+  it('is recorded in the manifest list, so the record matches what was enforced', () => {
+    // A requirement enforced at publish but absent from the artifact would let a downstream check
+    // disagree with the gate that already passed.
+    expect(collectEntitlements(surveyWithScripts([], ['tracker']), NO_PLUGINS)).toEqual([
+      'custom_js',
+    ]);
+    expect(collectEntitlements(surveyOf([]), NO_PLUGINS)).toEqual([]);
+  });
+
+  it('unions with a stored requirement rather than replacing it', () => {
+    expect(collectEntitlements(surveyWithScripts(['conjoint'], ['t']), NO_PLUGINS)).toEqual([
+      'conjoint',
+      'custom_js',
+    ]);
   });
 });

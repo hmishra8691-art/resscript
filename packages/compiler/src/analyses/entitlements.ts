@@ -25,9 +25,20 @@
  *
  * ## Where a requirement comes from
  *
- * Two sources, and both are enforced, because either alone is bypassable. `survey.entitlement_reqs`
- * is the *stored* list, which is what an API caller sees and can therefore edit; a plugin's
- * `meta.entitlementKey` is the *derived* one, and `PluginMeta` says exactly why it matters: "The
+ * THREE sources, and all three are enforced, because any one alone is bypassable.
+ * `survey.entitlement_reqs` is the *stored* list, which is what an API caller sees and can
+ * therefore edit; a plugin's `meta.entitlementKey` is one *derived* one; and the presence of a
+ * script asset derives `custom_js` (roadmap P2-11: "`entitlement_reqs` gains `custom_js`, enforced
+ * at publish").
+ *
+ * The third is derived rather than stored for exactly the reason the second is. Custom JavaScript
+ * is the highest-privilege thing an author can add to a survey — ADR-005 built an entire QuickJS
+ * sandbox and an egress proxy around it — and a requirement that lived only in an editable field
+ * would be removable by the same API call that adds the script. Deriving it from
+ * `survey.assets.scripts` means the requirement appears the moment the capability is used and
+ * cannot be edited away without deleting the script.
+ *
+ * `PluginMeta` says exactly why the derived direction matters: "The
  * compiler copies this into `survey.entitlement_reqs`, which is the enforcement that matters — a
  * user cannot route around it by calling the API directly." A survey whose stored list was stripped
  * still fails on the plugin's key, and `collectEntitlements` re-derives the union so the artifact
@@ -100,8 +111,35 @@ function requirementsOf(input: EntitlementsInput): readonly Requirement[] {
       sourceId: questionId,
     });
   }
+
+  // `custom_js`, derived from the assets rather than read from the stored list — see the header on
+  // why the highest-privilege capability in the product must not depend on an editable field.
+  //
+  // ONE requirement however many scripts there are: the entitlement is the capability, not a
+  // per-script licence, and n identical diagnostics for one missing feature is the shape that gets
+  // a gate switched off. The script refs go in `detail.sources`, which is what a UI links.
+  const scripts = input.survey.assets?.scripts ?? [];
+  if (scripts.length > 0) {
+    out.push({
+      key: CUSTOM_JS_ENTITLEMENT,
+      path: pointer('entitlement_reqs'),
+      source: 'custom_js',
+      // The first ref in sorted order identifies the requirement stably; every ref reaches the
+      // diagnostic through the grouping below, which keys on the entitlement rather than the id.
+      sourceId: [...scripts.map(script => script.ref)].sort().join(','),
+    });
+  }
   return out;
 }
+
+/**
+ * The entitlement key a survey with any script asset requires.
+ *
+ * A named constant rather than a literal at the one call site, because the billing side has to
+ * grant exactly this string and a typo would produce a survey nobody can publish with a message
+ * naming a feature nobody sells.
+ */
+export const CUSTOM_JS_ENTITLEMENT = 'custom_js';
 
 export function analyzeEntitlements(input: EntitlementsInput): readonly CompileDiagnostic[] {
   const granted = input.entitlements;
@@ -167,5 +205,11 @@ export function collectEntitlements(
   for (const key of plugins.entitlementKeys.values()) {
     if (key !== '') out.add(key);
   }
+  // The same derivation `requirementsOf` applies, and it has to be here too: the manifest's list is
+  // what the runtime and the billing side read, so a requirement that was ENFORCED at publish but
+  // absent from the record would let a downstream check disagree with the gate that already passed.
+  // One derivation stated twice is a risk; the alternative — a manifest that omits the capability a
+  // survey actually uses — is a certainty.
+  if ((survey.assets?.scripts ?? []).length > 0) out.add(CUSTOM_JS_ENTITLEMENT);
   return [...out].sort();
 }
