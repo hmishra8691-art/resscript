@@ -10,6 +10,7 @@
 
 import { beforeEach, describe, it, expect } from 'vitest';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { canonicalString, signCanonical } from './vendor/verify.js';
 import {
   createHandler,
   interpret,
@@ -1909,3 +1910,150 @@ describe('the preview surface', () => {
   });
 });
 
+/* ---------------------------------------------------------------- *
+ * Entry security and inbound parameter binding (P2-04)
+ * ---------------------------------------------------------------- */
+
+describe('entry signature verification', () => {
+  const SIGNING_SECRET = 'vendor-shared-secret';
+
+  /** The signed vendor, plus the hidden variable its `pid` binds to. */
+  function signedVendorArtifact(): FakeArtifact {
+    const base = linearArtifact();
+    const head = base.head as unknown as {
+      manifest: { variable_manifest: unknown[] };
+      vendors?: unknown;
+    };
+    return {
+      ...base,
+      head: {
+        ...(base.head as object),
+        manifest: {
+          ...(head.manifest as object),
+          variable_manifest: [
+            ...head.manifest.variable_manifest,
+            {
+              id: 'var_pid', name: 'VENDOR_PID', kind: 'hidden', type: 'text',
+              export_column: 'VENDOR_PID', export_include: true, pii: false, persist: true,
+            },
+          ],
+        },
+        vendors: [
+          {
+            id: 'ven_01', ref: 'V_A', name: 'Panel A',
+            inbound_params: [{ param: 'pid', variable_ref: 'VENDOR_PID', required: true }],
+            security: {
+              hash_param: 'hash', algorithm: 'sha256', secret_ref: 'vault://v_a',
+              signed_params: ['pid', 'ts'],
+            },
+          },
+        ],
+      } as unknown as ArtifactHead,
+    };
+  }
+
+  function entryUrl(over: Record<string, string> = {}): string {
+    const ts = String(Math.floor(1_700_000_000_000 / 1000));
+    const params = new URLSearchParams({ src: 'V_A', pid: 'P12345', ts, ...over });
+    const canonical = canonicalString(params, ['pid', 'ts']);
+    params.set('hash', signCanonical(SIGNING_SECRET, canonical, 'sha256').toString('hex'));
+    return `/s/${TOKEN}?${params.toString()}`;
+  }
+
+  function signedDeps(over: Partial<RuntimeDeps> = {}): RuntimeDeps {
+    return deps({
+      artifacts: loaderFor({ [HASH]: signedVendorArtifact() }),
+      vendorSecret: () => SIGNING_SECRET,
+      ...over,
+    });
+  }
+
+  it('a valid HMAC creates a session with the vendor pid populated', async () => {
+    const sessions = createMemorySessionStore();
+    const d = signedDeps({ sessions });
+
+    const r = await call(d, { path: entryUrl() });
+
+    expect(r.status).toBe(200);
+    const saved = await sessions.load(String(r.body.session_id));
+    expect(saved?.vars['var_pid' as never]).toBe('P12345');
+    // `vendor_ref` was declared and read at redirect time but never SET, so `by_vendor` redirect
+    // precedence could not fire for any respondent.
+    expect(saved?.vendor_ref).toBe('V_A');
+  });
+
+  it('one character of pid changed creates NO session row — the acceptance criterion', async () => {
+    const sessions = createMemorySessionStore();
+    const d = signedDeps({ sessions });
+    const tampered = entryUrl().replace('pid=P12345', 'pid=P12346');
+
+    const r = await call(d, { path: tampered });
+
+    expect(r.status).toBe(403);
+    expect(r.body.reason).toBe('INVALID_LINK');
+    // Nothing was written. A check that ran after session creation would already have burned a
+    // session id, an entry-params row and possibly a quota reservation (security §9).
+    expect(await sessions.load('ID000000000000000000000001')).toBeNull();
+  });
+
+  it('does not tell the caller WHICH check failed', async () => {
+    // The reason is logged, never returned: naming it turns the error page into an oracle for
+    // forging a link.
+    const d = signedDeps();
+    const r = await call(d, { path: entryUrl().replace('pid=P12345', 'pid=X') });
+
+    expect(JSON.stringify(r.body)).not.toContain('sig_');
+    expect(JSON.stringify(r.body)).not.toContain('mismatch');
+  });
+
+  it('refuses when the deployment has no secret for a vendor that declares signing', async () => {
+    const d = signedDeps({ vendorSecret: () => null });
+
+    const r = await call(d, { path: entryUrl() });
+
+    expect(r.status).toBe(403);
+  });
+
+  it('a link naming no vendor is unsigned and still admitted', async () => {
+    // Direct traffic and QR codes have no `src`. Unsigned is a recorded state, not a refusal.
+    const sessions = createMemorySessionStore();
+    const d = signedDeps({ sessions });
+
+    const r = await call(d, { path: `/s/${TOKEN}` });
+
+    expect(r.status).toBe(200);
+    const saved = await sessions.load(String(r.body.session_id));
+    expect(saved?.vendor_ref).toBeNull();
+  });
+
+  it('an undeclared query parameter binds to no variable', async () => {
+    // The query string is the one input a respondent types freely.
+    const sessions = createMemorySessionStore();
+    const d = signedDeps({ sessions });
+
+    const r = await call(d, { path: `${entryUrl()}&var_q1=2` });
+
+    expect(r.status).toBe(200);
+    const saved = await sessions.load(String(r.body.session_id));
+    expect(saved?.vars['var_q1' as never]).toBeUndefined();
+  });
+
+  it('a replayed nonce is refused and creates no session', async () => {
+    const sessions = createMemorySessionStore();
+    const seen = new Set<string>();
+    const d = signedDeps({
+      sessions,
+      consumeNonce: (key: string) => {
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      },
+    });
+    const url = `${entryUrl()}&n=abc123`;
+
+    expect((await call(d, { path: url })).status).toBe(200);
+    const second = await call(d, { path: url });
+    expect(second.status).toBe(403);
+    expect(second.body.reason).toBe('INVALID_LINK');
+  });
+});

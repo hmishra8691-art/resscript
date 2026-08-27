@@ -769,6 +769,10 @@ export const SCHEMA_DEFS: { readonly [name: string]: SchemaDesc } = {
     hash_param: req(str()),
     algorithm: req(str(['sha256', 'sha1', 'md5'])),
     secret_ref: req(str()),
+    signed_params: opt(arr(str())),
+    max_skew_s: opt(num(true)),
+    timestamp_param: opt(str()),
+    nonce_param: opt(str()),
   }),
   Redirects: object<Redirects>({
     default: req(ref('RedirectMap')),

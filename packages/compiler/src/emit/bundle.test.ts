@@ -311,3 +311,136 @@ function quotaConfig(): QuotaConfig {
     plans: [],
   };
 }
+
+/* -------------------------------------------------------------------------- */
+/* vendors.json and the secret guard (security §10, roadmap P2-04)             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Security §10 calls an HMAC secret in a CDN-served artifact "the single worst bug available in
+ * this design" and says the compiler must hard-reject one. These are that rejection's tests.
+ *
+ * The whitelist matters as much as the throw: a blacklist of field names to strip would silently
+ * pass the next field somebody adds to `VendorSecurity`, and the failure would be invisible until
+ * a secret was already on a CDN.
+ */
+describe('vendors.json', () => {
+  const vendor = (security?: Record<string, unknown>) =>
+    ({
+      id: 'ven_01ABC',
+      ref: 'V_A',
+      name: 'Panel A',
+      inbound_params: [{ param: 'pid', variable_ref: 'VENDOR_PID', required: true }],
+      ...(security ? { security } : {}),
+    }) as never;
+
+  /** The shared fixture's parts, so these tests vary only `vendors`. */
+  function bundleWith(vendors: readonly unknown[]): ReturnType<typeof buildBundle> {
+    const fixture = compileFixture();
+    return buildBundle({
+      manifest: fixture.manifest,
+      graph: fixture.artifactGraph,
+      logic: fixture.artifactLogic,
+      pages: fixture.pages.byLanguage,
+      baseLanguage: fixture.pages.baseLanguage,
+      i18n: { en: fixture.survey.languages.bundles['en'] ?? {} },
+      compiledAt: COMPILED_AT,
+      vendors: vendors as never,
+    });
+  }
+
+  it('emits the file when the survey declares vendors', () => {
+    const bundle = bundleWith([vendor()]);
+
+    const file = bundle.files.find(f => f.path === 'vendors.json');
+    expect(file).toBeDefined();
+    expect(JSON.parse(file?.bytes ?? '[]')).toEqual([
+      {
+        id: 'ven_01ABC',
+        ref: 'V_A',
+        name: 'Panel A',
+        inbound_params: [{ param: 'pid', variable_ref: 'VENDOR_PID', required: true }],
+      },
+    ]);
+  });
+
+  it('omits the file entirely when there are no vendors', () => {
+    expect(bundleWith([]).files.find(f => f.path === 'vendors.json')).toBeUndefined();
+  });
+
+  it('carries secret_ref — a pointer — and only the security fields the runtime needs', () => {
+    const bundle = bundleWith([
+      vendor({
+        hash_param: 'hash',
+        algorithm: 'sha256',
+        secret_ref: 'vault://vendors/v_a',
+        signed_params: ['pid', 'ts'],
+        max_skew_s: 3600,
+      }),
+    ]);
+
+    const emitted = JSON.parse(
+      bundle.files.find(f => f.path === 'vendors.json')?.bytes ?? '[]',
+    ) as { security: Record<string, unknown> }[];
+    expect(emitted[0]?.security).toEqual({
+      hash_param: 'hash',
+      algorithm: 'sha256',
+      secret_ref: 'vault://vendors/v_a',
+      signed_params: ['pid', 'ts'],
+      max_skew_s: 3600,
+    });
+  });
+
+  it('drops an undeclared field rather than passing it through', () => {
+    // The whitelist. A field nobody has reviewed must not reach a CDN just because it was added to
+    // the authoring model.
+    const bundle = bundleWith([
+      vendor({
+        hash_param: 'hash',
+        algorithm: 'sha256',
+        secret_ref: 'vault://v_a',
+        some_future_field: 'whatever',
+      }),
+    ]);
+
+    const emitted = JSON.parse(
+      bundle.files.find(f => f.path === 'vendors.json')?.bytes ?? '[]',
+    ) as { security: Record<string, unknown> }[];
+    expect(emitted[0]?.security).not.toHaveProperty('some_future_field');
+  });
+
+  it('THROWS when a security field looks like a secret value rather than a reference', () => {
+    // A key-shaped string in any field but `secret_ref`. Quietly dropping it would let the same
+    // upstream bug ship again against a vendor whose links then silently fail verification.
+    expect(() =>
+      bundleWith([
+        vendor({
+          hash_param: 'hash',
+          algorithm: 'sha256',
+          secret_ref: 'vault://v_a',
+          timestamp_param: 'K7bQ2xR9tZ4mN8pL3vC6yH1sJ5wD0gF2',
+        }),
+      ]),
+    ).toThrow(/looks like a secret value/);
+  });
+
+  it('does not flag secret_ref itself, however opaque the path', () => {
+    expect(() =>
+      bundleWith([
+        vendor({
+          hash_param: 'hash',
+          algorithm: 'sha256',
+          secret_ref: 'K7bQ2xR9tZ4mN8pL3vC6yH1sJ5wD0gF2xxxx',
+        }),
+      ]),
+    ).not.toThrow();
+  });
+
+  it('does not flag ordinary short parameter names', () => {
+    expect(() =>
+      bundleWith([
+        vendor({ hash_param: 'hash', algorithm: 'sha256', secret_ref: 'v', nonce_param: 'n' }),
+      ]),
+    ).not.toThrow();
+  });
+});

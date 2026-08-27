@@ -80,8 +80,18 @@ const QUOTAS = {
   plans: [],
 };
 
+/** `vendors.json` as the compiler emits it: refs and inbound params, `secret_ref` but no secret. */
+const VENDORS = [
+  {
+    id: 'ven_01ABC',
+    ref: 'V_A',
+    name: 'Panel A',
+    inbound_params: [{ param: 'pid', variable_ref: 'VENDOR_PID', required: true }],
+  },
+];
+
 /**
- * A COMPLETE artifact, `quotas.json` included.
+ * A COMPLETE artifact, `quotas.json` and `vendors.json` included.
  *
  * Complete matters for the tier tests: an optional file the fixture omits is legitimately looked
  * for in every tier (it might be in a later one), so a fixture missing `quotas.json` would make
@@ -94,6 +104,7 @@ function fullFiles(): Record<string, unknown> {
     'graph.json': GRAPH,
     'logic.json': LOGIC,
     'quotas.json': QUOTAS,
+    'vendors.json': VENDORS,
     'pages/en/pg_1.json': PAGE_1,
     'pages/en/pg_2.json': { id: 'pg_2', ref: 'P2', questions: [] },
   };
@@ -110,15 +121,15 @@ function filesWithout(path: string): Record<string, unknown> {
  * ---------------------------------------------------------------- */
 
 /**
- * How many files one head costs: manifest, graph, logic, quotas.
+ * How many files one head costs: manifest, graph, logic, quotas, vendors.
  *
  * Named rather than inlined because three separate tests assert it and what they are each really
  * asserting is "the head is a FIXED cost, independent of survey size / served by one tier" — not
- * the number itself. `quotas.json` made it four (roadmap P2-06); the next addition should be one
- * edit here, and any test that has to change by more than this constant is asserting something
- * else and should say so.
+ * the number itself. `quotas.json` made it four (roadmap P2-06) and `vendors.json` five (P2-04);
+ * each was one edit here, and any test that has to change by more than this constant is asserting
+ * something else and should say so.
  */
-const HEAD_FILE_COUNT = 4;
+const HEAD_FILE_COUNT = 5;
 
 describe('head', () => {
   it('loads manifest, graph and logic', async () => {
@@ -148,6 +159,7 @@ describe('head', () => {
       `${HASH}/logic.json`,
       `${HASH}/manifest.json`,
       `${HASH}/quotas.json`,
+      `${HASH}/vendors.json`,
     ]);
   });
 

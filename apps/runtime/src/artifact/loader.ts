@@ -30,6 +30,7 @@ import { createLogger } from '@resscript/observability';
 import type {
   ArtifactGraph,
   QuotaConfig,
+  Vendor,
   ArtifactLogic,
   ArtifactManifest,
   CompiledPage,
@@ -63,6 +64,14 @@ export interface ArtifactHead {
    * louder event for this case rather than the benign one.
    */
   readonly quotasIndeterminate?: boolean;
+  /**
+   * `vendors.json`, absent when the survey declares none.
+   *
+   * In the head because the entry path needs it before a session exists: binding inbound params to
+   * hidden variables and verifying an entry signature both happen at `POST /s/{token}`, and a
+   * failed signature must create no session at all (security §9).
+   */
+  readonly vendors?: readonly Vendor[];
 }
 
 export class ArtifactNotFound extends Error {
@@ -280,11 +289,12 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
       // Fetched together: the required three are always all needed, and serially they would cost
       // three round trips on the first page view of every session. `quotas.json` joins them
       // because a quota gate is the one step already waiting on Redis — see the field's own note.
-      const [manifest, graph, logic, quotas] = await Promise.all([
+      const [manifest, graph, logic, quotas, vendors] = await Promise.all([
         fetchJson<ArtifactManifest>(hash, 'manifest.json'),
         fetchJson<ArtifactGraph>(hash, 'graph.json'),
         fetchJson<ArtifactLogic>(hash, 'logic.json'),
         fetchOptionalJson<QuotaConfig>(hash, 'quotas.json'),
+        fetchOptionalJson<readonly Vendor[]>(hash, 'vendors.json'),
       ]);
 
       if (!manifest) throw new ArtifactNotFound(hash, 'manifest.json');
@@ -315,6 +325,7 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
         logic,
         ...(quotas.value ? { quotas: quotas.value } : {}),
         ...(quotas.indeterminate ? { quotasIndeterminate: true } : {}),
+        ...(vendors.value ? { vendors: vendors.value } : {}),
       };
       heads.set(hash, head);
       log.info('artifact_head_loaded', {

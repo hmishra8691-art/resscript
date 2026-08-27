@@ -19,7 +19,7 @@ import type { ContentNodeId, PageId, QuestionId, VariableId } from '../ids.js';
 import type { Expr, Iso8601, JsonObject, RandomizationSpec } from './common.js';
 import type { FlowNode } from './flow.js';
 import type { QuotaConfig } from './quotas.js';
-import type { Redirects } from './vendors.js';
+import type { Redirects, Vendor } from './vendors.js';
 import type { ScriptHook, ScriptScope, ScriptTarget } from './assets.js';
 import type { StringBundle } from './i18n.js';
 import type { EnumDomainEntry, VariableKind, VariableType } from './variables.js';
@@ -387,6 +387,15 @@ export interface CompiledArtifact {
    * `content.redirects`. Absent when the survey declares none.
    */
   readonly redirects?: Redirects | null;
+  /**
+   * Vendor configuration (C §9). In the artifact because the runtime binds inbound parameters to
+   * hidden variables and verifies an entry signature BEFORE a session exists — so there is nothing
+   * to read the control plane with, and ADR-001 would bar it anyway.
+   *
+   * Carries `security.secret_ref`, never a secret: the artifact is served from a CDN, and
+   * `emit/bundle.ts`'s `assertNoSecrets` enforces that mechanically (security §10).
+   */
+  readonly vendors?: readonly Vendor[] | null;
   readonly designs?: { readonly [designRef: string]: JsonObject };
   readonly i18n: { readonly [languageCode: string]: StringBundle };
   readonly theme_css?: string | null;

@@ -45,6 +45,8 @@ import { createSession, generateULID } from './entry.js';
 import { rebuildSession, type RuntimeWriter } from './session/durable.js';
 import { gateDecision, type QuotaClient } from './quota/index.js';
 import { planFor, resolveCells } from './quota/cells.js';
+import { bindInboundParams } from './vendor/inbound.js';
+import { vendorFromParams, verifyEntry } from './vendor/verify.js';
 import { handleSubmitCore, type SubmitBody } from './submit.js';
 import {
   renderHtmlPage,
@@ -102,6 +104,19 @@ export interface RuntimeDeps {
   readonly redirectHosts?: readonly string[];
   /** Vendor HMAC secret lookup (E §11.2), injected so the secret source stays out of here. */
   readonly vendorSecret?: (vendorRef: string) => string | null;
+  /**
+   * The vendor's PREVIOUS secret, during a rotation. Security §10 requires two active secrets so a
+   * rotation does not break links already in the field.
+   */
+  readonly vendorSecretPrevious?: (vendorRef: string) => string | null;
+  /**
+   * Consume an entry nonce, returning `true` if it was unused — `SET NX` with a TTL, in Redis.
+   *
+   * Optional because replay protection needs shared state and a single-node dev deployment has
+   * none. Absent means nonces are not checked, which `verifyEntry` treats as exactly that rather
+   * than as a pass on a replayed link it never looked at.
+   */
+  readonly consumeNonce?: (key: string, ttlSeconds: number) => boolean | Promise<boolean>;
   /** The QuickJS host (E §13). Absent = artifacts with server scripts skip their hooks. */
   readonly scriptHost?: ScriptHost;
   /**
@@ -908,6 +923,37 @@ function quotaGateFor(head: ArtifactHead, session: SessionState, now: number): R
   };
 }
 
+/**
+ * The vendor `verifyEntry` is given when the link names none.
+ *
+ * A link with no `src` (direct traffic, a QR code, a test link) is unsigned by definition, and
+ * `verifyEntry` answers `{ ok: true, signed: false }` for a vendor with no `security` block — so
+ * passing this stand-in gets the right answer through the one code path rather than adding a
+ * branch that skips verification entirely. Skipping is how an "unsigned means fine" shortcut later
+ * grows into "unrecognized `src` means fine".
+ */
+const UNSIGNED_VENDOR = {
+  id: 'ven_unsigned' as never,
+  ref: '',
+  name: '',
+  inbound_params: [],
+} as const;
+
+/**
+ * The HMAC secrets to verify this vendor's links against: current first, then any previous still
+ * inside its rotation window.
+ *
+ * Sourced from the deployment (`vendorSecret`), never from the artifact — security §10 calls an
+ * HMAC secret in a CDN-served artifact "the single worst bug available in this design", and
+ * `emit/bundle.ts`'s `assertNoSecrets` enforces the other half of that.
+ */
+function vendorSecretsFor(ctx: Ctx, vendor: { readonly ref: string } | undefined): readonly string[] {
+  if (vendor === undefined || !ctx.deps.vendorSecret) return [];
+  const current = ctx.deps.vendorSecret(vendor.ref);
+  const previous = ctx.deps.vendorSecretPrevious?.(vendor.ref) ?? null;
+  return [current, previous].filter((s): s is string => typeof s === 'string' && s.length > 0);
+}
+
 function asMachineArtifact(head: ArtifactHead): MachineArtifact {
   return head as unknown as MachineArtifact;
 }
@@ -1139,6 +1185,42 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
   }
 
   const now = ctx.deps.now();
+
+  // ---- vendor identification and entry-signature verification (security §10) --------
+  //
+  // BEFORE any session is minted, because the acceptance criterion is that a link with one
+  // character of `pid` changed "returns an error page and creates no session row" — and security §9
+  // puts every terminating fraud check ahead of session creation and quota reservation for the same
+  // reason: admitting a bad respondent and screening them out later still burns a reservation and
+  // skews field pace.
+  //
+  // Identification precedes verification and is not mistaken for it: which vendor the link CLAIMS
+  // to be from is what selects the secret and the signed-parameter list, so it has to be resolved
+  // first, and it stays a claim until `verifyEntry` checks it.
+  const vendor = vendorFromParams(ctx.url.searchParams, head.vendors);
+  const verification = await verifyEntry({
+    params: ctx.url.searchParams,
+    vendor: vendor ?? UNSIGNED_VENDOR,
+    secrets: vendorSecretsFor(ctx, vendor),
+    nowMs: now,
+    ...(ctx.deps.consumeNonce ? { consumeNonce: ctx.deps.consumeNonce } : {}),
+  });
+  if (!verification.ok) {
+    // The reason is logged, not returned: telling a caller *which* check failed turns the error
+    // page into an oracle for forging a link. `INVALID_LINK` is what the respondent sees.
+    log.warn('entry_signature_refused', {
+      request_id: ctx.requestId,
+      vendor_ref: vendor?.ref ?? null,
+      reason: verification.reason,
+    });
+    json(res, 403, {
+      disposition: 'TERMINATE',
+      reason: 'INVALID_LINK',
+      request_id: ctx.requestId,
+    });
+    return;
+  }
+
   const language = head.manifest.base_language;
   const base = createSession({
     // ses_-prefixed: the app.ulid domain requires a kind prefix, and minting it here means
@@ -1153,11 +1235,25 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     language,
   });
 
+  // Declared inbound parameters become hidden variables. Only DECLARED ones: the query string is
+  // the one input a respondent types freely, so binding anything else would let them set any hidden
+  // variable in the survey — including one a quota dimension reads.
+  const inbound = bindInboundParams({
+    params: ctx.url.searchParams,
+    vendor,
+    manifest: head.manifest,
+  });
+
   let session: SessionState = {
     ...base,
     survey_version_id: resolved.survey_version_id,
     is_test: resolved.is_test || resolved.status === 'test',
     entry_params: captureEntryParams(ctx.url),
+    // `vendor_ref` was declared on the session and read at redirect time (E §11.1's
+    // vendor-specific-beats-language-specific precedence) but never SET, so `by_vendor` could not
+    // fire for any respondent. It is set here, from the identification above.
+    vendor_ref: vendor?.ref ?? null,
+    vars: { ...base.vars, ...inbound.vars },
     started_at: now,
     last_activity_at: now,
     server_time_ms: now,

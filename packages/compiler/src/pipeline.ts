@@ -288,6 +288,7 @@ export function compileSurvey(input: CompileInput): CompileResult {
     manifest,
     graph: artifactGraph,
     logic: artifactLogic,
+    ...(survey.vendors && survey.vendors.length > 0 ? { vendors: survey.vendors } : {}),
     pages: pages.byLanguage,
     baseLanguage: pages.baseLanguage,
     i18n,

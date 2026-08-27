@@ -76,6 +76,7 @@ import {
   type QuotaConfig,
   type StringBundle,
   type Survey,
+  type Vendor,
 } from '@resscript/schema';
 
 import type { ArtifactFile, ArtifactBundle } from '../types.js';
@@ -101,10 +102,91 @@ export interface BundleParts {
   readonly compiledAt: Iso8601;
   readonly quotas?: QuotaConfig | null;
   readonly redirects?: Redirects | null;
+  /**
+   * Vendor configuration (C §9), for the runtime's entry path: inbound parameter mapping and
+   * signature verification.
+   *
+   * **This file carries `security.secret_ref`, never a secret.** Security §10 is unambiguous
+   * about why: the artifact is served from a CDN, so "putting an HMAC secret in an artifact would
+   * be the single worst bug available in this design". `assertNoSecrets` below is the mechanical
+   * check rather than a reviewer's memory.
+   */
+  readonly vendors?: readonly Vendor[] | null;
   readonly designs?: { readonly [designRef: string]: JsonObject };
   readonly themeCss?: string | null;
   readonly scripts?: { readonly [ref: string]: string };
 }
+
+/**
+ * Strip anything from a vendor that could be a secret VALUE rather than a reference.
+ *
+ * Security §10: the artifact is served from a CDN, and "putting an HMAC secret in an artifact
+ * would be the single worst bug available in this design", so it says the compiler must
+ * hard-reject one. This is that rejection, and it is a whitelist rather than a blacklist on
+ * purpose — a blacklist of field names to strip would silently pass the next field somebody adds.
+ * Only the fields the runtime provably needs survive; `secret_ref` is a POINTER into the secrets
+ * store and is safe, the secret it names is fetched by the deployment and never travels with the
+ * artifact.
+ *
+ * A throw rather than a filter for a field that looks like a literal secret: a survey that reached
+ * here with one is a bug upstream, and quietly dropping it would let the same bug ship again
+ * against a vendor whose links then silently fail verification.
+ */
+function assertNoSecrets(vendor: Vendor): Vendor {
+  const security = vendor.security;
+  if (security) {
+    for (const [key, value] of Object.entries(security)) {
+      // `secret_ref` is the only field allowed to look like an opaque credential, and it is a
+      // reference by contract. Anything else carrying a long opaque string is a secret that
+      // escaped into the survey model.
+      if (key === 'secret_ref') continue;
+      if (typeof value === 'string' && LOOKS_LIKE_SECRET.test(value)) {
+        throw new Error(
+          `Vendor ${vendor.ref} security.${key} looks like a secret value, not a reference. ` +
+            'Artifacts are served from a CDN; secrets must live in the secrets store and be ' +
+            'named by secret_ref (security §10).',
+        );
+      }
+    }
+  }
+  return {
+    id: vendor.id,
+    ref: vendor.ref,
+    name: vendor.name,
+    inbound_params: vendor.inbound_params,
+    ...(vendor.entry_url_template === undefined
+      ? {}
+      : { entry_url_template: vendor.entry_url_template }),
+    ...(vendor.max_completes === undefined ? {} : { max_completes: vendor.max_completes }),
+    ...(vendor.quota_plan_overrides === undefined
+      ? {}
+      : { quota_plan_overrides: vendor.quota_plan_overrides }),
+    ...(security
+      ? {
+          security: {
+            hash_param: security.hash_param,
+            algorithm: security.algorithm,
+            secret_ref: security.secret_ref,
+            ...(security.signed_params === undefined
+              ? {}
+              : { signed_params: security.signed_params }),
+            ...(security.max_skew_s === undefined ? {} : { max_skew_s: security.max_skew_s }),
+            ...(security.timestamp_param === undefined
+              ? {}
+              : { timestamp_param: security.timestamp_param }),
+            ...(security.nonce_param === undefined ? {} : { nonce_param: security.nonce_param }),
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * 32+ characters of unbroken base64/hex-ish text: what a key looks like and what a parameter name,
+ * an algorithm name or a secrets-store path does not. Deliberately loose — a false positive here
+ * costs a publish and a clear error, a false negative costs a secret on a CDN.
+ */
+const LOOKS_LIKE_SECRET = /^[A-Za-z0-9+/=_-]{32,}$/;
 
 export function buildBundle(parts: BundleParts): ArtifactBundle {
   // The stored manifest, with the two volatile fields blanked whatever the caller passed.
@@ -142,6 +224,14 @@ export function buildBundle(parts: BundleParts): ArtifactBundle {
   const redirects = parts.redirects;
   if (redirects !== undefined && redirects !== null) {
     files.push(jsonFile('redirects.json', redirects));
+  }
+
+  // Vendors, same optional-file shape. The runtime needs `inbound_params` to bind entry params to
+  // hidden variables and `security` to verify an entry signature, both of which happen before a
+  // session exists and therefore before anything can read the control plane (ADR-001).
+  const vendors = parts.vendors;
+  if (vendors !== undefined && vendors !== null && vendors.length > 0) {
+    files.push(jsonFile('vendors.json', vendors.map(assertNoSecrets)));
   }
 
   const designs = parts.designs;

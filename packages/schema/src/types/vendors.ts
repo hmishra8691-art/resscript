@@ -23,6 +23,28 @@ export interface VendorSecurity {
   readonly algorithm: 'sha256' | 'sha1' | 'md5';
   /** A reference to a secret in the vault. The secret itself is never in the survey model. */
   readonly secret_ref: string;
+  /**
+   * The parameters that go into the canonical signed string, in the vendor's declared order.
+   *
+   * **Signing a declared subset rather than the raw query string is the whole security property**
+   * (security §10). A raw query makes `?pid=1&pid=2` and parameter reordering into bypasses, and
+   * every proxy that normalizes a query string breaks the signature. Empty or absent means the
+   * vendor signs nothing checkable, which `verifyEntry` treats as a misconfiguration rather than as
+   * a pass — a signature over no input is not a signature.
+   */
+  readonly signed_params?: readonly string[];
+  /**
+   * How far the entry link's `ts` may be from now, in seconds. Defaults to 86400.
+   *
+   * Generous on purpose: panel links are emailed and clicked late (security §10). A window is
+   * still REQUIRED — without one a leaked link never expires — which is why the default is a
+   * large number rather than no check.
+   */
+  readonly max_skew_s?: number;
+  /** The query parameter carrying the freshness timestamp (epoch seconds). Defaults to `ts`. */
+  readonly timestamp_param?: string;
+  /** The query parameter carrying the single-use nonce. Defaults to `n`. */
+  readonly nonce_param?: string;
 }
 
 export interface Vendor {
