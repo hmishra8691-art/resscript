@@ -15,6 +15,7 @@ export { constantSum, ConstantSumEditor, ConstantSumRenderer } from './plugins/c
 export { currency, CurrencyEditor, CurrencyRenderer } from './plugins/currency/react.js';
 export { formattedText, FormattedTextEditor, FormattedTextRenderer } from './plugins/formatted-text/react.js';
 export { ranking, RankingEditor, RankingRenderer } from './plugins/ranking/react.js';
+export { mediaSelect, MediaSelectEditor, MediaSelectRenderer } from './plugins/media-select/react.js';
 export {
   searchableSelect,
   SearchableSelectEditor,
@@ -52,6 +53,7 @@ import { currency } from './plugins/currency/react.js';
 import { formattedText } from './plugins/formatted-text/react.js';
 import { ranking } from './plugins/ranking/react.js';
 import { rating } from './plugins/rating/react.js';
+import { mediaSelect } from './plugins/media-select/react.js';
 import { searchableSelect } from './plugins/searchable-select/react.js';
 import { singleSelect } from './plugins/single-select/react.js';
 import { slider } from './plugins/slider/react.js';
@@ -75,5 +77,5 @@ export const FIRST_PARTY_PLUGINS: readonly AnyPlugin[] = [
   matrix,
   contentText, contentMedia, consent,
   // ---- Phase 2 (P2-05) ----
-  slider, ranking, constantSum, currency, formattedText, searchableSelect,
+  slider, ranking, constantSum, currency, formattedText, searchableSelect, mediaSelect,
 ];
