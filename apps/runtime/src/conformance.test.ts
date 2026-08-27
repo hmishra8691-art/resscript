@@ -13,9 +13,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { randomize, renderPage } from '@resscript/runtime-core';
+import { computeOrders, orderGroupResolver, randomize, renderPage } from '@resscript/runtime-core';
 import { asId } from '@resscript/schema';
 import type {
+  ArtifactGraph,
   CompiledItem,
   CompiledPage,
   CompiledQuestion,
@@ -216,6 +217,100 @@ describe('randomization accepts real schema RandomizationSpecs', () => {
     );
 
     expect(q6.items.map(i => i.code)).toEqual(q5.items.map(i => i.code).filter(c => c !== 2));
+  });
+
+  it('a shared-group spec resolved from a real ArtifactGraph, across a two-question battery', () => {
+    // The seam this milestone actually closed. `randomize` always implemented shared order and
+    // always took the group as an argument — but nothing in the artifact CARRIED a group, so every
+    // caller in the real request path passed `undefined` and each question in a battery shuffled
+    // independently while `randomize` filed `randomize.group_missing`. A ten-brand list declared
+    // as one group across a six-question battery therefore appeared in six different orders, and
+    // it was invisible because each order was individually valid.
+    //
+    // So this test goes through the wire shape rather than a hand-built group: a schema
+    // `ArtifactGraph` with `order_groups`, through `orderGroupResolver`, into `computeOrders` over
+    // a page holding two questions that share the ref — which is what the handler now does per
+    // artifact head.
+    const graph: Pick<ArtifactGraph, 'order_groups'> = {
+      order_groups: {
+        brands: { ref: 'brands', codes: [1, 2, 3, 99], members: ['qst_5.options', 'qst_6.options'] },
+      },
+    };
+    const spec: RandomizationSpec = { mode: 'shuffle', group_ref: 'brands' };
+
+    // Q6 is masked to a subset, which is the case an independent shuffle gets wrong even when both
+    // questions draw from the same seed: the orders only agree if the permutation runs over the
+    // shared canonical list BEFORE filtering.
+    const page = {
+      id: pid('battery'),
+      ref: 'P1',
+      questions: [
+        { id: 'qst_5', ref: 'Q5', question_type: 'multi_select', options: compiledItems(), randomize_options: spec },
+        {
+          id: 'qst_6',
+          ref: 'Q6',
+          question_type: 'multi_select',
+          options: compiledItems().filter(i => i.code !== 2),
+          randomize_options: spec,
+        },
+      ],
+    } as unknown as Parameters<typeof computeOrders>[0];
+
+    const orders = computeOrders(page, 'e'.repeat(32), {
+      groupFor: orderGroupResolver(graph),
+    });
+
+    const q5 = orders['qst_5.options'] ?? [];
+    const q6 = orders['qst_6.options'] ?? [];
+
+    expect(q5).toHaveLength(4);
+    expect(q6).toHaveLength(3);
+    // Q6 is Q5's order with the masked-out brand removed — a subsequence, not merely "some
+    // deterministic order of its own".
+    expect(q6).toEqual(q5.filter(code => code !== 2));
+  });
+
+  it('without order_groups a differently-masked battery disagrees — the defect, pinned', () => {
+    // The counterfactual, so the test above cannot pass for the wrong reason — and it documents
+    // why this bug survived so long. `saltFor` gives precedence to `group_ref` over the axis key,
+    // so two members of a battery already derived the SAME key without any group. When their item
+    // lists are identical they therefore permuted identically and appeared to work; the shared
+    // order was accidental, not arranged.
+    //
+    // It breaks exactly where a battery earns its keep: when the members are masked differently.
+    // Each question then permutes its OWN already-filtered list, and two different-length inputs
+    // under one key give orders that disagree on the items they share. Permuting the shared
+    // canonical list first and filtering second is the only thing that fixes it — which needs a
+    // canonical list, which is what `order_groups` supplies.
+    const spec: RandomizationSpec = { mode: 'shuffle', group_ref: 'brands' };
+    const full = compiledItems();
+    const masked = full.filter(i => i.code !== 2);
+
+    const page = {
+      id: pid('battery2'),
+      ref: 'P1',
+      questions: [
+        { id: 'qst_5', ref: 'Q5', question_type: 'multi_select', options: full, randomize_options: spec },
+        { id: 'qst_6', ref: 'Q6', question_type: 'multi_select', options: masked, randomize_options: spec },
+      ],
+    } as unknown as Parameters<typeof computeOrders>[0];
+
+    const withoutGroups = computeOrders(page, 'f'.repeat(32), { groupFor: orderGroupResolver({}) });
+    const q5 = withoutGroups['qst_5.options'] ?? [];
+    const q6 = withoutGroups['qst_6.options'] ?? [];
+
+    // Q6 is NOT a subsequence of Q5: the battery is out of order, which is the defect.
+    expect(q6).not.toEqual(q5.filter(code => code !== 2));
+
+    // With the registry supplied, the very same page and seed do agree.
+    const withGroups = computeOrders(page, 'f'.repeat(32), {
+      groupFor: orderGroupResolver({
+        order_groups: { brands: { ref: 'brands', codes: [1, 2, 3, 99], members: [] } },
+      }),
+    });
+    expect(withGroups['qst_6.options']).toEqual(
+      (withGroups['qst_5.options'] ?? []).filter(code => code !== 2),
+    );
   });
 
   it('a subset spec reports the codes shown', () => {

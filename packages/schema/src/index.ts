@@ -145,6 +145,7 @@ export type {
   ArtifactManifest,
   ScriptBindingEntry,
   ArtifactGraph,
+  OrderGroupEntry,
   ArtifactLogic,
   ArtifactLogicCell,
   ArtifactLogicSchema,

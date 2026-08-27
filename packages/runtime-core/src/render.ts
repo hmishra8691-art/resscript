@@ -135,7 +135,7 @@ export interface RenderCtx {
   /** Per-item logic verdicts (E §9.2 step 4). */
   readonly optionState?: (question_id: string, axis: Axis, item: RenderItem) => OptionState;
   /** The canonical item list for a shared-order group (E §8.3). */
-  readonly groupFor?: (group_ref: string) => OrderGroup<RenderItem> | undefined;
+  readonly groupFor?: (group_ref: string) => OrderGroup | undefined;
   /**
    * Precomputed display orders, keyed `<question id>.<axis>` — the same map that goes into
    * `EvalContext.orders`.
@@ -233,7 +233,7 @@ export function orderScope(questionId: string, axis: Axis): string {
 export function computeOrders(
   page: RenderPage,
   seed: string,
-  opts: { groupFor?: (group_ref: string) => OrderGroup<RenderItem> | undefined } = {},
+  opts: { groupFor?: (group_ref: string) => OrderGroup | undefined } = {},
 ): { readonly [scope: string]: readonly number[] } {
   const out: { [scope: string]: readonly number[] } = {};
 

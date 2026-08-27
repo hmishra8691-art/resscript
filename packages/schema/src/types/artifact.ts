@@ -95,6 +95,60 @@ export interface ArtifactGraph {
   readonly nodes: readonly FlowNode[];
   /** `page_id → flow node id` entry points, precomputed. */
   readonly page_entry: { readonly [pageId: string]: string };
+  /**
+   * The canonical item list behind every `RandomizationSpec.group_ref` on the survey — E §8.3's
+   * shared order across a battery.
+   *
+   * **Added in artifact schema version 2, append-only.** Omitted before that, and its absence was
+   * not a missing optimization but a silent correctness failure: `packages/runtime-core`'s
+   * `randomize` implements the shared-order algorithm correctly and takes the group as an argument,
+   * but nothing in the artifact carried one, so every caller in the real request path passed
+   * `undefined` and the function fell through to its documented `randomize.group_missing` branch —
+   * an INDEPENDENT shuffle per question. A ten-brand list declared as one group across a
+   * six-question battery therefore appeared in six different orders, which is precisely the defect
+   * `group_ref` exists to prevent, and it was invisible because each question's order was
+   * individually valid.
+   *
+   * **Why this lives in `graph.json` and not on each question.** The group is a survey-wide fact
+   * shared by definition — putting the canonical list on a question would store it once per member
+   * and make "do these six questions agree" a comparison rather than a lookup. `graph.json` is
+   * fetched once and cached for the whole session (C §17), so the cost is paid once no matter how
+   * many pages the battery spans.
+   *
+   * **Why it is language-independent, in a per-language artifact.** Ordering reads only `code`, and
+   * `randomize`'s group path matches the group's entries against the question's own items by code —
+   * it never renders a group entry. Labels would be dead weight that forked one file per language
+   * for a list of integers.
+   */
+  readonly order_groups?: { readonly [groupRef: string]: OrderGroupEntry };
+}
+
+/**
+ * One `group_ref`'s canonical membership: the union of the items of every axis that declares the
+ * group, in ascending `code` order.
+ *
+ * **The union, not the first member's list.** Two questions can share a brand list and be masked
+ * differently, or one can carry a brand the other has retired. Seeding the shared permutation from
+ * one member's list would make the order depend on which question the compiler happened to visit
+ * first — a compile-order dependency in a value the artifact hash covers. The union is a function
+ * of the survey alone.
+ *
+ * **Ascending `code`, not declared position.** `position` is per-axis and densified independently
+ * on each member (`emit/pages.ts`), so two members with the same brands in different authored
+ * orders would produce different canonical lists and therefore different shared permutations.
+ * `code` is the one identifier the schema guarantees is stable and comparable across questions
+ * (`QuestionItem.code`: "stable and independent of `position`").
+ */
+export interface OrderGroupEntry {
+  readonly ref: string;
+  /** Ascending, deduplicated item codes — the permutation domain. */
+  readonly codes: readonly number[];
+  /**
+   * The axes that declare this group, as `questionId.axis`, in flow order. Diagnostic payload for
+   * the runtime's `randomize.group_missing`/mismatch events and for the studio's future
+   * randomization editor; never read by the ordering itself.
+   */
+  readonly members: readonly string[];
 }
 
 export interface CompiledQuestion {

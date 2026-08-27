@@ -277,7 +277,7 @@ export function compileSurvey(input: CompileInput): CompileResult {
     surveyVersionId: input.surveyVersionId,
     plugins: resolution,
   });
-  const artifactGraph = buildArtifactGraph(graph);
+  const artifactGraph = buildArtifactGraph(graph, survey);
   const pages = buildPages({ survey, graph, logic, plugins: resolution });
   const artifactLogic = buildArtifactLogic({ survey, logic });
   const i18n = buildI18n(survey);

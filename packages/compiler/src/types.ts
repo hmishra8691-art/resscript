@@ -19,8 +19,16 @@ import type { PluginRegistry } from '@resscript/question-kit';
 
 import type { CompileDiagnostic } from './diagnostics.js';
 
-/** The artifact schema version this build emits. Distinct from the authoring `schema_version`. */
-export const ARTIFACT_SCHEMA_VERSION = 1;
+/**
+ * The artifact schema version this build emits. Distinct from the authoring `schema_version`.
+ *
+ * Bumped to 2 by the addition of `ArtifactGraph.order_groups` (roadmap P2-03): the canonical item
+ * list behind each `RandomizationSpec.group_ref`, without which shared order across a battery
+ * degraded to an independent shuffle per question. Append-only and optional on the wire, so a
+ * version-1 artifact still loads — it simply has no groups to share, which is the behaviour it
+ * already had.
+ */
+export const ARTIFACT_SCHEMA_VERSION = 2;
 
 /**
  * Everything the compile needs, passed in rather than reached for.

@@ -25,12 +25,14 @@ import {
   tagVars,
   evaluatePage,
   invalidateForward,
+  orderGroupResolver,
   randomAt,
   rehydrate,
   renderPage,
   type Cmd,
   type EvaluatedPage,
   type MachineArtifact,
+  type OrderGroup,
   type RehydratedLogic,
   type RenderPage,
   type RenderedPage,
@@ -329,6 +331,30 @@ function logicFor(head: ArtifactHead): RehydratedLogic {
 }
 
 /**
+ * The shared-order group resolver, cached per artifact hash on the same terms as `logicFor`.
+ *
+ * Supplying this is what makes E §8.3 — one shared random order across a battery — actually
+ * happen. `randomize` has always implemented the algorithm and taken the group as an argument, but
+ * until `graph.order_groups` existed there was nothing to pass, so every call in this file omitted
+ * it and each question in a battery shuffled independently while `randomize` recorded
+ * `randomize.group_missing` into the event stream. The registry now ships in `graph.json`; this is
+ * the per-head adapter.
+ *
+ * A version-1 artifact has no `order_groups`, and `orderGroupResolver` returns a
+ * resolver that answers `undefined` for every ref — the previous behaviour, unchanged, for an
+ * artifact compiled before the field existed.
+ */
+const orderGroupCache = new Map<string, (group_ref: string) => OrderGroup | undefined>();
+
+function groupsFor(head: ArtifactHead): (group_ref: string) => OrderGroup | undefined {
+  const cached = orderGroupCache.get(head.hash);
+  if (cached) return cached;
+  const resolver = orderGroupResolver(head.graph);
+  orderGroupCache.set(head.hash, resolver);
+  return resolver;
+}
+
+/**
  * Evaluate a page's logic and render it.
  *
  * The order matters and is the reason these two are one function: `evaluatePage` computes the
@@ -355,6 +381,10 @@ function evaluateAndRender(
   // The variable manifest, for `tagVars` — the declared TYPE of each variable is the fact the
   // engine cannot guess and must not (see `var-values.ts`).
   manifest: Pick<ArtifactManifest, 'variable_manifest'>,
+  // The shared-order group resolver (E §8.3). Threaded in rather than reached for, because the
+  // orders it influences must be computed ONCE and shared by the engine and the renderer — see the
+  // note above on why those two are one function.
+  groupFor: ((group_ref: string) => OrderGroup | undefined) | undefined,
   alwaysTrace = false,
 ): { rendered: RenderedPage; evaluated: EvaluatedPage; debug?: Record<string, unknown> } {
   const submitted = new Set(
@@ -376,6 +406,7 @@ function evaluateAndRender(
       id => logic.schema.ownerQuestion(id as never) as string | undefined,
     ),
     ...(labels ? { labels } : {}),
+    ...(groupFor ? { groupFor } : {}),
     pageSubmitted: pageId => submitted.has(pageId),
     evaluate: evaluate as never,
     varStateOf: varStateOf as never,
@@ -451,6 +482,8 @@ export interface RenderDeps {
   readonly manifest: Pick<ArtifactManifest, 'variable_manifest'>;
   readonly labels?: { readonly [key: string]: string };
   readonly escapeContext: EscapeContext;
+  /** The pinned artifact's shared-order group resolver (E §8.3), from `groupsFor`. */
+  readonly groupFor?: (group_ref: string) => OrderGroup | undefined;
   readonly quota?: QuotaClient;
   /**
    * Capture the E §14.2 trace even for a non-test session. Replay only — see `evaluateAndRender`.
@@ -493,6 +526,7 @@ export async function interpret(
           opts.labels,
           opts.escapeContext,
           opts.manifest,
+          opts.groupFor,
           opts.trace ?? false,
         );
         if (debug) lastDebug = debug;
@@ -901,6 +935,7 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     logic: logicFor(head),
     manifest: head.manifest,
     escapeContext: 'html_text',
+    groupFor: groupsFor(head),
     ...(labels ? { labels } : {}),
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
   });
@@ -1013,6 +1048,7 @@ async function handlePageRender(
     undefined,
     'html_text',
     pinned.head.manifest,
+    groupsFor(pinned.head),
   );
   // Re-rendering re-stamps the digest. It must, or a mask that moved between the first render and
   // a refresh would leave a digest describing a page the respondent is no longer looking at.
@@ -1348,7 +1384,7 @@ async function handleResume(res: ServerResponse, ctx: Ctx, resumeToken: string):
 
   const { rendered } = evaluateAndRender(
     source as unknown as RenderPage, resumed, logicFor(head), undefined, 'html_text',
-    head.manifest,
+    head.manifest, groupsFor(head),
   );
   const stamped = stampDigest(resumed, session.current_page_id, rendered.digest);
   await ctx.deps.sessions.save(stamped);
@@ -1400,6 +1436,7 @@ async function handleBack(res: ServerResponse, ctx: Ctx): Promise<void> {
     logic: logicFor(head),
     manifest: head.manifest,
     escapeContext: 'html_text',
+    groupFor: groupsFor(head),
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
   });
   await ctx.deps.sessions.save(out.session);
@@ -1637,6 +1674,7 @@ async function handlePreviewEntry(res: ServerResponse, ctx: Ctx, hash: string): 
     logic: logicFor(head),
     manifest: head.manifest,
     escapeContext: 'html_text',
+    groupFor: groupsFor(head),
     ...(labels ? { labels } : {}),
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
   });

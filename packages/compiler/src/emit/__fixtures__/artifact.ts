@@ -384,7 +384,7 @@ export function fixtureOf(survey: Survey, ids: FixtureIds, spec: FixtureSpec = {
   const plugins = resolvePlugins(survey, spec.withPlugins === true ? firstPartyRegistry() : undefined);
 
   const manifest = buildManifest({ survey, surveyVersionId: SURVEY_VERSION_ID, plugins });
-  const artifactGraph = buildArtifactGraph(graph);
+  const artifactGraph = buildArtifactGraph(graph, survey);
   const artifactLogic = buildArtifactLogic({ survey, logic });
   const pages = buildPages({ survey, graph, logic, plugins });
   const i18n = buildI18n(survey);

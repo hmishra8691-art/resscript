@@ -125,7 +125,7 @@ export interface EvaluatePageInput {
   /** True when a page was submitted. What separates `asked` from `shown`. */
   readonly pageSubmitted?: (pageId: string) => boolean;
   /** The canonical item list for a shared-order group (E §8.3). */
-  readonly groupFor?: (group_ref: string) => OrderGroup<RenderItem> | undefined;
+  readonly groupFor?: (group_ref: string) => OrderGroup | undefined;
   readonly evaluate: EvaluateFn;
   readonly varStateOf: VarStateFn;
   /** Omit when the caller has no flow branches to evaluate; `evalCondition` is then absent. */

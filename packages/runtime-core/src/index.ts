@@ -74,9 +74,11 @@ export {
 export {
   randomize,
   applyAnchors,
+  orderGroupResolver,
   saltFor,
   type AnchorSpec,
   type OrderGroup,
+  type OrderGroupWire,
   type RandomizationMode,
   type RandomizationSpec,
   type RandomizationSubBlock,

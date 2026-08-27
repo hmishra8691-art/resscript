@@ -63,6 +63,12 @@ export interface RandomizeItem {
 /**
  * A shared-order group: the group's canonical full item list, declared once in the artifact
  * in code order.
+ *
+ * This is a **permutation domain**, not a source of renderable items. `randomize` permutes it and
+ * maps the result onto the calling axis's own items by `code`; it never returns an entry from here.
+ * That is why the entries need only `id` and `code`, why the artifact stores the group as a bare
+ * code list (`OrderGroupEntry` in `@resscript/schema`), and why the type parameter defaults to the
+ * base `RandomizeItem` rather than being pinned to the caller's richer item type.
  */
 export interface OrderGroup<T extends RandomizeItem = RandomizeItem> {
   readonly ref: string;
@@ -194,7 +200,10 @@ export function randomize<T extends RandomizeItem>(
   items: readonly T[],
   spec: RandomizationSpec,
   seed: string,
-  opts: { axis_key: string; group?: OrderGroup<T> },
+  // `group` is deliberately the base `OrderGroup` and not `OrderGroup<T>`: it is a code domain the
+  // permutation runs over, mapped back onto `items` by code, so it neither needs nor should claim
+  // to carry the caller's item shape.
+  opts: { axis_key: string; group?: OrderGroup },
 ): RandomizeResult<T> {
   if (spec.mode === 'none' || items.length < 2) {
     return { items };
@@ -228,8 +237,19 @@ export function randomize<T extends RandomizeItem>(
       // differently; permuting each question's already-filtered list independently gives them
       // different orders whenever the masks differ, which is precisely what a shared group is
       // for. Permute first, filter second.
-      const present = new Set(items.map(i => i.code));
-      const canonicalOrder = permute(opts.group.canonical, key).filter(i => present.has(i.code));
+      //
+      // The permuted group entries are then mapped back onto THIS axis's own items by code, and
+      // the group's entries are never returned. The group is a permutation domain — a list of
+      // codes — not a source of renderable items: its entries carry no label, no media and no
+      // per-question anchor, so returning them would strip exactly those fields from every option
+      // in a battery. That mattered only on the direct-`randomize` path (`renderAxis` with no
+      // precomputed order); the production path reduces to codes in `computeOrders` and would not
+      // have shown it, which is the kind of latent difference between two call paths worth closing
+      // at the source rather than documenting.
+      const byCode = new Map(items.map(i => [i.code, i]));
+      const canonicalOrder = permute(opts.group.canonical, key)
+        .map(entry => byCode.get(entry.code))
+        .filter((item): item is T => item !== undefined);
       // Any item not in the canonical list (an artifact/group mismatch) is appended in
       // declared order rather than dropped: dropping it would remove an answerable option.
       const seen = new Set(canonicalOrder.map(i => i.code));
@@ -258,4 +278,69 @@ export function randomize<T extends RandomizeItem>(
   }
 
   return { items: anchored, ...(event ? { event } : {}) };
+}
+
+/* ========================================================================== */
+/* Resolving groups out of the artifact (E §8.3, roadmap P2-03)                */
+/* ========================================================================== */
+
+/**
+ * The `groupFor` resolver `computeOrders`/`renderPage` take, built from the artifact's own
+ * `graph.order_groups`.
+ *
+ * This function is small and its existence is the point: before it, `randomize` accepted a group
+ * and every production caller passed `undefined`, so a battery sharing a `group_ref` silently got
+ * an independent shuffle per question (`randomize.group_missing`). The registry now ships in
+ * `graph.json`; this is the two-line adapter from that wire shape to the argument, and putting it
+ * here rather than in `apps/runtime` keeps the wire shape's one consumer next to the algorithm it
+ * feeds — a second adapter written elsewhere is how the two drift.
+ *
+ * **Why the missing registry hid for so long.** `saltFor` gives `group_ref` precedence over the
+ * axis key, so two members of a battery already derived the *same* key with no group present. Where
+ * their item lists were identical they permuted identically and the battery looked correct — the
+ * agreement was accidental rather than arranged. It broke only where a battery earns its keep:
+ * members masked differently each permuted their own already-filtered list, and two inputs of
+ * different length under one key disagree on the items they share. Permute the canonical list
+ * first and filter second is the only fix, and that needs a canonical list. `conformance.test.ts`
+ * pins both halves — the agreement and the counterfactual.
+ *
+ * The group entry carries codes only (see `OrderGroupEntry`), so the `RandomizeItem`s handed back
+ * are code-only stubs. That is exactly what the group path consumes: it permutes this domain and
+ * maps the result onto the axis's real items by code, never rendering an entry.
+ *
+ * Returns `undefined` for an unknown ref rather than an empty group, because the two mean different
+ * things to `randomize`: `undefined` is "no group was supplied" (fall back to an independent
+ * shuffle and say so), while an empty group would claim the battery's shared domain is genuinely
+ * empty and order nothing.
+ */
+/**
+ * A structural mirror of `@resscript/schema`'s `OrderGroupEntry`, declared here rather than
+ * imported for the reason `machine.ts`' header gives for its own mirrors: this package stays
+ * loadable in a browser and in QuickJS. `members` is carried as optional because the wire shape has
+ * it and an exact-object type would reject the real artifact; nothing here reads it.
+ */
+export interface OrderGroupWire {
+  readonly ref: string;
+  readonly codes: readonly number[];
+  readonly members?: readonly string[];
+}
+
+export function orderGroupResolver(
+  graph: { readonly order_groups?: { readonly [groupRef: string]: OrderGroupWire } } | undefined,
+): (group_ref: string) => OrderGroup | undefined {
+  const groups = graph?.order_groups;
+  if (groups === undefined) return () => undefined;
+
+  // Built once per artifact head rather than per render: the entries are immutable, and rebuilding
+  // the stub list on every page would allocate one object per brand per question per page — the
+  // per-render allocation D §10.3 bans on the hot path, in the one place a battery makes it
+  // quadratic.
+  const cache = new Map<string, OrderGroup>();
+  for (const [ref, entry] of Object.entries(groups)) {
+    cache.set(ref, {
+      ref: entry.ref,
+      canonical: entry.codes.map(code => ({ id: `grp:${ref}:${String(code)}`, code })),
+    });
+  }
+  return (group_ref: string) => cache.get(group_ref);
 }

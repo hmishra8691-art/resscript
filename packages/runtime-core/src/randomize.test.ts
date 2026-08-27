@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyAnchors,
+  orderGroupResolver,
   randomize,
   saltFor,
   type OrderGroup,
@@ -218,6 +219,71 @@ describe('shared group order', () => {
       randomize(BRANDS, groupSpec, '9'.repeat(32), { axis_key: 'q.options', group: GROUP }),
     );
     expect(s1).not.toEqual(s2);
+  });
+
+  it('returns the AXIS\'s own items, never the group\'s entries', () => {
+    // The group is a permutation domain — a code list. Its entries carry no label, so returning
+    // them would strip the label off every option in a battery. Only the direct-`randomize` path
+    // (a render with no precomputed order) ever surfaced this, which is why it is asserted at the
+    // source rather than left to the caller.
+    const labelled = BRANDS.map(b => ({ ...b, label: `label-${String(b.code)}` }));
+    const codeOnlyGroup: OrderGroup = {
+      ref: 'brands',
+      canonical: BRANDS.map(b => ({ id: `grp:brands:${String(b.code)}`, code: b.code })),
+    };
+
+    const r = randomize(labelled, groupSpec, SEED, {
+      axis_key: 'qst_5.options',
+      group: codeOnlyGroup,
+    });
+
+    expect(r.items).toHaveLength(labelled.length);
+    for (const item of r.items) {
+      expect(item.label).toBe(`label-${String(item.code)}`);
+      expect(item.id).not.toContain('grp:');
+    }
+  });
+
+  it('still shares the order when the group carries code-only stubs', () => {
+    // The shape the artifact actually ships (`OrderGroupEntry` stores codes only), so the sharing
+    // property has to hold for it and not just for a hand-built group of full items.
+    const codeOnlyGroup: OrderGroup = {
+      ref: 'brands',
+      canonical: [1, 2, 3, 4, 5].map(code => ({ id: `grp:brands:${String(code)}`, code })),
+    };
+    const q5 = randomize(BRANDS, groupSpec, SEED, { axis_key: 'qst_5.options', group: codeOnlyGroup });
+    const q6 = randomize(BRANDS, groupSpec, SEED, { axis_key: 'qst_6.options', group: codeOnlyGroup });
+
+    expect(codes(q5)).toEqual(codes(q6));
+    // Identical to what a group of FULL items in the same code order produces: only `code` is
+    // read, so dropping labels from the wire shape costs nothing.
+    const full = randomize(BRANDS, groupSpec, SEED, { axis_key: 'qst_5.options', group: GROUP });
+    expect(codes(q5)).toEqual(codes(full));
+  });
+
+  it('the canonical list\'s ORDER is part of the shared key, not just its membership', () => {
+    // `permute` is a function of its input sequence, so two groups with the same members in
+    // different orders produce different shared orders. This is why the compiler sorts
+    // `OrderGroupEntry.codes` ascending: every member of a battery must build the identical
+    // canonical sequence, and "the union of the members' items" is a SET until something orders it.
+    // Without the sort, which question the compiler visited first would change every respondent's
+    // order — a compile-order dependency inside the artifact hash.
+    const ascending: OrderGroup = {
+      ref: 'brands',
+      canonical: [1, 2, 3, 4, 5].map(code => ({ id: `a${String(code)}`, code })),
+    };
+    const descending: OrderGroup = {
+      ref: 'brands',
+      canonical: [5, 4, 3, 2, 1].map(code => ({ id: `d${String(code)}`, code })),
+    };
+
+    const up = randomize(BRANDS, groupSpec, SEED, { axis_key: 'q.options', group: ascending });
+    const down = randomize(BRANDS, groupSpec, SEED, { axis_key: 'q.options', group: descending });
+
+    expect(codes(up)).not.toEqual(codes(down));
+    // Both are permutations of the same set — neither is wrong, they simply disagree, which is
+    // the disagreement the compiler's sort removes.
+    expect([...codes(up)].sort()).toEqual([...codes(down)].sort());
   });
 
   it('records an event when group_ref is set but no group was supplied', () => {
@@ -509,5 +575,58 @@ describe('sub_blocks', () => {
       axis_key: 'q.options',
     });
     expect(codes(r)).toEqual([1, 2, 3]);
+  });
+});
+
+/* ---------------------------------------------------------------- *
+ * orderGroupResolver — the artifact adapter (roadmap P2-03)
+ * ---------------------------------------------------------------- */
+
+describe('orderGroupResolver', () => {
+  const graph = {
+    order_groups: {
+      brands: { ref: 'brands', codes: [1, 2, 3, 4, 5] },
+      flavours: { ref: 'flavours', codes: [7, 8] },
+    },
+  };
+
+  it('resolves a declared group to its code domain', () => {
+    const resolve = orderGroupResolver(graph);
+    const group = resolve('brands');
+
+    expect(group?.ref).toBe('brands');
+    expect(group?.canonical.map(i => i.code)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('answers undefined for an unknown ref rather than an empty group', () => {
+    // The two mean different things to `randomize`: undefined is "no group supplied" (independent
+    // shuffle, and say so), while an empty group would claim the shared domain is genuinely empty.
+    const resolve = orderGroupResolver(graph);
+    expect(resolve('nope')).toBeUndefined();
+  });
+
+  it('answers undefined for every ref when the artifact carries no groups', () => {
+    // A version-1 artifact, compiled before `order_groups` existed. Previous behaviour, unchanged.
+    expect(orderGroupResolver({})('brands')).toBeUndefined();
+    expect(orderGroupResolver(undefined)('brands')).toBeUndefined();
+  });
+
+  it('returns the same object for repeated lookups, so a battery allocates once', () => {
+    const resolve = orderGroupResolver(graph);
+    expect(resolve('brands')).toBe(resolve('brands'));
+  });
+
+  it('drives real shared order end to end through randomize', () => {
+    // The whole point: resolver -> randomize -> one order across two questions.
+    const resolve = orderGroupResolver(graph);
+    const groupSpec = spec({ group_ref: 'brands' });
+    const group = resolve('brands');
+
+    const q5 = randomize(BRANDS, groupSpec, SEED, { axis_key: 'qst_5.options', ...(group ? { group } : {}) });
+    const q6 = randomize(BRANDS, groupSpec, SEED, { axis_key: 'qst_6.options', ...(group ? { group } : {}) });
+
+    expect(codes(q5)).toEqual(codes(q6));
+    expect(q5.event).toBeUndefined();
+    expect(q6.event).toBeUndefined();
   });
 });
