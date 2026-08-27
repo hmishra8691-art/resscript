@@ -11,6 +11,8 @@
  */
 
 export { singleSelect, SingleSelectEditor, SingleSelectRenderer } from './plugins/single-select/react.js';
+export { ranking, RankingEditor, RankingRenderer } from './plugins/ranking/react.js';
+export { slider, SliderEditor, SliderRenderer } from './plugins/slider/react.js';
 export { multiSelect, MultiSelectEditor, MultiSelectRenderer } from './plugins/multi-select/react.js';
 export { nps, NpsEditor, NpsRenderer } from './plugins/nps/react.js';
 export { binary, BinaryEditor, BinaryRenderer } from './plugins/binary/react.js';
@@ -37,18 +39,21 @@ import { multiSelect } from './plugins/multi-select/react.js';
 import { nps } from './plugins/nps/react.js';
 import { numeric } from './plugins/numeric/react.js';
 import { numericList } from './plugins/numeric-list/react.js';
+import { ranking } from './plugins/ranking/react.js';
 import { rating } from './plugins/rating/react.js';
 import { singleSelect } from './plugins/single-select/react.js';
+import { slider } from './plugins/slider/react.js';
 import { text } from './plugins/text/react.js';
 import { textarea } from './plugins/textarea/react.js';
 import { textList } from './plugins/text-list/react.js';
 
 /**
- * The Phase-1 first-party plugins, with components.
+ * The first-party plugins, with components.
  *
  * The studio's question-type picker is driven by registry metadata (P1-04's frontend line), so
- * adding a fourth plugin means adding it to this list and nothing else — no file in `apps/studio`
- * names a question type.
+ * adding a plugin means adding it to this list and nothing else — no file in `apps/studio` names a
+ * question type, which is what makes P2-05's "no changes outside question-kit" acceptance line
+ * hold structurally rather than by discipline.
  */
 export const FIRST_PARTY_PLUGINS: readonly AnyPlugin[] = [
   singleSelect, multiSelect, nps,
@@ -57,4 +62,6 @@ export const FIRST_PARTY_PLUGINS: readonly AnyPlugin[] = [
   numeric, numericList, date,
   matrix,
   contentText, contentMedia, consent,
+  // ---- Phase 2 (P2-05) ----
+  slider, ranking,
 ];
