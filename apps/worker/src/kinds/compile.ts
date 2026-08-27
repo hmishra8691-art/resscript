@@ -110,11 +110,14 @@ export type PublishTarget = 'staging' | 'production';
 export interface CompilePayload {
   readonly surveyVersionId: string;
   /**
-   * Where the version goes on success. 0009's `publish_version` refuses anything else ("draft
-   * and review are authoring states; archived is reached by app.rollback_version"), so the
-   * payload cannot express a target the transaction would reject.
+   * Where the version goes on success, or `null` for a DRY compile (H §2.4's
+   * `POST /versions/:id/compile`: "produces diagnostics and an artifact but does not change
+   * status"). 0009's `publish_version` refuses anything but staging/production ("draft and
+   * review are authoring states; archived is reached by app.rollback_version"), so a non-null
+   * payload cannot express a target the transaction would reject — and a null one never reaches
+   * that function at all.
    */
-  readonly targetStatus: PublishTarget;
+  readonly targetStatus: PublishTarget | null;
   /**
    * `acknowledgementKey()` values the author has already accepted, sent by the studio's publish
    * dialog. Keys and not codes: a code acknowledged once would silence the same warning on every
@@ -145,10 +148,14 @@ export interface CompileWarningRecord extends JsonObject {
 }
 
 export interface CompileJobResult extends JsonObject {
-  /** `published` = the transaction ran; `blocked` = warnings still need acknowledgement. */
-  outcome: 'published' | 'blocked';
+  /**
+   * `published` = the publish transaction ran; `blocked` = warnings still need acknowledgement;
+   * `checked` = a dry compile produced diagnostics and an artifact and moved nothing.
+   */
+  outcome: 'published' | 'blocked' | 'checked';
   survey_version_id: string;
-  target_status: PublishTarget;
+  /** `null` on a dry compile — there was no target. */
+  target_status: PublishTarget | null;
   artifact_hash: string;
   artifact_bytes: number;
   error_count: number;
@@ -217,6 +224,7 @@ export function unconfiguredCompileEnvironment(): CompileEnvironment {
     store: {
       loadAuthoringRows: async () => refuse(),
       recordCompileFailure: async () => refuse(),
+      recordDryCompile: async () => refuse(),
       publish: async () => refuse(),
     },
     artifacts: {
@@ -251,11 +259,18 @@ export const COMPILE_STAGES: readonly string[] = [
 export function compileJob(env: CompileEnvironment): JobDefinition<CompilePayload, CompileJobResult> {
   return defineJob({
     parse: (raw): CompilePayload => {
-      const target = p.requiredString(raw, 'target_status');
-      if (target !== 'staging' && target !== 'production') {
-        throw new TypeError(
-          `payload.target_status must be 'staging' or 'production', got ${JSON.stringify(target)}`,
-        );
+      // An ABSENT or null `target_status` is the dry compile. Absent rather than a separate
+      // `dry: true` flag: the payload then says exactly one thing about where the version goes,
+      // and a payload carrying both a target and a dry flag would have a contradictory state.
+      const rawTarget = raw['target_status'];
+      let target: PublishTarget | null = null;
+      if (rawTarget !== undefined && rawTarget !== null) {
+        if (rawTarget !== 'staging' && rawTarget !== 'production') {
+          throw new TypeError(
+            `payload.target_status must be 'staging', 'production' or absent (dry), got ${JSON.stringify(rawTarget)}`,
+          );
+        }
+        target = rawTarget;
       }
       return {
         surveyVersionId: p.requiredString(raw, 'survey_version_id'),
@@ -364,7 +379,9 @@ async function runCompile(
     acknowledgedWarnings.includes(acknowledgementKey(d)),
   );
 
-  if (compiled.unacknowledged.length > 0) {
+  // A dry run does not block on unacknowledged warnings: blocking is the publish gate's job, and
+  // the whole point of checking without publishing is to SEE the warnings you have not signed.
+  if (targetStatus !== null && compiled.unacknowledged.length > 0) {
     ctx.log.info('compile_blocked_on_warnings', {
       survey_version_id: surveyVersionId,
       unacknowledged: compiled.unacknowledged.length,
@@ -408,9 +425,46 @@ async function runCompile(
     written += 1;
   }
 
-  /* ---- 6. the publish transaction --------------------------------------- */
+  /* ---- 6. the publish transaction, or the dry recorder -------------------- */
 
   await stage(ctx, 6, total);
+  if (targetStatus === null) {
+    await env.store.recordDryCompile(identity, {
+      versionId: surveyVersionId,
+      diagnostics: compiled.diagnostics.map(diagnosticJson),
+      artifactHash: bundle.hash,
+      artifactBytes: bundle.bytes,
+    });
+    ctx.log.info('compile_dry_run', {
+      survey_version_id: surveyVersionId,
+      artifact_hash: bundle.hash,
+      warning_count: warnings.length,
+      unacknowledged: compiled.unacknowledged.length,
+    });
+    return {
+      // A dry run's own outcome word. Not 'published' (nothing moved) and not 'blocked' (nothing
+      // was refused) — a studio that had to infer "did this change my version?" from a shared
+      // outcome would eventually infer it wrong.
+      outcome: 'checked',
+      survey_version_id: surveyVersionId,
+      target_status: null,
+      artifact_hash: bundle.hash,
+      artifact_bytes: bundle.bytes,
+      error_count: 0,
+      warning_count: warnings.length,
+      unacknowledged: compiled.unacknowledged.map(warningRecord),
+      acknowledged_count: acknowledgedNow.length,
+      pages: bundle.artifact.graph.page_order.length,
+      languages: Object.keys(bundle.artifact.i18n).length,
+      objects_written: written,
+      objects_reused: reused,
+      token: null,
+      is_test: null,
+      demoted_version_id: null,
+      previous_artifact_hash: null,
+    };
+  }
+
   const outcome = await env.store.publish(identity, {
     versionId: surveyVersionId,
     artifactHash: bundle.hash,

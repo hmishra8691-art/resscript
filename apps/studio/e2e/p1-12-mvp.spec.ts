@@ -644,31 +644,26 @@ test.describe('P1-12 MVP journey', () => {
   });
 
   /* ------------------------------------------------------------------------ */
-  /* The three legs the product cannot walk yet. Do not fake green.            */
+  /* The one leg the product cannot walk yet. Do not fake green.              */
+  /*                                                                          */
+  /* TWO GAPS THIS FILE ONCE CARRIED ARE CLOSED, and the record of that is    */
+  /* worth keeping where the next reader of this spec will look:              */
+  /*                                                                          */
+  /*  - AUTHORING THE 25 QUESTIONS. P1-03's tree editor and the §2.5 node     */
+  /*    mutation API both exist now (`components/tree/`, `POST /versions/:id/ */
+  /*    nodes` and the rest), so the journey's authoring leg is a UI walk     */
+  /*    rather than a seeded fixture. The main test still ACCEPTS a seeded    */
+  /*    survey when `MVP_SURVEY_ID` is provided, because building 25          */
+  /*    questions through the UI on every CI run costs minutes for coverage   */
+  /*    `SurveyTreePane.test.tsx` already provides at the unit level — but    */
+  /*    the capability is no longer missing, and a CI run without the seed    */
+  /*    authors them.                                                        */
+  /*  - THE PUBLISH DIALOG. `components/publish/PublishPane.tsx` is the       */
+  /*    container the dialog was waiting for, mounted as the survey page's    */
+  /*    Publish pane, with `POST /versions/:id/compile` (H §2.4's dry         */
+  /*    compile) beside it so the blocking diagnostic can be seen without     */
+  /*    attempting a publish. The journey drives the dialog now.              */
   /* ------------------------------------------------------------------------ */
-
-  test.fixme('gap — author the 25 questions in the survey this journey creates', () => {
-    // MISSING CAPABILITY: question authoring. The survey page's structure rail says, verbatim:
-    // "The survey tree lands in P1-03. This rail is where it renders — blocks, pages,
-    // questions, and the inline logic annotations that make rules visible in place." And the
-    // only tree route is read-only — `GET /api/v1/versions/:id/tree` answers
-    // "only fields=summary exists until P1-03" for anything more, and no node-mutation
-    // endpoint exists at all. Tracked as the P1-03 tree-editor frontend (roadmap: "Survey tree
-    // with drag-and-drop reorder and nesting, node inspector, question editor shell").
-    // Until it lands, the main test asserts a CI-SEEDED screener-plus-battery instead.
-  });
-
-  test.fixme('gap — see the publish-blocking diagnostic in the publish dialog', () => {
-    // MISSING CAPABILITY: a mounted publish surface. `components/publish/PublishDialog.tsx`
-    // exists and is unit-tested — "Publish dialog with a diagnostics list separating errors
-    // from warnings, per-warning acknowledgement with a recorded note" (P1-08 Frontend) — but
-    // it is "prop-driven … the mutation, the polling and the invalidation belong to the
-    // container", and no page in `src/app` mounts it (the survey page's live panes are Logic /
-    // Preview / Translations / Exports / Field). Tracked in P1-12's remainder ("the end-to-end
-    // MVP polish that makes the whole thing demonstrable"). The main test exercises the same
-    // gate through the routes the container will call: POST /versions/:id/publish and
-    // GET /versions/:id/diagnostics.
-  });
 
   test.fixme('gap — replay the qualifier session BY ID in the debug panel', () => {
     // MISSING CAPABILITY: session replay. The P1-11 acceptance reads: "A programmer takes a

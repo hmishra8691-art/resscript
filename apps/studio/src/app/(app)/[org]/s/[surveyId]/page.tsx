@@ -26,6 +26,7 @@ import { LanguageManager } from '@/components/i18n/LanguageManager';
 import { ExportDialog } from '@/components/exports/ExportDialog';
 import { FieldDashboard } from '@/components/field/FieldDashboard';
 import { RulesPanel } from '@/components/rules/RulesPanel';
+import { PublishPane } from '@/components/publish/PublishPane';
 import { SurveyTreePane } from '@/components/tree/SurveyTreePane';
 
 const PANES = [
@@ -34,6 +35,7 @@ const PANES = [
   'Validation',
   'Code',
   'Problems',
+  'Publish',
   'Preview',
   'Translations',
   'Exports',
@@ -47,6 +49,7 @@ const PANES = [
  */
 const LIVE_PANES: readonly (typeof PANES)[number][] = [
   'Logic',
+  'Publish',
   'Preview',
   'Translations',
   'Exports',
@@ -186,6 +189,17 @@ export default function SurveyPage({
               // Rules are draft-writable only (content.tg_draft_only); the panel reads any
               // visible version and the API answers 409 frozen_version on a write.
               <RulesPanel versionId={selectedVersionId} />
+            ) : activePane === 'Publish' ? (
+              // P1-08's gate, reachable from the studio at last: the dialog was built and
+              // unit-tested against props and had no container until PublishPane.
+              <PublishPane
+                versionId={selectedVersionId}
+                surveyId={survey.data.id}
+                role={role}
+                versionNo={
+                  survey.data.versions.find((v) => v.id === selectedVersionId)?.version_no ?? 0
+                }
+              />
             ) : activePane === 'Translations' ? (
               <LanguageManager versionId={selectedVersionId} role={role} />
             ) : activePane === 'Exports' ? (

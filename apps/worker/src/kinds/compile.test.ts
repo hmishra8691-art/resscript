@@ -385,6 +385,28 @@ class FakePublishStore implements PublishStore {
     this.version = { ...this.version, state: 'failed' };
   }
 
+  readonly dryRecorded: {
+    versionId: string;
+    diagnostics: readonly JsonValue[];
+    artifactHash: string;
+  }[] = [];
+
+  async recordDryCompile(
+    _identity: JobIdentity,
+    input: {
+      readonly versionId: string;
+      readonly diagnostics: readonly JsonValue[];
+      readonly artifactHash: string;
+      readonly artifactBytes: number;
+    },
+  ): Promise<void> {
+    this.dryRecorded.push({
+      versionId: input.versionId,
+      diagnostics: input.diagnostics,
+      artifactHash: input.artifactHash,
+    });
+  }
+
   async publish(identity: JobIdentity, input: PublishRequest): Promise<PublishOutcome> {
     this.publishes.push(input);
     this.version = {
@@ -1080,7 +1102,8 @@ describeIntegration('the publish transaction against a real database', () => {
       readonly orgId: string;
       readonly userId: string;
       readonly versionId: string;
-      readonly target: 'staging' | 'production';
+      /** `null` is the DRY compile — an absent `target_status` in the payload. */
+      readonly target: 'staging' | 'production' | null;
     },
   ): Promise<RunResult> {
     const store = new MemoryJobStore();
@@ -1102,7 +1125,12 @@ describeIntegration('the publish transaction against a real database', () => {
     });
     const { id } = await store.enqueue({
       kind: COMPILE_KIND,
-      payload: { survey_version_id: input.versionId, target_status: input.target },
+      payload: {
+        survey_version_id: input.versionId,
+        // Absent, not null: the route omits the key entirely for a dry run and the worker's
+        // `parse` reads that absence, so the test must enqueue the same shape.
+        ...(input.target === null ? {} : { target_status: input.target }),
+      },
       orgId: input.orgId,
       createdBy: input.userId,
       surveyVersionId: input.versionId,
@@ -1171,6 +1199,68 @@ describeIntegration('the publish transaction against a real database', () => {
         [versionId],
       );
       expect(tokens.rows[0]?.n).toBe('0');
+    });
+  });
+
+  it('THE DRY COMPILE: diagnostics and an artifact, and the version does not move', async () => {
+    // H §2.4's own words. The claim under test is the one an author relies on when they press
+    // "Check without publishing": every stage of the gate ran (so the diagnostics are the real
+    // ones and the bytes exist), and `status` is exactly where it was.
+    await withRollback(async (session, ids) => {
+      const orgId = String(ids['org_a']);
+      const userId = String(ids['user_a']);
+      const draftId = String(ids['ver_a_content_draft']);
+      await installFixture(session, draftId, orgId);
+
+      const before = (
+        await session.query<{ status: string; acknowledged_warnings: unknown }>(
+          'SELECT status, acknowledged_warnings FROM app.survey_versions WHERE id = $1::app.ulid',
+          [draftId],
+        )
+      ).rows[0];
+
+      const artifacts = new MemoryArtifactStore();
+      const checked = await runJob(session, artifacts, {
+        orgId,
+        userId,
+        versionId: draftId,
+        target: null,
+      });
+
+      expect(checked.status, JSON.stringify(checked.error)).toBe('succeeded');
+      const result = checked.result as JsonObject;
+      // Its own outcome word, so a studio never has to infer "did this move my version".
+      expect(result['outcome']).toBe('checked');
+      expect(result['target_status']).toBeNull();
+      expect(String(result['artifact_hash'])).toMatch(/^[0-9a-f]{64}$/);
+      expect(result['token']).toBeNull();
+      // The artifact really was produced — "produces diagnostics AND an artifact".
+      expect(artifacts.puts.length).toBeGreaterThan(0);
+
+      const after = (
+        await session.query<{
+          status: string;
+          compile_state: string;
+          artifact_hash: string | null;
+          acknowledged_warnings: unknown;
+        }>(
+          'SELECT status, compile_state, artifact_hash, acknowledged_warnings ' +
+            'FROM app.survey_versions WHERE id = $1::app.ulid',
+          [draftId],
+        )
+      ).rows[0];
+
+      // THE assertion: the status did not move, and no token was minted.
+      expect(after?.status).toBe(before?.status);
+      expect(after?.compile_state).toBe('compiled');
+      expect(after?.artifact_hash).toBe(String(result['artifact_hash']));
+      // A signature belongs to a publish a human pressed; a dry run signs nothing.
+      expect(after?.acknowledged_warnings).toEqual(before?.acknowledged_warnings);
+      const tokens = await session.query<{ count: string }>(
+        'SELECT count(*)::text AS count FROM runtime.survey_tokens WHERE survey_version_id = $1::app.ulid',
+        [draftId],
+      );
+      expect(tokens.rows[0]?.count).toBe('0');
     });
   });
 

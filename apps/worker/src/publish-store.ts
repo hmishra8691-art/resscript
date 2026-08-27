@@ -186,6 +186,16 @@ export interface PublishStore {
     identity: JobIdentity,
     input: { readonly versionId: string; readonly diagnostics: readonly JsonValue[] },
   ): Promise<void>;
+  /** The dry compile's success: diagnostics and the artifact's identity, status untouched. */
+  recordDryCompile(
+    identity: JobIdentity,
+    input: {
+      readonly versionId: string;
+      readonly diagnostics: readonly JsonValue[];
+      readonly artifactHash: string;
+      readonly artifactBytes: number;
+    },
+  ): Promise<void>;
   publish(identity: JobIdentity, input: PublishRequest): Promise<PublishOutcome>;
 }
 
@@ -273,6 +283,26 @@ export const PUBLISH_SQL = {
   // anyway), no acknowledged_warnings (sealed on a frozen version by app.tg_version_guard).
   recordFailure:
     "UPDATE app.survey_versions SET compile_state = 'failed', compile_diagnostics = $2::jsonb " +
+    'WHERE id = $1::app.ulid RETURNING id',
+
+  /**
+   * The DRY compile's outcome: the diagnostics and the artifact's identity, and deliberately NOT
+   * `status`. H §2.4's `POST /versions/:id/compile` is "a dry compile: produces diagnostics and
+   * an artifact but does not change status", so this is ordinary DML under `sv_update` rather
+   * than a call to `app.publish_version` — that function's whole job is moving the version, and
+   * a "publish that does not publish" parameter on it would be a mode nobody can audit.
+   *
+   * `acknowledged_warnings` is untouched for the same reason: a signature belongs to the publish
+   * a human pressed, and a dry run is not one.
+   */
+  recordDry:
+    // `compiled`, which is the enum's own word for a successful compile (0004's
+    // `app.compile_state`), and it is legal on a draft: `sv_compiled_needs_artifact` requires a
+    // hash alongside it — which this statement writes in the same UPDATE — and
+    // `sv_live_needs_compiled` constrains the other direction (a live status needs a compile),
+    // not this one. A draft that has compiled cleanly is exactly what a dry run produces.
+    "UPDATE app.survey_versions SET compile_state = 'compiled', compile_diagnostics = $2::jsonb, " +
+    'artifact_hash = $3::app.sha256, artifact_bytes = $4::bigint ' +
     'WHERE id = $1::app.ulid RETURNING id',
 
   publish:
@@ -384,6 +414,33 @@ export class PgPublishStore implements PublishStore {
         // demoted below `programmer` since pressing Publish. Not retryable: the next attempt
         // gets the same answer, and the diagnostics are already in the job's own error record.
         throw new AppError('forbidden', 'the compile failure could not be recorded', {
+          retryable: false,
+          context: { survey_version_id: input.versionId, policy: 'sv_update' },
+        });
+      }
+    });
+  }
+
+  async recordDryCompile(
+    identity: JobIdentity,
+    input: {
+      readonly versionId: string;
+      readonly diagnostics: readonly JsonValue[];
+      readonly artifactHash: string;
+      readonly artifactBytes: number;
+    },
+  ): Promise<void> {
+    await this.asUser(identity, async (session) => {
+      const { rows } = await session.query<{ id: string }>(PUBLISH_SQL.recordDry, [
+        input.versionId,
+        JSON.stringify(input.diagnostics),
+        input.artifactHash,
+        input.artifactBytes,
+      ]);
+      if (rows.length === 0) {
+        // Same reading as `recordCompileFailure`'s: `sv_update` declined, so the enqueuing user
+        // has been demoted below `programmer` since pressing Check. Not retryable.
+        throw new AppError('forbidden', 'the compile result could not be recorded', {
           retryable: false,
           context: { survey_version_id: input.versionId, policy: 'sv_update' },
         });
