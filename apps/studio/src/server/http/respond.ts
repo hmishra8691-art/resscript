@@ -124,6 +124,152 @@ const CONSTRAINT_ERRORS: Readonly<Record<string, (message: string) => AppError>>
         },
       ],
     }),
+  // `content.tg_draft_only`'s copies on the four content-tree tables (0007 §3–§7). The routes
+  // answer 409 before writing; these catch a freeze that landed between the read and the write,
+  // which for a tree editor is a real race rather than a theoretical one — a colleague publishes
+  // while somebody has the outline open.
+  nodes_draft_only: () => frozenVersionError(),
+  qitems_draft_only: () => frozenVersionError(),
+  qcells_draft_only: () => frozenVersionError(),
+  variables_draft_only: () => frozenVersionError(),
+  // C §3's survey-wide ref uniqueness, as one partial unique index. 409 rather than 422 because
+  // the ref is well-formed and the conflict is with another row, which is what `already_exists`
+  // means — and the actionable answer names the OTHER node, which only the client can see.
+  nodes_ref_key: () =>
+    new AppError('already_exists', 'that ref is already in use in this version', {
+      details: [{ path: 'ref', code: 'already_exists', message: 'refs are unique per version' }],
+    }),
+  qitems_ref_key: () =>
+    new AppError('already_exists', 'that item ref is already in use', {
+      details: [
+        { path: 'ref', code: 'already_exists', message: 'item refs are unique per question and kind' },
+      ],
+    }),
+  // The export contract (C §5.1). The message says what the index means, because "duplicate
+  // code" reads to an author like "renumber it for me" and this API deliberately will not:
+  // `code` is the exported value and display order is a different column.
+  qitems_code_key: () =>
+    new AppError('already_exists', 'that code is already used by another item', {
+      details: [
+        {
+          path: 'code',
+          code: 'duplicate_code',
+          message:
+            'codes are unique per question and item kind; code is the exported value and is not ' +
+            'the display position — reorder freely, renumber deliberately',
+        },
+      ],
+    }),
+  qitems_anchor_shape: () =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [
+        { path: 'anchor', code: 'invalid_value', message: "none, first, last or fixed:<n>" },
+      ],
+    }),
+  // B §4.1's price for one node table: the CHECK that stops it becoming "a question with no
+  // question_type". Reported against the field the kind requires, not as a 500.
+  nodes_kind_shape: (message) =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [{ path: null, code: 'kind_shape', message }],
+    }),
+  nodes_root_is_block: () =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [
+        {
+          path: 'parent_id',
+          code: 'root_is_block',
+          message: 'only a block may be a root node (C §5)',
+        },
+      ],
+    }),
+  // `content.move_node`'s two refusals. Not constraint names in any migration — the function
+  // raises them with `RAISE EXCEPTION` — so `SupabaseRepo.raiseMoveError` mints these two names
+  // from the message and the in-memory store raises the same two. See that function.
+  nodes_move_into_subtree: () =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [
+        {
+          path: 'parent_id',
+          code: 'move_into_own_subtree',
+          message: 'a node cannot be moved into its own subtree',
+        },
+      ],
+    }),
+  nodes_nesting: (message) =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [{ path: 'parent_id', code: 'illegal_nesting', message }],
+    }),
+  qcells_key: () =>
+    new AppError('already_exists', 'that cell already has an override', {
+      details: [
+        {
+          path: 'cells',
+          code: 'duplicate_cell',
+          message: 'one override per (row, column); two would make the data type depend on order',
+        },
+      ],
+    }),
+  qcells_use_columns_is_row_level: () =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [
+        {
+          path: 'cells',
+          code: 'use_columns_is_row_level',
+          message: 'use_columns is only meaningful on a whole-row override (C §5.2)',
+        },
+      ],
+    }),
+  // A sibling or parent named in the body that does not exist in the version. 422 with the field
+  // rather than 404: the RESOURCE the caller addressed exists and is theirs — it is the body that
+  // names something absent, and the client needs to know which field.
+  nodes_survey_version_id_parent_id_fkey: (message) =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [{ path: 'parent_id', code: 'unknown_node', message }],
+    }),
+  question_items_survey_version_id_question_id_fkey: (message) =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [{ path: 'after_id', code: 'unknown_item', message }],
+    }),
+  question_cells_survey_version_id_row_item_id_fkey: (message) =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [{ path: 'cells', code: 'unknown_item', message }],
+    }),
+  // The export contract's two unique indexes (0007 §7). Both are reachable from a rename, which
+  // is why the message points at the ref rather than at a variable the caller never named.
+  variables_name_key: () =>
+    new AppError('already_exists', 'that variable name is already in use in this version', {
+      details: [
+        { path: 'ref', code: 'already_exists', message: 'variable names are unique per version' },
+      ],
+    }),
+  variables_export_col_key: () =>
+    new AppError('already_exists', 'that export column is already claimed in this version', {
+      details: [
+        {
+          path: 'ref',
+          code: 'already_exists',
+          message: 'two variables cannot claim one export column (ADR-007)',
+        },
+      ],
+    }),
+  // `content.tg_variable_name_not_reserved` (K §6): a question whose ref would derive a reserved
+  // name — `DURATION_S`, `RESPONDENT_ID` — is refused, and renaming the QUESTION is the fix.
+  variables_reserved_name: (message) =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [{ path: 'ref', code: 'reserved_variable_name', message }],
+    }),
+  vars_enum_domain: (message) =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [{ path: 'config', code: 'missing_enum_domain', message }],
+    }),
+  vars_response_has_source: (message) =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [{ path: null, code: 'response_without_source', message }],
+    }),
+  vars_transient: (message) =>
+    new AppError('validation_failed', '1 field failed validation', {
+      details: [{ path: null, code: 'transient_response', message }],
+    }),
   // The same trigger's copies on the translation tables — the routes answer 409 before
   // writing; these catch a freeze that landed between the read and the write.
   languages_draft_only: () =>
@@ -181,6 +327,11 @@ const CONSTRAINT_ERRORS: Readonly<Record<string, (message: string) => AppError>>
     }),
 };
 
+/** One message for every `content.tg_draft_only` copy: ADR-002, with the actionable answer. */
+function frozenVersionError(): AppError {
+  return new AppError('frozen_version', 'this survey version is frozen; clone a new draft to edit');
+}
+
 function clientMustBeScoped(): AppError {
   return new AppError('validation_failed', '1 field failed validation', {
     details: [
@@ -237,6 +388,22 @@ const NOT_FOUND_CONSTRAINTS: readonly string[] = [
   // existence-oracle rule, one answer for both.
   'field_stats_not_found',
   'field_stats',
+  // The content tree's write policies decline the same way every other content table's do — zero
+  // rows for "not yours", "not programmer" and "no such version/node" alike. The routes answer
+  // the states a caller can see (403 role, 409 frozen) before the store is reached; what is left
+  // is indistinguishable from a node that does not exist, and 404 is the answer that leaks least.
+  'nodes_insert',
+  'nodes_update',
+  'nodes_select',
+  'qitems_insert',
+  'qitems_update',
+  'qitems_select',
+  'qcells_insert',
+  'qcells_delete',
+  'qcells_select',
+  'variables_insert',
+  'variables_update',
+  'variables_select',
 ];
 
 export function toAppError(err: unknown): AppError {

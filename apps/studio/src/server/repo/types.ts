@@ -410,6 +410,20 @@ export interface SurveyRepo {
     input: UpdateVersionInput,
   ): Promise<SurveyVersionRow | null>;
   /**
+   * Take the version's optimistic lock without changing a field, and bump `revision`.
+   *
+   * This is what makes API §1.7 true for CONTENT: "every version-scoped content resource shares
+   * ONE optimistic lock … and every content mutation touches that row in the same transaction".
+   * A content route cannot express its lock as `updateVersion`, because it has no version field
+   * to write, and an `updateVersion(id, rev, {})` would reach PostgREST as an empty payload.
+   *
+   * A compare-and-swap, not a read-then-write: the expected revision is a WHERE clause, so two
+   * editors racing on one version produce a `412` for the loser rather than two silent writes.
+   * `null` on a mismatch, for `updateVersion`'s reason — the route needs the CURRENT row to
+   * build `changed_since`.
+   */
+  touchVersion(id: string, expectedRevision: number): Promise<SurveyVersionRow | null>;
+  /**
    * `app.rollback_version(p_to_version_id, p_request_id)` — `archived → production` plus
    * repointing the survey's token, in one transaction.
    *
@@ -873,8 +887,414 @@ export interface RuleRepo {
   } | null>;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Content nodes, items and cells — the tree (API §2.5, 0007 §3/§4/§5/§7)      */
+/* -------------------------------------------------------------------------- */
+
+export type NodeKind = 'block' | 'page' | 'question' | 'text';
+export type ItemKind = 'option' | 'row' | 'column';
+export type VarKind = 'response' | 'hidden' | 'derived' | 'system' | 'quota' | 'design';
+export type VarType = 'enum' | 'boolean' | 'number' | 'text' | 'date' | 'set' | 'object';
+
+/**
+ * `content.nodes`, verbatim columns minus `org_id` (the header rule of this file).
+ *
+ * `deleted_at` IS on the wire, unlike `RuleRow`'s, and the difference is the point: API §2.5's
+ * delete is soft and its `undelete` is a first-class endpoint, so "is this node in the undo
+ * buffer" is part of what a client asks about a node. A rule has no undelete route.
+ *
+ * `config`, `settings`, `validation`, `masks`, `scripts` and `flags` stay opaque JSON at this
+ * layer for `RuleRow`'s reason: `config`'s shape belongs to the question plugin's own
+ * `configSchema` (F §5) and `validation`/`masks` to schema §15, and restating either here would
+ * be a second definition that eventually accepts what the real validator rejects.
+ */
+export interface NodeRow {
+  readonly id: string;
+  readonly survey_version_id: string;
+  readonly node_kind: NodeKind;
+  readonly parent_id: string | null;
+  readonly sort_key: string;
+  readonly ref: string | null;
+  readonly label_key: string | null;
+  readonly instruction_key: string | null;
+  readonly title_key: string | null;
+  readonly question_type: string | null;
+  readonly required: boolean | null;
+  readonly config: JsonObject;
+  readonly settings: JsonObject;
+  readonly validation: readonly JsonValue[];
+  readonly masks: readonly JsonValue[];
+  readonly scripts: JsonObject;
+  readonly flags: JsonObject;
+  readonly emits: readonly string[];
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly deleted_at: string | null;
+}
+
+/** `content.question_items`, same treatment. */
+export interface ItemRow {
+  readonly id: string;
+  readonly survey_version_id: string;
+  readonly question_id: string;
+  readonly item_kind: ItemKind;
+  readonly ref: string;
+  /** C §5.1: THE EXPORTED VALUE, and a different column from `sort_key`. Never conflated. */
+  readonly code: number;
+  readonly label_key: string | null;
+  readonly sort_key: string;
+  readonly anchor: string;
+  readonly exclusive: boolean;
+  readonly behaviour: JsonObject;
+  readonly value_override: string | null;
+  readonly custom_class: string | null;
+  readonly meta: JsonObject;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly deleted_at: string | null;
+}
+
+/** `content.question_cells` — one mixed-matrix override (C §5.2). No soft delete: PUT replaces. */
+export interface CellRow {
+  readonly id: string;
+  readonly survey_version_id: string;
+  readonly question_id: string;
+  readonly row_item_id: string;
+  readonly column_item_id: string | null;
+  readonly question_type: string;
+  readonly config: JsonObject;
+  readonly use_columns: boolean;
+}
+
+/** One `content.variables.enum_domain` entry, as 0007 stores it. */
+export interface EnumDomainEntryRow {
+  readonly code: number;
+  readonly label_key: string;
+}
+
+/**
+ * `content.variables`, fuller than `RegistryVariableRow`.
+ *
+ * Two projections of one table, deliberately: the registry read is the DSL endpoints' type
+ * environment and carries only what a type check needs, whereas a question save has to write —
+ * and echo back as `variables_created` / `variables_changed` — the export half (`export_column`,
+ * `export_include`, `export_label_key`) that IS the export contract (ADR-007).
+ */
+export interface VariableRow {
+  readonly id: string;
+  readonly survey_version_id: string;
+  readonly name: string;
+  readonly kind: VarKind;
+  readonly vtype: VarType;
+  readonly source_question_id: string | null;
+  readonly source_item_id: string | null;
+  readonly source_part: JsonObject | null;
+  readonly enum_domain: readonly EnumDomainEntryRow[] | null;
+  readonly export_include: boolean;
+  readonly export_column: string;
+  readonly export_label_key: string | null;
+  readonly pii: boolean;
+  readonly persist: boolean;
+  readonly sort_key: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly deleted_at: string | null;
+}
+
+/**
+ * One row of `content.tree_rows(version)` — UI §3.3's whole outline in one round trip.
+ *
+ * Field-for-field the SQL function's `RETURNS TABLE`, because that function is the one
+ * definition of the tree read (B §13: "ONE recursive CTE — not N+1 per level") and a second
+ * shape here would be a second projection to keep in step. The route maps this onto API §2.5's
+ * `TreeRow`; the mapping is in the route, once.
+ */
+export interface TreeRowRecord {
+  readonly id: string;
+  readonly node_kind: NodeKind;
+  readonly parent_id: string | null;
+  readonly sort_key: string;
+  readonly depth: number;
+  readonly ordinal: number;
+  readonly ref: string | null;
+  readonly label_key: string | null;
+  readonly instruction_key: string | null;
+  readonly title_key: string | null;
+  readonly question_type: string | null;
+  readonly required: boolean | null;
+  readonly settings: JsonObject;
+  readonly flags: JsonObject;
+  readonly emits: readonly string[];
+  readonly item_count: number;
+  readonly child_count: number;
+  readonly emit_count: number;
+  readonly pii: boolean;
+  readonly has_custom_js: boolean;
+  readonly updated_at: string;
+}
+
+/**
+ * Where a new sibling goes. NEVER a `sort_key`: API §3 item 6 — "a client never sees a
+ * fractional key and cannot corrupt the ordering by inventing one".
+ *
+ * THREE STATES, and the difference between two of them is the reason `after_id` is nullable
+ * rather than merely optional:
+ *
+ *   * `after_id: "<id>"` — immediately after that sibling.
+ *   * `after_id: null` — FIRST. `content.next_sort_key`'s own meaning for a NULL anchor.
+ *   * neither field — APPEND, at the end of the sibling set.
+ *
+ * Append is the default because "add a question" in an editor means "at the end", and a default
+ * of "first" would make every new question land above the one before it — which is what happens
+ * if the store passes an absent `after_id` straight through to the SQL function. The store
+ * resolves absence to the last sibling's id, so the function still receives an anchor and there is
+ * still exactly one definition of how a key is computed.
+ *
+ * `before_id` is resolved to an `after_id` by the store (the predecessor of that sibling), because
+ * `content.next_sort_key` takes only an "after" and giving it a second parameter would be a second
+ * definition of insertion position.
+ */
+export interface SiblingPosition {
+  readonly after_id?: string | null;
+  readonly before_id?: string;
+}
+
+export interface CreateNodeInput extends SiblingPosition {
+  readonly survey_version_id: string;
+  readonly node_kind: NodeKind;
+  readonly parent_id: string | null;
+  readonly ref?: string;
+  readonly question_type?: string;
+  readonly label_key?: string;
+  readonly instruction_key?: string;
+  readonly title_key?: string;
+  readonly required?: boolean;
+  readonly config?: JsonObject;
+  readonly settings?: JsonObject;
+  readonly flags?: JsonObject;
+}
+
+/**
+ * A partial node edit. `question_type` is ABSENT and that is API §2.5's rule, not an oversight:
+ * "changing `question_type` is rejected (delete and recreate — the emitted variables differ)".
+ * A field the type cannot express is a field a route cannot forget to reject.
+ */
+export interface UpdateNodeInput {
+  readonly ref?: string;
+  readonly label_key?: string | null;
+  readonly instruction_key?: string | null;
+  readonly title_key?: string | null;
+  readonly required?: boolean;
+  readonly config?: JsonObject;
+  readonly settings?: JsonObject;
+  readonly flags?: JsonObject;
+  readonly validation?: readonly JsonValue[];
+  readonly masks?: readonly JsonValue[];
+  readonly scripts?: JsonObject;
+}
+
+export interface MoveNodeInput extends SiblingPosition {
+  readonly parent_id: string | null;
+}
+
+export interface CreateItemInput extends SiblingPosition {
+  readonly item_kind: ItemKind;
+  readonly ref: string;
+  readonly code: number;
+  readonly label_key?: string;
+  readonly anchor?: string;
+  readonly exclusive?: boolean;
+  readonly behaviour?: JsonObject;
+  readonly value_override?: string;
+  readonly custom_class?: string;
+  readonly meta?: JsonObject;
+}
+
+export interface UpdateItemInput {
+  readonly ref?: string;
+  readonly code?: number;
+  readonly label_key?: string | null;
+  readonly anchor?: string;
+  readonly exclusive?: boolean;
+  readonly behaviour?: JsonObject;
+  readonly value_override?: string | null;
+  readonly custom_class?: string | null;
+  readonly meta?: JsonObject;
+}
+
+/** One row of the paste-60-brands body. Position is the array index; `code` is separate. */
+export interface BulkItemInput {
+  readonly ref: string;
+  readonly code: number;
+  readonly label_key?: string;
+  readonly anchor?: string;
+  readonly exclusive?: boolean;
+  readonly behaviour?: JsonObject;
+  readonly value_override?: string;
+  readonly custom_class?: string;
+  readonly meta?: JsonObject;
+}
+
+/** One `PUT /nodes/:id/cells` row, resolved from refs to item ids by the route. */
+export interface CellInput {
+  readonly row_item_id: string;
+  readonly column_item_id?: string | null;
+  readonly question_type: string;
+  readonly config?: JsonObject;
+  readonly use_columns?: boolean;
+}
+
+/**
+ * One variable a question save wants to exist, id and all.
+ *
+ * The `id` is supplied by the CALLER, and that is the whole mechanism behind "renaming a ref
+ * changes exactly the derived variable names and no id": the recompute matches the plugin's
+ * declarations against the question's existing rows by schema's `variableSignature` and carries
+ * the matched row's id forward. A store that minted ids here could not preserve one.
+ */
+export interface WriteVariableInput {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: VarKind;
+  readonly vtype: VarType;
+  readonly source_item_id: string | null;
+  readonly source_part: JsonObject;
+  readonly enum_domain: readonly EnumDomainEntryRow[] | null;
+  readonly export_include: boolean;
+  readonly export_column: string;
+  readonly export_label_key: string | null;
+  readonly pii: boolean;
+  readonly persist: boolean;
+}
+
+/** What `replaceQuestionVariables` did, split the way API §2.5's response fields are. */
+export interface VariableWriteResult {
+  readonly created: readonly VariableRow[];
+  readonly updated: readonly VariableRow[];
+  /** Soft-deleted: the declaration set no longer contains them (an option was removed). */
+  readonly removed: readonly VariableRow[];
+}
+
+/** What `duplicate` copied, plus the old→new id map the rule remap needs. */
+export interface DuplicatedSubtree {
+  readonly nodes: readonly NodeRow[];
+  readonly items: readonly ItemRow[];
+  readonly cells: readonly CellRow[];
+  /** Old id → new id, for nodes AND items, so a rule inside the subtree can be rewritten. */
+  readonly id_map: ReadonlyMap<string, string>;
+}
+
+/** One node of a subtree copy, as the route asks for it (refs are the route's suffix rule). */
+export interface DuplicateNodeSpec {
+  readonly id: string;
+  readonly ref: string | null;
+}
+
+export interface DuplicateInput extends SiblingPosition {
+  /** The subtree root. */
+  readonly node_id: string;
+  readonly into_parent_id?: string | null;
+  /** Every node of the subtree with the ref its copy must carry — computed by the route. */
+  readonly refs: readonly DuplicateNodeSpec[];
+}
+
+/**
+ * The content tree: nodes, their items, their cells and the variables their questions emit.
+ *
+ * ONE repo rather than four, because the operations are not separable: creating a question
+ * writes `content.nodes`, `content.variables` and `content.nodes.emits`; a bulk option paste
+ * rewrites items and then the variables those items fan out into. Four repos would put the
+ * ordering of those writes at four call sites.
+ *
+ * Every method is version-scoped through the row it names — never through an `orgId` argument
+ * (this file's header rule) — and every write is subject to `content.tg_draft_only` plus the
+ * programmer-floor write policies. As with `RedirectRepo`, nothing here re-tests the role or
+ * the org in TypeScript: zero rows written is the policy declining, and the routes answer the
+ * two states a caller can see (403 role, 409 frozen) before the store is reached.
+ */
+export interface NodeRepo {
+  /**
+   * `content.tree_rows(version)`. `null` when the version is not visible — a 404 upstream,
+   * never an empty tree, for `RegistryRepo.forVersion`'s reason: an empty tree is a plausible
+   * answer for a real version and would make a cross-tenant probe indistinguishable from a
+   * survey with no content yet.
+   */
+  tree(versionId: string): Promise<readonly TreeRowRecord[] | null>;
+  /** One live node. Soft-deleted rows are invisible here — `getDeleted` is the undo path. */
+  get(nodeId: string): Promise<NodeRow | null>;
+  /** One node INCLUDING a soft-deleted one, for `POST /nodes/:id/undelete`. */
+  getDeleted(nodeId: string): Promise<NodeRow | null>;
+  /** The node and every descendant, in document order. `includeDeleted` for the undo path. */
+  subtree(nodeId: string, includeDeleted?: boolean): Promise<readonly NodeRow[]>;
+  create(input: CreateNodeInput): Promise<NodeRow>;
+  update(nodeId: string, patch: UpdateNodeInput): Promise<NodeRow>;
+  /**
+   * `content.move_node` — ONE `sort_key` write, and the two refusals an FK cannot express (a
+   * node into its own subtree; C §5's nesting rules). The row count the function returns is
+   * what P1-03's "one UPDATE per drag" criterion is measured on, so the store must not do the
+   * move as a read-modify-write of the whole sibling set.
+   */
+  move(nodeId: string, input: MoveNodeInput): Promise<NodeRow>;
+  /** Soft delete, the given ids (a subtree the route computed). Returns the rows as written. */
+  softDelete(nodeIds: readonly string[]): Promise<readonly NodeRow[]>;
+  undelete(nodeIds: readonly string[]): Promise<readonly NodeRow[]>;
+  /** Copy a subtree with new ids. Rules are the ROUTE's job — see `DuplicatedSubtree.id_map`. */
+  duplicate(input: DuplicateInput): Promise<DuplicatedSubtree>;
+
+  listItems(nodeId: string, kind?: ItemKind): Promise<readonly ItemRow[]>;
+  getItem(itemId: string): Promise<ItemRow | null>;
+  createItem(nodeId: string, input: CreateItemInput): Promise<ItemRow>;
+  updateItem(itemId: string, patch: UpdateItemInput): Promise<ItemRow>;
+  /** `content.move_question_item` — one row, `code` untouched (C §5.1's whole point). */
+  moveItem(itemId: string, position: SiblingPosition): Promise<ItemRow>;
+  removeItem(itemId: string): Promise<void>;
+  /**
+   * `POST /nodes/:id/items:bulk`. Atomic (API §1.6's default): the whole set is validated and
+   * written together, because a half-pasted brand list is a question that fails publish for a
+   * reason the author did not cause.
+   */
+  bulkItems(
+    nodeId: string,
+    kind: ItemKind,
+    mode: 'replace' | 'append',
+    items: readonly BulkItemInput[],
+  ): Promise<readonly ItemRow[]>;
+
+  listCells(nodeId: string): Promise<readonly CellRow[]>;
+  /** Whole-set replace — PUT semantics, for the reason `replaceRedirects` gives. */
+  replaceCells(nodeId: string, cells: readonly CellInput[]): Promise<readonly CellRow[]>;
+
+  /** The variables one question emits, live rows only, in manifest order. */
+  listVariables(nodeId: string): Promise<readonly VariableRow[]>;
+  /**
+   * Make the question's emitted variables exactly these rows, and rewrite `nodes.emits`.
+   *
+   * The plugin's `declareVariables` is the authority on the set (F §1, ADR-007) and the caller
+   * has already resolved ids by signature, so this method is deliberately dumb: upsert what it
+   * is given, soft-delete the question's other variables, store the id list on the node.
+   */
+  replaceQuestionVariables(
+    nodeId: string,
+    rows: readonly WriteVariableInput[],
+  ): Promise<VariableWriteResult>;
+
+  /**
+   * Every live rule that TARGETS or DEPENDS ON any of these nodes/items.
+   *
+   * The delete path's `rules_affected` and the duplicate path's "rules within the subtree
+   * remapped, rules pointing *into* it not copied" are the same question asked twice, so it is
+   * one read: `rules_target_node_idx` plus the two `depends_on_*` GIN indexes (DB §4.4).
+   */
+  rulesTouching(
+    versionId: string,
+    nodeIds: readonly string[],
+    itemIds: readonly string[],
+  ): Promise<readonly RuleRow[]>;
+}
+
 /** The bundle a route handler receives. One object so adding a repo is not 40 signatures. */
 export interface Repos {
+  readonly nodes: NodeRepo;
   readonly registry: RegistryRepo;
   readonly rules: RuleRepo;
   readonly redirects: RedirectRepo;

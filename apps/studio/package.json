@@ -16,6 +16,7 @@
     "@resscript/compiler": "workspace:*",
     "@resscript/logic": "workspace:*",
     "@resscript/observability": "workspace:*",
+    "@resscript/question-kit": "workspace:*",
     "@resscript/rescript-dsl": "workspace:*",
     "@resscript/runtime-core": "workspace:*",
     "@resscript/schema": "workspace:*",

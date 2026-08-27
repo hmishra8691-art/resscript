@@ -1,16 +1,17 @@
 /**
- * The survey page — a PLACEHOLDER for the tree that lands in P1-03, plus the bottom panes
- * that exist today: Preview (P1-11) and P1-12's Translations, Exports and Field.
+ * The survey page — the editor region (P1-03's tree and node inspector) plus the bottom panes:
+ * Preview (P1-11) and P1-12's Logic, Translations, Exports and Field.
  *
- * It renders the version list (both axes: `status` and `compile_state`, never collapsed into
- * one "state" field) and reserves the layout the editor will occupy: rail for the tree, main
- * for the node editor, bottom pane for Properties/Logic/Validation/Code/Problems/Preview.
+ * The geometry this page reserved for the tree is now occupied by it: rail for the tree, main for
+ * the node editor, bottom pane tabbed (UI §1.1). Both version axes are still rendered as two
+ * columns — `status` and `compile_state`, never collapsed into one "state" field (K §3) — and the
+ * table moved above the editor region because the tree now needs the height the placeholder did
+ * not.
  *
- * Keeping the region here rather than adding it in P1-03 is deliberate — the shell's geometry
- * is what the tree slots into, and discovering the geometry is wrong while also building a
- * virtualized 2,000-row tree is two problems at once. The Preview tab is live because P1-11
- * ships it: the sandboxed iframe and the debug session, side by side, against a version the
- * user picks from the list.
+ * TWO version selections, on purpose. The bottom pane's select chooses what to PREVIEW (a
+ * compiled artifact) and the rail's chooses what to EDIT (a draft). Sharing one selection would
+ * mean either previewing an uncompiled draft or editing a frozen version by default, and the
+ * second is a read-only editor the user did not ask for.
  */
 
 'use client';
@@ -25,6 +26,7 @@ import { LanguageManager } from '@/components/i18n/LanguageManager';
 import { ExportDialog } from '@/components/exports/ExportDialog';
 import { FieldDashboard } from '@/components/field/FieldDashboard';
 import { RulesPanel } from '@/components/rules/RulesPanel';
+import { SurveyTreePane } from '@/components/tree/SurveyTreePane';
 
 const PANES = [
   'Properties',
@@ -38,7 +40,11 @@ const PANES = [
   'Field',
 ] as const;
 
-/** Preview is P1-11's; Logic/Translations/Exports/Field are P1-12's; the rest arrive with P1-03/P1-07. */
+/**
+ * Preview is P1-11's; Logic/Translations/Exports/Field are P1-12's. Properties is deliberately
+ * NOT live: P1-03's node inspector renders in the main region, and a second copy of the same
+ * fields in a tab is two editors for one node.
+ */
 const LIVE_PANES: readonly (typeof PANES)[number][] = [
   'Logic',
   'Preview',
@@ -88,47 +94,37 @@ export default function SurveyPage({
         <span className="rs-muted">{survey.data.ref}</span>
       </header>
 
-      <div style={{ display: 'flex', gap: 8, flex: 1, minHeight: 0 }}>
-        <section
-          aria-label="Survey tree"
-          className="rs-card"
-          style={{ width: 260, flexShrink: 0, overflow: 'auto' }}
-        >
-          <h2 style={{ fontSize: 13, marginBottom: 4 }}>Structure</h2>
-          <p className="rs-muted">
-            The survey tree lands in P1-03. This rail is where it renders — blocks, pages,
-            questions, and the inline logic annotations that make rules visible in place.
-          </p>
-        </section>
-
-        <section aria-label="Versions" style={{ flex: 1, minWidth: 0 }}>
-          <h2 style={{ fontSize: 13, marginBottom: 4 }}>Versions</h2>
-          <table className="rs-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                {/* Two orthogonal axes (K §3). A single "state" column is how a failed compile
-                    gets shown as live. */}
-                <th>Status</th>
-                <th>Compile state</th>
-                <th>Revision</th>
+      <section aria-label="Versions" style={{ flexShrink: 0 }}>
+        <h2 style={{ fontSize: 13, marginBottom: 4 }}>Versions</h2>
+        <table className="rs-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              {/* Two orthogonal axes (K §3). A single "state" column is how a failed compile
+                  gets shown as live. */}
+              <th>Status</th>
+              <th>Compile state</th>
+              <th>Revision</th>
+            </tr>
+          </thead>
+          <tbody>
+            {versions.map((version) => (
+              <tr key={version.id}>
+                <td>{version.version_no}</td>
+                <td>{version.status}</td>
+                <td>{version.compile_state}</td>
+                <td className="rs-muted">r{version.revision}</td>
               </tr>
-            </thead>
-            <tbody>
-              {versions.map((version) => (
-                <tr key={version.id}>
-                  <td>{version.version_no}</td>
-                  <td>{version.status}</td>
-                  <td>{version.compile_state}</td>
-                  <td className="rs-muted">r{version.revision}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <p className="rs-muted" style={{ marginTop: 8 }}>
-            Advanced logic: {advancedLogic.enabled ? 'available' : 'not in your plan'}
-          </p>
-        </section>
+            ))}
+          </tbody>
+        </table>
+        <p className="rs-muted" style={{ marginTop: 4 }}>
+          Advanced logic: {advancedLogic.enabled ? 'available' : 'not in your plan'}
+        </p>
+      </section>
+
+      <div style={{ display: 'flex', gap: 8, flex: 1, minHeight: 0 }}>
+        <SurveyTreePane versions={versions} defaultLanguage={survey.data.default_language} />
       </div>
 
       <section
@@ -200,8 +196,8 @@ export default function SurveyPage({
           </div>
         ) : (
           <p className="rs-muted" style={{ marginTop: 4 }}>
-            Node inspector, logic builder, Monaco and the QA panel arrive in P1-03, P1-07 and
-            P1-11.
+            The node inspector lives in the main region above (P1-03). Validation, Monaco and the
+            QA panel arrive in P1-07 and P1-11.
           </p>
         )}
       </section>

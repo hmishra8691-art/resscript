@@ -78,6 +78,9 @@ importers:
       '@resscript/observability':
         specifier: workspace:*
         version: link:../../packages/observability
+      '@resscript/question-kit':
+        specifier: workspace:*
+        version: link:../../packages/question-kit
       '@resscript/rescript-dsl':
         specifier: workspace:*
         version: link:../../packages/rescript-dsl

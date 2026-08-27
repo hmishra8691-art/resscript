@@ -63,21 +63,41 @@ function time(runs: number, body: () => void): number {
  * reproduce, so the next person raises the threshold or deletes the test, and the quadratic
  * propagation the file exists to catch then ships unnoticed.
  *
- * So the budget is scaled by a calibration measured in this same process moments before: a fixed
- * arithmetic loop whose cost is pure CPU and allocation-free, timed the same way. Contention slows
- * the calibration and the evaluator together, and the ratio is what the assertion is really about.
+ * So the budget is scaled by a calibration measured in this same process moments before, and the
+ * ratio — not the absolute number — is what the assertion is about.
+ *
+ * THE CALIBRATION MUST RESEMBLE THE WORK IT SCALES, and the first version did not. It was a
+ * register-bound integer loop (`acc += i % 7`), while `evaluate` is allocation-bound: a `Value`
+ * per node, map lookups per cell, all short-lived. Under twenty-way parallel load those two
+ * degrade by different factors — memory bandwidth and GC contention hit the allocating workload
+ * hard and barely touch the arithmetic one — so the ratio drifted and the test failed at 13 ms
+ * against a scale of ~1.7 while nothing about the evaluator had changed. The loop below allocates
+ * and looks up instead, which is the shape of the thing being timed; contention now moves both
+ * sides together, which is what the paragraph above always claimed.
  *
  * The scale is CLAMPED at 8x. Above that the machine is so loaded that the measurement means
  * nothing either way, and an unbounded scale would turn the budget into a tautology — the one
  * thing worse than a flaky perf test is one that cannot fail.
+ *
+ * `CALIBRATION_BASELINE_MS` is the idle cost of that loop on the reference machine: measured, not
+ * chosen. Re-measure it (and only it) if the loop below ever changes.
  */
-const CALIBRATION_BASELINE_MS = 0.35;
+const CALIBRATION_BASELINE_MS = 0.5;
 const MAX_MACHINE_SCALE = 8;
+const CALIBRATION_ITERATIONS = 20_000;
 
 function machineScale(): number {
   const elapsed = time(25, () => {
+    // Allocation-shaped, like one evaluation pass: a small object per iteration, a wrapper
+    // around it, a map keyed by a derived tag, and a read back through the map.
+    const seen = new Map<number, { node: { k: number; v: number }; tag: number }>();
     let acc = 0;
-    for (let i = 1; i < 200_000; i += 1) acc += i % 7;
+    for (let i = 1; i < CALIBRATION_ITERATIONS; i += 1) {
+      const node = { k: i % 11, v: i };
+      const wrapped = { node, tag: node.k };
+      seen.set(node.k, wrapped);
+      acc += (seen.get(wrapped.tag)?.node.v ?? 0) % 7;
+    }
     if (acc === -1) throw new Error('unreachable, and keeps the loop from being elided');
   });
   const scale = elapsed / CALIBRATION_BASELINE_MS;

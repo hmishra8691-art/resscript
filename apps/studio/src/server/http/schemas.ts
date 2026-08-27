@@ -356,6 +356,252 @@ export const createExportSchema = z
   .strict();
 
 /* -------------------------------------------------------------------------- */
+/* Content nodes, items and cells (API §2.5, migration 0007)                  */
+/* -------------------------------------------------------------------------- */
+
+/** `content.node_kind` / `content.item_kind` — physical discriminators, not K §7 registries. */
+const nodeKindSchema = z.enum(['block', 'page', 'question', 'text']);
+const itemKindSchema = z.enum(['option', 'row', 'column']);
+
+/**
+ * Where a new sibling goes: `after_id`, or `before_id`, or neither (which means first).
+ *
+ * NO `sort_key` and no `position`, which is API §3 item 6 made unrepresentable rather than merely
+ * refused: "a client never sees a fractional key and cannot corrupt the ordering by inventing
+ * one". `after_id: null` is explicitly legal and means the head of the list, so the field is
+ * nullable rather than only optional — "put it first" must be sayable.
+ */
+const siblingPositionFields = {
+  after_id: ulidIdSchema.nullable().optional(),
+  before_id: ulidIdSchema.optional(),
+};
+
+function onePosition(body: {
+  readonly after_id?: string | null | undefined;
+  readonly before_id?: string | undefined;
+}): boolean {
+  return body.after_id === undefined || body.before_id === undefined;
+}
+
+const ONE_POSITION = { message: 'provide either after_id or before_id, not both' };
+
+/**
+ * A label as an I18N KEY, not as prose.
+ *
+ * Every human-readable string in a survey lives in `content.i18n_strings` keyed by
+ * `label_key` / `instruction_key` / `title_key` (B §6, C §16), because a survey runs in one to
+ * forty languages and the base language is just the first of them. So these three fields carry
+ * the KEY, and the text arrives through `PUT /versions/{id}/translations/{lang}`. API §2.5 spells
+ * the field `label`, which is what the column is called minus the `_key` suffix; the suffix is
+ * dropped on the wire and restored by the route, so nothing here invents a second name for it.
+ */
+const i18nKeySchema = z.string().min(1).max(256);
+
+/**
+ * `config` is `z.record(z.unknown())` and NOT validated field-by-field here, deliberately.
+ *
+ * The authority is the PLUGIN's `configSchema` (F §5), compiled by the registry and run in
+ * `src/server/questions.ts` on the same object this schema passes through; restating fifteen
+ * plugins' config shapes in Zod would be a second definition that eventually rejects what the
+ * plugin accepts — and the plugin's is the one that decides what the question emits.
+ */
+const configSchema = z.record(z.unknown());
+
+export const createNodeSchema = z
+  .object({
+    node_kind: nodeKindSchema,
+    /** `null` = a root node, which `nodes_root_is_block` allows only for a block. */
+    parent_id: ulidIdSchema.nullable(),
+    ...siblingPositionFields,
+    ref: refSchema.optional(),
+    question_type: z.string().min(1).max(64).optional(),
+    label: i18nKeySchema.optional(),
+    instruction: i18nKeySchema.optional(),
+    title: i18nKeySchema.optional(),
+    required: z.boolean().optional(),
+    config: configSchema.optional(),
+  })
+  .strict()
+  .refine(onePosition, ONE_POSITION);
+
+/**
+ * A partial node edit.
+ *
+ * `question_type` IS accepted by the schema and then refused by the route with an explanation.
+ * Leaving it out would answer `400 unknown_field: question_type is not a field of this resource`,
+ * which is false — it is a field, and an important one; what it is not is patchable, because the
+ * emitted variables differ (API §2.5). A truthful 422 naming the remedy ("delete and recreate")
+ * is worth the extra line.
+ */
+export const updateNodeSchema = z
+  .object({
+    ref: refSchema.optional(),
+    question_type: z.string().min(1).max(64).optional(),
+    label: i18nKeySchema.nullable().optional(),
+    instruction: i18nKeySchema.nullable().optional(),
+    title: i18nKeySchema.nullable().optional(),
+    required: z.boolean().optional(),
+    config: configSchema.optional(),
+    settings: z.record(z.unknown()).optional(),
+    flags: z.record(z.unknown()).optional(),
+  })
+  .strict();
+
+export const moveNodeSchema = z
+  .object({ parent_id: ulidIdSchema.nullable(), ...siblingPositionFields })
+  .strict()
+  .refine(onePosition, ONE_POSITION);
+
+/**
+ * `POST /nodes/{id}/duplicate`. `ref` is the COPY's ref for the subtree ROOT; every descendant's
+ * ref is derived by the suffix rule in `src/server/nodes.ts`, because a client cannot know how
+ * many nodes the subtree holds without walking it — and if it walked it, it would be computing
+ * refs the server has to re-check for uniqueness anyway.
+ */
+export const duplicateNodeSchema = z
+  .object({
+    ref: refSchema,
+    into_parent_id: ulidIdSchema.nullable().optional(),
+    after_id: ulidIdSchema.nullable().optional(),
+  })
+  .strict();
+
+/**
+ * One option / row / column `behaviour` entry: `{literal}` or `{condition: AST}` (C §5.1).
+ *
+ * `condition` is `z.unknown()` for `createRuleSchema`'s reason — the AST's shape is
+ * `packages/logic`'s and the validator with authority is `checkExpr`, which the route runs and
+ * answers 422 with the `LGC-*` codes. Exactly one of the two arms, because "a literal AND a
+ * condition" is two answers to one question.
+ */
+const behaviourEntrySchema = z
+  .object({ literal: z.unknown().optional(), condition: z.unknown().optional() })
+  .strict()
+  .refine(
+    (entry) => (entry.literal === undefined) !== (entry.condition === undefined),
+    'provide either literal or condition, not both',
+  );
+
+/** The five programmable properties C §5.1 names. A sixth would be a schema change, not a key. */
+const behaviourSchema = z
+  .object({
+    visible: behaviourEntrySchema.optional(),
+    enabled: behaviourEntrySchema.optional(),
+    preselected: behaviourEntrySchema.optional(),
+    auto_select: behaviourEntrySchema.optional(),
+    required_if: behaviourEntrySchema.optional(),
+  })
+  .strict();
+
+/**
+ * `code` is `z.number().int()` and is REQUIRED, with no default and no "next free code" helper.
+ *
+ * C §5.1 calls conflating code with display order "a classic data disaster", and a server that
+ * assigned codes by position would be the API doing exactly that on the author's behalf. The
+ * author says what the exported value is; `qitems_code_key` says whether it is free.
+ */
+const itemCodeSchema = z.number().int().min(-2_147_483_648).max(2_147_483_647);
+
+/** `qitems_anchor_shape`, verbatim, so a typo'd anchor is a 422 and not a silent non-anchor. */
+const anchorSchema = z
+  .string()
+  .regex(/^(none|first|last|fixed:[0-9]{1,4})$/, 'none, first, last or fixed:<n>');
+
+export const createItemSchema = z
+  .object({
+    item_kind: itemKindSchema,
+    ref: refSchema,
+    code: itemCodeSchema,
+    label: i18nKeySchema.optional(),
+    ...siblingPositionFields,
+    anchor: anchorSchema.optional(),
+    exclusive: z.boolean().optional(),
+    behaviour: behaviourSchema.optional(),
+    value_override: z.string().max(256).optional(),
+    custom_class: z.string().max(128).optional(),
+    meta: z.record(z.unknown()).optional(),
+  })
+  .strict()
+  .refine(onePosition, ONE_POSITION);
+
+export const updateItemSchema = z
+  .object({
+    ref: refSchema.optional(),
+    code: itemCodeSchema.optional(),
+    label: i18nKeySchema.nullable().optional(),
+    anchor: anchorSchema.optional(),
+    exclusive: z.boolean().optional(),
+    behaviour: behaviourSchema.optional(),
+    value_override: z.string().max(256).nullable().optional(),
+    custom_class: z.string().max(128).nullable().optional(),
+    meta: z.record(z.unknown()).optional(),
+  })
+  .strict();
+
+export const moveItemSchema = z
+  .object(siblingPositionFields)
+  .strict()
+  .refine(onePosition, ONE_POSITION);
+
+/**
+ * The paste-60-brands body. 2,000 rows is far past API §1.3's sibling cap of 1,000 and is here as
+ * a body-size guard rather than a product limit: the atomic write is one statement either way.
+ */
+export const bulkItemsSchema = z
+  .object({
+    item_kind: itemKindSchema,
+    mode: z.enum(['replace', 'append']),
+    items: z
+      .array(
+        z
+          .object({
+            ref: refSchema,
+            code: itemCodeSchema,
+            label: i18nKeySchema.optional(),
+            anchor: anchorSchema.optional(),
+            exclusive: z.boolean().optional(),
+            behaviour: behaviourSchema.optional(),
+            value_override: z.string().max(256).optional(),
+            custom_class: z.string().max(128).optional(),
+            meta: z.record(z.unknown()).optional(),
+          })
+          .strict(),
+      )
+      .max(2000),
+  })
+  .strict();
+
+/**
+ * `PUT /nodes/{id}/cells` — mixed matrices (C §5.2), addressed by item REF.
+ *
+ * Refs and not ids, exactly as API §2.5 spells it, and the route resolves them against the
+ * question's own items: a cell is authored as "row BRAND_C is a numeric", and the id of the row
+ * is not something an author holds. `use_columns` means "this control ranges over the matrix's
+ * columns", which `qcells_use_columns_is_row_level` allows only on a whole-row override.
+ */
+export const replaceCellsSchema = z
+  .object({
+    cells: z
+      .array(
+        z
+          .object({
+            row_ref: refSchema,
+            column_ref: refSchema.optional(),
+            control: z
+              .object({
+                question_type: z.string().min(1).max(64),
+                config: configSchema.optional(),
+                use_columns: z.boolean().optional(),
+              })
+              .strict(),
+          })
+          .strict(),
+      )
+      .max(2000),
+  })
+  .strict();
+
+/* -------------------------------------------------------------------------- */
 /* Logic rules (API §2.7, roadmap P1-12)                                      */
 /* -------------------------------------------------------------------------- */
 

@@ -396,7 +396,18 @@ export interface VariablePickView {
   readonly pii: boolean;
 }
 
-/** One `GET /versions/:id/tree?fields=summary` row. */
+/**
+ * One `GET /versions/:id/tree` row — API §2.5's `TreeRow`.
+ *
+ * The six fields at the top were all the route served before P1-03 and keep their names, so a
+ * client written against the summary read still compiles. Everything below them is §2.5's list plus
+ * the three counts the CTE returns for free: a tree cannot render a "60 options" badge or a
+ * collapse chevron without them, and re-deriving either would mean a second read per node.
+ *
+ * `label_preview` is `null` unless the request asked for `fields=full`, and `rule_summaries` is
+ * empty unless it asked for `include=rules`. Both are absences by request, not by failure — a
+ * client that renders a badge off an empty array must ask for the data first.
+ */
 export interface TreeNodeView {
   readonly id: string;
   readonly kind: 'block' | 'page' | 'question' | 'text';
@@ -404,4 +415,156 @@ export interface TreeNodeView {
   readonly ref: string | null;
   readonly required: boolean | null;
   readonly sort_key: string;
+  readonly label_preview: string | null;
+  readonly question_type: string | null;
+  readonly flags: Record<string, unknown>;
+  readonly rule_summaries: readonly TreeRuleSummaryView[];
+  readonly diagnostic_counts: { readonly errors: number; readonly warnings: number };
+  readonly depth: number;
+  readonly ordinal: number;
+  readonly item_count: number;
+  readonly child_count: number;
+  readonly emit_count: number;
+  readonly updated_at: string;
+}
+
+/** One rule against a node, as the tree's badges render it. */
+export interface TreeRuleSummaryView {
+  readonly id: string;
+  readonly kind: RuleView['kind'];
+  readonly action: string | null;
+  readonly evaluation: RuleView['evaluation'];
+  readonly authored_in: RuleView['authored_in'];
+}
+
+/** `GET /versions/:id/tree`. `revision` is the value an `If-Match` for the next edit carries. */
+export interface TreeView {
+  readonly survey_version_id: string;
+  readonly revision: number;
+  readonly fields: 'summary' | 'full';
+  readonly data: readonly TreeNodeView[];
+}
+
+/**
+ * One `content.nodes` row on the wire — the lazily-fetched body (API §2.5).
+ *
+ * `config`, `settings`, `validation`, `masks`, `scripts` and `flags` are opaque here for
+ * `RuleView`'s reason: `config`'s shape is the question plugin's own `configSchema` (F §5) and
+ * `validation`/`masks` are schema §15's, both validated by their owners on write. The narrowing
+ * happens once, in the panel that edits them.
+ */
+export interface NodeView {
+  readonly id: string;
+  readonly survey_version_id: string;
+  readonly node_kind: 'block' | 'page' | 'question' | 'text';
+  readonly parent_id: string | null;
+  readonly sort_key: string;
+  readonly ref: string | null;
+  readonly label_key: string | null;
+  readonly instruction_key: string | null;
+  readonly title_key: string | null;
+  readonly question_type: string | null;
+  readonly required: boolean | null;
+  readonly config: Record<string, unknown>;
+  readonly settings: Record<string, unknown>;
+  readonly validation: readonly unknown[];
+  readonly masks: readonly unknown[];
+  readonly scripts: Record<string, unknown>;
+  readonly flags: Record<string, unknown>;
+  readonly emits: readonly string[];
+  readonly created_at: string;
+  readonly updated_at: string;
+  /** Non-null means the node is in the undo buffer (API §2.5's soft delete). */
+  readonly deleted_at: string | null;
+}
+
+/**
+ * One option, matrix row or matrix column.
+ *
+ * `code` and `sort_key` are separate fields here because they are separate columns with separate
+ * constraints (C §5.1), and the API "will not let you conflate them": reordering is
+ * `POST /items/{id}/move` and recoding is `PATCH /items/{id}`.
+ */
+export interface ItemView {
+  readonly id: string;
+  readonly question_id: string;
+  readonly item_kind: 'option' | 'row' | 'column';
+  readonly ref: string;
+  readonly code: number;
+  readonly label: string | null;
+  readonly sort_key: string;
+  readonly anchor: string;
+  readonly exclusive: boolean;
+  readonly behaviour: Record<string, unknown>;
+  readonly value_override: string | null;
+  readonly custom_class: string | null;
+  readonly meta: Record<string, unknown>;
+  readonly deleted_at: string | null;
+}
+
+/** One mixed-matrix cell override, addressed by item ref (C §5.2). */
+export interface CellView {
+  readonly id: string;
+  readonly row_ref: string | null;
+  readonly column_ref: string | null;
+  readonly control: {
+    readonly question_type: string;
+    readonly config: Record<string, unknown>;
+    readonly use_columns: boolean;
+  };
+}
+
+/** One `content.variables` row as the content routes echo it — the export contract, per column. */
+export interface EmittedVariableView {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: string;
+  readonly vtype: VariablePickView['vtype'];
+  readonly source_question_id: string | null;
+  readonly source_item_id: string | null;
+  readonly export_include: boolean;
+  readonly export_column: string;
+  readonly export_label_key: string | null;
+  readonly pii: boolean;
+  readonly persist: boolean;
+  readonly sort_key: string;
+}
+
+/** `POST /versions/:id/nodes`. */
+export interface NodeCreatedView {
+  readonly node: NodeView;
+  readonly variables_created: readonly EmittedVariableView[];
+}
+
+/** `PATCH /nodes/:id` — `variables_changed` is empty when the edit moved no derived name. */
+export interface NodeSavedView {
+  readonly node: NodeView;
+  readonly variables_changed: readonly EmittedVariableView[];
+}
+
+/**
+ * `DELETE /nodes/:id`.
+ *
+ * `rules_affected[].outcome` is what actually happened to each rule — `orphaned` under the default
+ * `?cascade_rules=orphan`, `deleted` under `delete` — so the studio's undo dialog can say which,
+ * rather than the client re-deriving it from the query parameter it sent.
+ */
+export interface NodeDeletedView {
+  readonly deleted: readonly NodeView[];
+  readonly rules_affected: readonly {
+    readonly id: string;
+    readonly kind: RuleView['kind'];
+    readonly target_node_id: string | null;
+    readonly target_item_id: string | null;
+    readonly outcome: 'orphaned' | 'deleted';
+  }[];
+}
+
+/** `POST /nodes/:id/duplicate` — the whole copy, in one response. */
+export interface NodeDuplicatedView {
+  readonly nodes: readonly NodeView[];
+  readonly items: readonly ItemView[];
+  readonly cells: readonly CellView[];
+  readonly variables_created: readonly EmittedVariableView[];
+  readonly rules_created: readonly RuleView[];
 }
