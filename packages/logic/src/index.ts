@@ -38,6 +38,7 @@ export {
   exprEq,
   groupEq,
   isExprShape,
+  isStateFree,
   kindOf,
   literalEq,
   mapChildren,
@@ -286,6 +287,9 @@ export {
   type BuildGraphOptions,
   type CellGraph,
 } from './graph.js';
+
+/* ---- the optimizer (D §10.1, roadmap P2-01) ----------------------------- */
+export { optimizeExpr } from './optimize.js';
 
 export {
   evaluate,

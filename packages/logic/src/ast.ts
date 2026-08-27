@@ -576,3 +576,36 @@ export function assertExprShape(value: unknown): Expr {
 export function kindOf(e: Expr): AstKind {
   return e.op;
 }
+
+/**
+ * True iff this subtree reads no state: no `var`, `probe`, `item`, `item_attr` or `agg` appears
+ * anywhere beneath it. A state-free expression evaluates to the same `Value` on every call —
+ * `evalStateFree` (`evaluator.ts`) computes that value, and both `check.ts`'s `constantVerdict`
+ * (D §3.5's `LGC-W030`) and `optimize.ts`'s constant folding (D §10.1) key off this same
+ * definition. One function rather than two, so the checker's warning and the optimizer's fold
+ * can never disagree about what counts as constant.
+ *
+ * `agg` is excluded even when its `over`/`where`/`select` are themselves state-free, because an
+ * aggregation still reads the *group's* runtime values (D §2.4) — its own subtree containing no
+ * `var` proves nothing about the members it iterates.
+ */
+export function isStateFree(expr: Expr): boolean {
+  let free = true;
+  const stack: Expr[] = [expr];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node === undefined) break;
+    if (
+      node.op === 'var' ||
+      node.op === 'probe' ||
+      node.op === 'item' ||
+      node.op === 'item_attr' ||
+      node.op === 'agg'
+    ) {
+      free = false;
+      break;
+    }
+    for (const child of childrenOf(node)) stack.push(child);
+  }
+  return free;
+}

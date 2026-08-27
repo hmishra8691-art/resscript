@@ -28,7 +28,18 @@ import type {
   LiteralValue,
   Type,
 } from './ast.js';
-import { T_BOOL, T_DATE, T_NEVER, T_NULL, T_NUM, T_TEXT, childrenOf, typeEq, typeName } from './ast.js';
+import {
+  T_BOOL,
+  T_DATE,
+  T_NEVER,
+  T_NULL,
+  T_NUM,
+  T_TEXT,
+  childrenOf,
+  isStateFree,
+  typeEq,
+  typeName,
+} from './ast.js';
 import type { AggFn } from './ast-kinds.js';
 import { isAstKind } from './ast-kinds.js';
 import type { LgcDiagnostic, LgcJsonValue } from './diagnostics.js';
@@ -1364,19 +1375,4 @@ export function constantVerdict(expr: Expr): 'true' | 'false' | undefined {
   if (!isStateFree(expr)) return undefined;
   if (expr.op === 'lit' && expr.v.k === 'bool') return expr.v.v ? 'true' : 'false';
   return undefined;
-}
-
-function isStateFree(expr: Expr): boolean {
-  let free = true;
-  const stack: Expr[] = [expr];
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    if (node.op === 'var' || node.op === 'probe' || node.op === 'item' || node.op === 'item_attr' || node.op === 'agg') {
-      free = false;
-      break;
-    }
-    for (const child of childrenOf(node)) stack.push(child);
-  }
-  return free;
 }

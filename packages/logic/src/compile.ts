@@ -29,6 +29,7 @@ import type { CellGraph } from './graph.js';
 import { buildCellGraph } from './graph.js';
 import type { CellIdx, DomainId, PageId, QuestionId, VariableId } from './ids.js';
 import { LogicInvariant } from './ids.js';
+import { optimizeExpr } from './optimize.js';
 import type { TypeEnv } from './registry.js';
 import type { Cell, MaskAxis, OptProp, Rule } from './rules.js';
 
@@ -83,6 +84,14 @@ export interface CompileOptions {
   readonly declaredVisible?: { readonly [nodeId: string]: boolean };
   /** Authored option-property defaults (schema §5.1), by `optionKey(option_id, prop)`. */
   readonly optionDefaults?: { readonly [key: string]: boolean };
+  /**
+   * Run the optimizer pass (`optimize.ts`: constant-fold, flatten and reorder `and`/`or`) before
+   * CSE. Defaults to `true`. The one legitimate reason to pass `false` is the roadmap P2-01 accept
+   * line itself — proving the optimizer never changes a verdict means compiling the identical
+   * rule set both ways and diffing `evaluate`'s output, which needs an optimizer-off code path to
+   * diff against. Nothing in `apps/studio` or `apps/worker` should ever pass `false`.
+   */
+  readonly optimize?: boolean;
 }
 
 export function optionKey(optionId: string, prop: OptProp): string {
@@ -122,16 +131,36 @@ export function compileLogic(
     derivedExprs.set(decl.id, checked.expr);
   }
 
-  /* ---- 2. CSE + flattening ---------------------------------------------- */
+  /* ---- 2. the optimizer (D §10.1; optimize.ts), then CSE + flattening --- */
+
+  // Optimizing before CSE, not after: folding `S1 = 1 AND TRUE` down to `S1 = 1` is what lets CSE
+  // discover it is the *same* condition as a `S1 = 1` written elsewhere — see optimize.ts's file
+  // header. `options.optimize === false` exists solely so a caller can compile the identical rule
+  // set both ways and diff the verdicts (the roadmap's own acceptance test for this milestone).
+  const optimize = options.optimize ?? true;
+  const optimized: Rule[] = optimize ? typed.map((rule) => optimizeRule(rule)) : typed;
+  const optimizedDerived = optimize
+    ? new Map([...derivedExprs].map(([id, expr]) => [id, optimizeExpr(expr)] as const))
+    : derivedExprs;
 
   const interner = createInterner();
-  const cseRules: Rule[] = typed.map((rule) => internRule(rule, interner));
+  const cseRules: Rule[] = optimized.map((rule) => internRule(rule, interner));
   const cseDerived = new Map<VariableId, Expr>();
-  for (const [id, expr] of derivedExprs) cseDerived.set(id, interner.intern(expr));
+  for (const [id, expr] of optimizedDerived) cseDerived.set(id, interner.intern(expr));
   const nodes = interner.nodes();
 
-  /* ---- 3. the cell graph ------------------------------------------------ */
+  /* ---- 3. the cell graph ------------------------------------------------- */
 
+  // Built from the optimized tree, which is why `LGC-CYCLE`/`LGC-CONFLICT` are diagnostics about
+  // the rules that can actually fire rather than about every edge an author happened to type. The
+  // one shape this can hide: a variable read that lives inside an operand `and`/`or` absorption
+  // discards outright (an author-written `AND FALSE` sibling of a real condition — the same class
+  // of leftover-from-debugging pattern `LGC-W030` already exists to catch at the top level) drops
+  // that operand's dependency edges along with it. optimize.test.ts documents this by name; it is
+  // accepted rather than solved by diagnosing on a second, unoptimized graph build, because a var
+  // read cannot disappear from the optimized tree any other way — `isStateFree` guarantees a
+  // subtree containing one is never itself folded away, only ever discarded as an absorbed
+  // sibling of a literal that makes the *whole* `and`/`or` constant.
   const envWithDerived = withDerivedExpressions(env, cseDerived);
   const graph = buildCellGraph(cseRules, envWithDerived, { path });
   diagnostics.push(...graph.diagnostics);
@@ -270,6 +299,21 @@ export function createInterner(): Interner {
   };
 
   return { intern, nodes: () => nodes };
+}
+
+/** Apply `optimizeExpr` to every expression a rule carries — the same set `internRule` interns. */
+function optimizeRule(rule: Rule): Rule {
+  const condition = optimizeExpr(rule.condition);
+  const effect = rule.effect;
+  switch (effect.action) {
+    case 'mask':
+      return { ...rule, condition, effect: { ...effect, per_item: optimizeExpr(effect.per_item) } };
+    case 'set':
+    case 'option_state':
+      return { ...rule, condition, effect: { ...effect, value: optimizeExpr(effect.value) } };
+    default:
+      return { ...rule, condition };
+  }
 }
 
 function internRule(rule: Rule, interner: Interner): Rule {
