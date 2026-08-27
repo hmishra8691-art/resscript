@@ -316,11 +316,11 @@ DECLARE
 BEGIN
   LOOP
     v_token := '';
-    v_bytes := public.gen_random_bytes(64);
+    v_bytes := app.pgcrypto_gen_random_bytes(64);
     v_i     := 0;
     WHILE length(v_token) < 26 LOOP
       IF v_i >= 64 THEN
-        v_bytes := public.gen_random_bytes(64);
+        v_bytes := app.pgcrypto_gen_random_bytes(64);
         v_i     := 0;
       END IF;
       v_b := get_byte(v_bytes, v_i);

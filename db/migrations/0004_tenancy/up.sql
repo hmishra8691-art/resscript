@@ -159,11 +159,12 @@ COMMENT ON TYPE app.invitation_status IS
 
 CREATE FUNCTION app.hash_invitation_token(p_token text) RETURNS bytea
 LANGUAGE sql IMMUTABLE STRICT SECURITY DEFINER SET search_path = '' AS $$
-  SELECT public.digest(p_token, 'sha256')
+  SELECT app.pgcrypto_digest(p_token, 'sha256')
 $$;
--- SECURITY DEFINER only so that callers do not need USAGE on schema `public` (where
--- pgcrypto lives) purely to hash a token; 0001 revoked that grant from PUBLIC and handing
--- it back to `authoring` for one function would be the larger privilege.
+-- SECURITY DEFINER only so that callers do not need direct EXECUTE on app.pgcrypto_digest
+-- (0001; a wrapper over pgcrypto's digest(), since pgcrypto's own install schema varies by
+-- target) purely to hash a token; 0001 revoked that grant from PUBLIC and handing it back
+-- to `authoring` for one function would be the larger privilege.
 REVOKE EXECUTE ON FUNCTION app.hash_invitation_token(text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION app.hash_invitation_token(text) TO authoring;
 COMMENT ON FUNCTION app.hash_invitation_token(text) IS

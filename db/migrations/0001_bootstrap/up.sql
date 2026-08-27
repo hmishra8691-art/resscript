@@ -272,6 +272,63 @@ COMMENT ON DOMAIN runtime.survey_token IS
 -- ---------------------------------------------------------------------------
 -- 7. Shared helpers
 -- ---------------------------------------------------------------------------
+-- pgcrypto's functions are schema-qualified everywhere they're used below and in later
+-- migrations, because every caller pins `search_path = ''` (section 2's belt-and-braces).
+-- The schema to qualify with is NOT a constant across targets, though: a bare local
+-- Postgres installs pgcrypto into `public` (the default, since nothing claims the name
+-- first — section 1's `CREATE EXTENSION IF NOT EXISTS pgcrypto` actually creates it there).
+-- Supabase pre-installs pgcrypto for every project already, commonly into `extensions`, so
+-- that same statement is a no-op there and `public.digest`/`public.gen_random_bytes` do not
+-- exist — the divergence this codebase kept tripping on for the auth schema and the owner
+-- roles, one more time. Resolved once, here, into two `app`-owned wrappers so every later
+-- caller names a function it can actually resolve on either target without knowing where
+-- pgcrypto lives.
+-- The outer block below is tagged ($pgcrypto_wrap$, not bare $$) and every inner
+-- dollar-quote closes with a trailing space before the next one opens, deliberately:
+-- Postgres dollar-quoting is a single flat scanner, not a nested one, so a bare `$$` two
+-- differently-tagged delimiters happen to form back-to-back (e.g. `...$f1body$$f1$...`
+-- with nothing between them) reads as an accidental close of whichever OUTER bare `$$` is
+-- still open, corrupting everything after it. Cost real time to track down once; the tag
+-- and the spaces are what stop it from happening again.
+DO $pgcrypto_wrap$
+DECLARE v_schema text;
+BEGIN
+  SELECT n.nspname INTO v_schema
+    FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+   WHERE e.extname = 'pgcrypto';
+  IF v_schema IS NULL THEN
+    RAISE EXCEPTION 'pgcrypto extension not found after CREATE EXTENSION IF NOT EXISTS';
+  END IF;
+
+  EXECUTE format(
+    $f1$CREATE FUNCTION app.pgcrypto_digest(data text, type text) RETURNS bytea
+        LANGUAGE sql IMMUTABLE STRICT SET search_path = '' AS
+        $f1body$ SELECT %I.digest(data, type) $f1body$ $f1$,
+    v_schema
+  );
+  EXECUTE format(
+    $f2$CREATE FUNCTION app.pgcrypto_gen_random_bytes(count integer) RETURNS bytea
+        LANGUAGE sql VOLATILE STRICT SET search_path = '' AS
+        $f2body$ SELECT %I.gen_random_bytes(count) $f2body$ $f2$,
+    v_schema
+  );
+END $pgcrypto_wrap$;
+COMMENT ON FUNCTION app.pgcrypto_digest(text, text) IS
+  'Schema-agnostic wrapper over pgcrypto''s digest(), resolved above to wherever this '
+  'project actually installed pgcrypto. Callers pin search_path = '''' and must name a '
+  'schema explicitly; a hardcoded public.digest(...) only ever worked on a bare Postgres.';
+COMMENT ON FUNCTION app.pgcrypto_gen_random_bytes(integer) IS
+  'Schema-agnostic wrapper over pgcrypto''s gen_random_bytes(), for the same reason as '
+  'app.pgcrypto_digest(text, text) above.';
+REVOKE EXECUTE ON FUNCTION app.pgcrypto_digest(text, text), app.pgcrypto_gen_random_bytes(integer)
+  FROM PUBLIC;
+-- app.gen_ulid below is SECURITY INVOKER (not DEFINER) and is called directly by `authoring`
+-- as a column DEFAULT (0006), so it needs its own direct grant on the wrapper it calls.
+-- app.hash_invitation_token (0004) and runtime.gen_survey_token (0009) are both SECURITY
+-- DEFINER and stay owned by the migrating role, which already has implicit EXECUTE on
+-- everything it just created here — no further grant needed for those two.
+GRANT EXECUTE ON FUNCTION app.pgcrypto_gen_random_bytes(integer) TO authoring;
+
 CREATE FUNCTION app.tg_touch_updated_at() RETURNS trigger
 LANGUAGE plpgsql SET search_path = '' AS $$
 BEGIN
@@ -289,7 +346,7 @@ DECLARE
   v_ms   bigint := floor(extract(epoch from clock_timestamp()) * 1000)::bigint;
   v_ts   text := '';
   v_rand text := '';
-  v_bytes bytea := public.gen_random_bytes(10);   -- 80 bits of CSPRNG entropy
+  v_bytes bytea := app.pgcrypto_gen_random_bytes(10);   -- 80 bits of CSPRNG entropy
   v_chunk bigint;
   i int;
   j int;
