@@ -29,6 +29,7 @@ import { join } from 'node:path';
 import { createLogger } from '@resscript/observability';
 import type {
   ArtifactGraph,
+  QuotaConfig,
   ArtifactLogic,
   ArtifactManifest,
   CompiledPage,
@@ -43,6 +44,25 @@ export interface ArtifactHead {
   readonly manifest: ArtifactManifest;
   readonly graph: ArtifactGraph;
   readonly logic: ArtifactLogic;
+  /**
+   * `quotas.json`, absent when the survey declares none.
+   *
+   * Part of the HEAD rather than fetched at the gate: a quota gate is exactly the moment a
+   * respondent is waiting on a decision, and a fourth round trip there would put storage latency
+   * on the one step that already has to talk to Redis. It is small (a plan is dimensions and
+   * targets) and immutable like the rest of the artifact, so the head's cache covers it.
+   */
+  readonly quotas?: QuotaConfig;
+  /**
+   * Set when `quotas.json` could not be read — a tier broke and no tier answered — as opposed to
+   * the survey simply not having one.
+   *
+   * The distinction matters at the gate and nowhere else: absent means "no plans, admit everyone",
+   * which is correct, while indeterminate means the plans may exist and be unreadable, and
+   * admitting everyone then silently overshoots the client's quota. The gate emits a distinct,
+   * louder event for this case rather than the benign one.
+   */
+  readonly quotasIndeterminate?: boolean;
 }
 
 export class ArtifactNotFound extends Error {
@@ -224,17 +244,47 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
     }
   }
 
+  /**
+   * Fetch a file whose ABSENCE is a legitimate answer, distinguishing it from "could not tell".
+   *
+   * `fetchFile` deliberately treats an unreachable tier as different from an absent file and
+   * rethrows when no tier could answer — correct for the three required files, because a head
+   * without them cannot render anything. Applied to an optional file it has a bad consequence: one
+   * flaky tier would fail every head load for the overwhelming majority of surveys, which simply
+   * do not have the file.
+   *
+   * But swallowing the error is worse than it looks. If the survey DOES declare quotas and the read
+   * failed, "absent" would mean the gate runs with no plan and admits everyone — a silent quota
+   * overshoot, which is the failure mode ADR-008's fail-closed option exists to avoid. So the two
+   * cases are returned separately: `{ value: null, indeterminate: false }` is "the survey has no
+   * such file", and `indeterminate: true` is "a tier broke and nothing answered". The caller decides
+   * what the second one means; nothing here guesses.
+   */
+  async function fetchOptionalJson<T>(
+    hash: string,
+    path: string,
+  ): Promise<{ value: T | null; indeterminate: boolean }> {
+    try {
+      return { value: await fetchJson<T>(hash, path), indeterminate: false };
+    } catch (err) {
+      log.warn('artifact_optional_file_indeterminate', { hash, path, err: String(err) });
+      return { value: null, indeterminate: true };
+    }
+  }
+
   return {
     async head(hash: string): Promise<ArtifactHead> {
       const cached = heads.get(hash);
       if (cached) return cached;
 
-      // Three files, fetched together: they are always all needed, and serially they would cost
-      // three round trips on the first page view of every session.
-      const [manifest, graph, logic] = await Promise.all([
+      // Fetched together: the required three are always all needed, and serially they would cost
+      // three round trips on the first page view of every session. `quotas.json` joins them
+      // because a quota gate is the one step already waiting on Redis — see the field's own note.
+      const [manifest, graph, logic, quotas] = await Promise.all([
         fetchJson<ArtifactManifest>(hash, 'manifest.json'),
         fetchJson<ArtifactGraph>(hash, 'graph.json'),
         fetchJson<ArtifactLogic>(hash, 'logic.json'),
+        fetchOptionalJson<QuotaConfig>(hash, 'quotas.json'),
       ]);
 
       if (!manifest) throw new ArtifactNotFound(hash, 'manifest.json');
@@ -258,7 +308,14 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
         throw new Error(`Artifact manifest has no variable_manifest: ${hash}`);
       }
 
-      const head: ArtifactHead = { hash, manifest, graph, logic };
+      const head: ArtifactHead = {
+        hash,
+        manifest,
+        graph,
+        logic,
+        ...(quotas.value ? { quotas: quotas.value } : {}),
+        ...(quotas.indeterminate ? { quotasIndeterminate: true } : {}),
+      };
       heads.set(hash, head);
       log.info('artifact_head_loaded', {
         hash,

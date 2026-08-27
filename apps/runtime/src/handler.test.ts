@@ -1180,6 +1180,263 @@ describe('interpret', () => {
     ]);
   });
 
+  /**
+   * A one-dimension, one-cell marginal plan whose bucket condition is the literal `TRUE`.
+   *
+   * A literal rather than a variable comparison because these tests are about the GATE — resolve,
+   * decide, resume — and a bucket predicate that depended on session vars would make each of them
+   * also a test of variable tagging and enum domains. `cells.test.ts` covers bucket selection
+   * itself, including the UNKNOWN case, against a stubbed evaluator; here the predicate just needs
+   * to be decidable by the real engine, which a literal is.
+   */
+  const GATE_CONFIG = {
+    policy: {
+      count_at: 'reservation',
+      reservation_ttl_s: 5400,
+      on_store_unavailable: 'fail_closed',
+      counter_scope: 'survey',
+    },
+    dimensions: [
+      {
+        id: 'qd_gender',
+        ref: 'GENDER',
+        variable_id: 'var_s2',
+        buckets: [{ ref: 'M', match: { n: 0, op: 'lit', v: { k: 'bool', v: true } } }],
+      },
+    ],
+    plans: [
+      {
+        id: 'qp_main',
+        ref: 'MAIN',
+        type: 'marginal',
+        dimension_ids: ['qd_gender'],
+        cells: [{ key: ['M'], target: 100, mode: 'hard' }],
+      },
+    ],
+  };
+
+  /** The same plan with a bucket nothing can satisfy, so the respondent occupies no cell. */
+  const UNMATCHABLE_GATE_CONFIG = {
+    ...GATE_CONFIG,
+    dimensions: [
+      {
+        ...GATE_CONFIG.dimensions[0],
+        buckets: [{ ref: 'M', match: { n: 0, op: 'lit', v: { k: 'bool', v: false } } }],
+      },
+    ],
+  };
+
+  it('resolves a quota gate through the client and RESUMES the machine', async () => {
+    // The defect this closes. The machine emits `reserve_quota` and RETURNS, parking the session in
+    // `QUOTA_GATE` until a `quota_result` input arrives — and nothing ever fed one back, so any
+    // session that reached a gate node stalled on a blank step forever. The assertion that matters
+    // is not the reserve call; it is that `step` was invoked with the verdict.
+    const reserved: { cells: string[]; ttl: number }[] = [];
+    const stepped: { passed: boolean }[] = [];
+    const quota = {
+      reserve: async (_sid: string, cells: { key: string }[], ttl: number) => {
+        reserved.push({ cells: cells.map(c => c.key), ttl });
+        return { ok: true, soft_full: [], blocked: [] };
+      },
+      evaluateOnly: async () => ({ ok: true, soft_full: [], blocked: [] }),
+    };
+
+    const out = await interpret(
+      [{ c: 'reserve_quota', quota_ref: 'MAIN', node_id: 'fn_q' }],
+      session(),
+      fetcher(),
+      {
+        logic: REHYDRATED,
+        manifest: INTERPRET_MANIFEST,
+        escapeContext: 'none',
+        quota: quota as never,
+        quotaGate: {
+          config: GATE_CONFIG as never,
+          scope: 'srv_1',
+          step: (state, input) => {
+            stepped.push({ passed: (input as { passed: boolean }).passed });
+            return { next: state, cmds: [] };
+          },
+        },
+      },
+    );
+
+    expect(reserved).toEqual([{ cells: ['q:srv_1:qp_main:M'], ttl: 5400 }]);
+    // Fed back, which is the whole point — without this the respondent never leaves the gate.
+    expect(stepped).toEqual([{ passed: true }]);
+    expect(out.events.map(e => e.kind)).toContain('quota.decision');
+  });
+
+  it('routes a FULL cell to on_full by stepping with passed:false', async () => {
+    const stepped: { passed: boolean }[] = [];
+    const quota = {
+      reserve: async () => ({ ok: false, soft_full: [], blocked: ['q:srv_1:qp_main:M'] }),
+      evaluateOnly: async () => ({ ok: false, soft_full: [], blocked: [] }),
+    };
+
+    await interpret(
+      [{ c: 'reserve_quota', quota_ref: 'MAIN', node_id: 'fn_q' }],
+      session(),
+      fetcher(),
+      {
+        logic: REHYDRATED,
+        manifest: INTERPRET_MANIFEST,
+        escapeContext: 'none',
+        quota: quota as never,
+        quotaGate: {
+          config: GATE_CONFIG as never,
+          scope: 'srv_1',
+          step: (state, input) => {
+            stepped.push({ passed: (input as { passed: boolean }).passed });
+            return { next: state, cmds: [] };
+          },
+        },
+      },
+    );
+
+    expect(stepped).toEqual([{ passed: false }]);
+  });
+
+  it('a soft-full cell PASSES, because a soft cell only reports its overshoot', async () => {
+    const stepped: { passed: boolean }[] = [];
+    const quota = {
+      reserve: async () => ({ ok: true, soft_full: ['q:srv_1:qp_main:M'], blocked: [] }),
+      evaluateOnly: async () => ({ ok: true, soft_full: [], blocked: [] }),
+    };
+
+    const out = await interpret(
+      [{ c: 'reserve_quota', quota_ref: 'MAIN', node_id: 'fn_q' }],
+      session(),
+      fetcher(),
+      {
+        logic: REHYDRATED,
+        manifest: INTERPRET_MANIFEST,
+        escapeContext: 'none',
+        quota: quota as never,
+        quotaGate: {
+          config: GATE_CONFIG as never,
+          scope: 'srv_1',
+          step: (state, input) => {
+            stepped.push({ passed: (input as { passed: boolean }).passed });
+            return { next: state, cmds: [] };
+          },
+        },
+      },
+    );
+
+    expect(stepped).toEqual([{ passed: true }]);
+    expect(out.events.find(e => e.kind === 'quota.decision')?.['decision']).toBe('soft_full');
+  });
+
+  it('a test session evaluates without moving a counter, and still resumes', async () => {
+    // E §14.1: test mode must never mutate. `gateDecision` routes to `evaluateOnly`; the point
+    // here is that the gate still produces a verdict and the machine still continues.
+    const calls: string[] = [];
+    const quota = {
+      reserve: async () => { calls.push('reserve'); return { ok: true, soft_full: [], blocked: [] }; },
+      evaluateOnly: async () => { calls.push('evaluateOnly'); return { ok: true, soft_full: [], blocked: [] }; },
+    };
+    const stepped: { passed: boolean }[] = [];
+
+    await interpret(
+      [{ c: 'reserve_quota', quota_ref: 'MAIN', node_id: 'fn_q' }],
+      { ...session(), is_test: true },
+      fetcher(),
+      {
+        logic: REHYDRATED,
+        manifest: INTERPRET_MANIFEST,
+        escapeContext: 'none',
+        quota: quota as never,
+        quotaGate: {
+          config: GATE_CONFIG as never,
+          scope: 'srv_1',
+          step: (state, input) => {
+            stepped.push({ passed: (input as { passed: boolean }).passed });
+            return { next: state, cmds: [] };
+          },
+        },
+      },
+    );
+
+    expect(calls).toEqual(['evaluateOnly']);
+    expect(stepped).toEqual([{ passed: true }]);
+  });
+
+  it('a respondent in no cell passes without touching the store', async () => {
+    // `cells.ts`' argument: you cannot fill a cell you are not in. The bucket condition here is
+    // never true, so no cell resolves and the store is not consulted at all.
+    const calls: string[] = [];
+    const quota = {
+      reserve: async () => { calls.push('reserve'); return { ok: true, soft_full: [], blocked: [] }; },
+      evaluateOnly: async () => { calls.push('evaluateOnly'); return { ok: true, soft_full: [], blocked: [] }; },
+    };
+    const stepped: { passed: boolean }[] = [];
+
+    const out = await interpret(
+      [{ c: 'reserve_quota', quota_ref: 'MAIN', node_id: 'fn_q' }],
+      session(),
+      fetcher(),
+      {
+        logic: REHYDRATED,
+        manifest: INTERPRET_MANIFEST,
+        escapeContext: 'none',
+        quota: quota as never,
+        quotaGate: {
+          // A plan whose one bucket matches nothing this session can satisfy.
+          config: UNMATCHABLE_GATE_CONFIG as never,
+          scope: 'srv_1',
+          step: (state, input) => {
+            stepped.push({ passed: (input as { passed: boolean }).passed });
+            return { next: state, cmds: [] };
+          },
+        },
+      },
+    );
+
+    expect(calls).toEqual([]);
+    expect(stepped).toEqual([{ passed: true }]);
+    expect(out.events.map(e => e.kind)).toContain('quota.no_cell');
+  });
+
+  it('an unreadable quotas.json is reported distinctly from an absent one', async () => {
+    // Absent means "no plans, nothing can be full" — benign. Unreadable means the plan may exist
+    // and admitting everyone silently overshoots the client's quota. Both pass (parking a
+    // respondent on a gate we cannot evaluate is worse), but the second must be findable.
+    const stepped: { passed: boolean }[] = [];
+    const deps = (indeterminate: boolean) => ({
+      logic: REHYDRATED,
+      manifest: INTERPRET_MANIFEST,
+      escapeContext: 'none' as const,
+      quota: { reserve: async () => ({ ok: true, soft_full: [], blocked: [] }) } as never,
+      quotaGate: {
+        ...(indeterminate ? { indeterminate: true } : {}),
+        scope: 'srv_1',
+        step: (state: never, input: never) => {
+          stepped.push({ passed: (input as unknown as { passed: boolean }).passed });
+          return { next: state, cmds: [] };
+        },
+      } as never,
+    });
+
+    const absent = await interpret(
+      [{ c: 'reserve_quota', quota_ref: 'MAIN', node_id: 'fn_q' }],
+      session(),
+      fetcher(),
+      deps(false),
+    );
+    const unreadable = await interpret(
+      [{ c: 'reserve_quota', quota_ref: 'MAIN', node_id: 'fn_q' }],
+      session(),
+      fetcher(),
+      deps(true),
+    );
+
+    expect(absent.events.map(e => e.kind)).toContain('quota.reserve_deferred');
+    expect(unreadable.events.map(e => e.kind)).toContain('quota.config_unavailable');
+    // Both let the respondent continue.
+    expect(stepped).toEqual([{ passed: true }, { passed: true }]);
+  });
+
   it('executes commit and release through a quota client when one is present', async () => {
     const calls: string[] = [];
     const quota = {

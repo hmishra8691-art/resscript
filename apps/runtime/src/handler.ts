@@ -31,18 +31,20 @@ import {
   renderPage,
   type Cmd,
   type EvaluatedPage,
+  type Input as MachineIn,
   type MachineArtifact,
   type OrderGroup,
   type RehydratedLogic,
   type RenderPage,
   type RenderedPage,
 } from '@resscript/runtime-core';
-import { evalCondition, evaluate, varStateOf } from '@resscript/logic';
-import type { ArtifactManifest } from '@resscript/schema';
+import { NO_CELLS, evalCondition, evaluate, varStateOf } from '@resscript/logic';
+import type { ArtifactManifest, QuotaConfig } from '@resscript/schema';
 import { ArtifactNotFound, type ArtifactHead, type ArtifactLoader } from './artifact/loader.js';
 import { createSession, generateULID } from './entry.js';
 import { rebuildSession, type RuntimeWriter } from './session/durable.js';
-import type { QuotaClient } from './quota/index.js';
+import { gateDecision, type QuotaClient } from './quota/index.js';
+import { planFor, resolveCells } from './quota/cells.js';
 import { handleSubmitCore, type SubmitBody } from './submit.js';
 import {
   renderHtmlPage,
@@ -486,6 +488,23 @@ export interface RenderDeps {
   readonly groupFor?: (group_ref: string) => OrderGroup | undefined;
   readonly quota?: QuotaClient;
   /**
+   * Everything a `quota_gate` needs to reach a verdict and let the machine continue.
+   *
+   * Optional as a whole rather than field by field: without it a gate cannot be resolved at all,
+   * and the honest response is the deferred event, not a partial reserve. Present, and the gate
+   * runs — resolve the respondent's cells, decide, and step the machine with `quota_result`.
+   */
+  readonly quotaGate?: {
+    /** `quotas.json` off the pinned head. Absent means the survey declares no plans. */
+    readonly config?: QuotaConfig;
+    /** The head could not read `quotas.json` — see `ArtifactHead.quotasIndeterminate`. */
+    readonly indeterminate?: boolean;
+    /** `policy.counter_scope` resolved to a concrete id — survey id or version id. */
+    readonly scope: string;
+    /** Step the machine so a resolved gate can continue to the next node. */
+    readonly step: (session: SessionState, input: MachineIn) => { next: SessionState; cmds: readonly Cmd[] };
+  };
+  /**
    * Capture the E §14.2 trace even for a non-test session. Replay only — see `evaluateAndRender`.
    */
   readonly trace?: boolean;
@@ -588,14 +607,21 @@ export async function interpret(
         break;
       }
 
-      case 'reserve_quota':
-        // The reserve needs the PLAN — which dimensions, which cells this respondent's
-        // answers put them in — and plans ship in quotas.json, which nothing can author yet
-        // (the quotas tables have no columns; roadmap blocker #4). The client, the Lua
-        // scripts and the gate decision are built and tested (quota/); this event is the
-        // honest record that a gate node was reached before plans exist to resolve.
-        events.push({ kind: 'quota.reserve_deferred', detail: 'no quota plan in artifact' });
+      case 'reserve_quota': {
+        // The gate, resolved. The machine emitted this command and RETURNED, parking the session
+        // in `QUOTA_GATE` until a `quota_result` input arrives — so anything that fails to feed one
+        // back leaves the respondent on a blank step indefinitely. Every path below therefore ends
+        // in exactly one `resume` call.
+        const resolved = await resolveQuotaGate(cmd.quota_ref, current, opts);
+        for (const e of resolved.events) events.push(e);
+        const resumed = await resumeAfterQuota(resolved.passed, current, opts, loadPage);
+        current = resumed.session;
+        if (resumed.page) page = resumed.page;
+        if (resumed.disposition !== null) disposition = resumed.disposition;
+        if (resumed.debug) lastDebug = resumed.debug;
+        for (const e of resumed.events) events.push(e);
         break;
+      }
 
       case 'call_api':
         events.push({ kind: 'api_call.deferred', node_id: cmd.node_id, detail: 'P1-10' });
@@ -646,6 +672,242 @@ function pageUrl(ctx: Ctx, pageId: string, sessionId: string): string {
  * `MachineArtifact` needs only `graph`, which is the point: the machine routes without a single
  * page object, so per-page cost stays independent of survey size (C §17).
  */
+/* ------------------------------------------------------------------ *
+ * The quota gate (E §10, roadmap P2-06)
+ * ------------------------------------------------------------------ */
+
+interface QuotaGateOutcome {
+  readonly passed: boolean;
+  readonly events: readonly { kind: string; [k: string]: unknown }[];
+}
+
+/**
+ * Reach a verdict for one `quota_gate`.
+ *
+ * The pieces this composes were all built and tested before it existed — `resolveCells` (which
+ * respondent, which cells), `gateDecision` (reserve or evaluate-only, with ADR-008's
+ * fail-open/fail-closed), and the Lua-backed client. What was missing was anything that called
+ * them, so the gate emitted a deferred event and the machine never got a `quota_result`.
+ *
+ * **Passing is the answer to every case that is not a proven full cell**, and each of those cases
+ * is a deliberate direction rather than a fallback:
+ *
+ *  - no quota client, or no plan in the artifact — nothing can be full, and holding a respondent on
+ *    a gate whose plan does not exist is a worse failure than not counting them. Recorded.
+ *  - the respondent resolves into no cell — see `cells.ts`: they cannot fill a cell they are not
+ *    in, and `LGC-Q003` already blocks a plan that reads a variable no path writes before the gate.
+ *  - `fail_open` when Redis is unreachable — the survey owner's own choice, and the session is
+ *    flagged `quota_unverified` because overshoot nobody can identify afterwards is worse than
+ *    overshoot that is labelled.
+ *  - `soft_full` — a soft cell keeps counting and only reports the overshoot (schema
+ *    `QUOTA_CELL_MODES`), so it passes and says so.
+ *
+ * Only `full` and `unavailable_fail_closed` fail, and both are named in the event stream.
+ */
+async function resolveQuotaGate(
+  quotaRef: string,
+  session: SessionState,
+  opts: RenderDeps,
+): Promise<QuotaGateOutcome> {
+  const events: { kind: string; [k: string]: unknown }[] = [];
+  const gate = opts.quotaGate;
+  const config = gate?.config;
+
+  if (!opts.quota || gate === undefined || config === undefined) {
+    // Two shapes of "cannot decide", kept apart on purpose. `quotas.json` genuinely absent (or no
+    // client configured) is benign — there are no plans, so nothing can be full. But a
+    // `quotas.json` that could not be READ (`quotasIndeterminate`) may well contain the plan this
+    // gate names, and admitting everyone then overshoots the client's quota silently. Both pass —
+    // holding a respondent on a gate we cannot evaluate is the worse failure — but the second says
+    // so loudly enough for an operator to find it.
+    events.push(
+      gate?.indeterminate === true
+        ? { kind: 'quota.config_unavailable', quota_ref: quotaRef }
+        : {
+            kind: 'quota.reserve_deferred',
+            quota_ref: quotaRef,
+            detail: opts.quota ? 'no quota plan in artifact' : 'no quota client',
+          },
+    );
+    return { passed: true, events };
+  }
+
+  const plan = planFor(config, quotaRef);
+  if (plan === undefined) {
+    // A gate naming a plan the artifact does not carry. `SCH-1004` rejects this at publish, so
+    // reaching it means a hand-edited artifact; a respondent is not the right place to fail.
+    events.push({ kind: 'quota.plan_missing', quota_ref: quotaRef });
+    return { passed: true, events };
+  }
+
+  const resolved = resolveCells({
+    config,
+    planRef: quotaRef,
+    scope: gate.scope,
+    // The bucket ASTs are evaluated against the respondent's current variable state through the
+    // same three-valued engine as every other condition, so UNKNOWN is "not this bucket" — the
+    // safe direction argued in `cells.ts`.
+    evalCondition: condition =>
+      quotaConditionVerdict(condition, session, opts),
+  });
+
+  if (resolved.cells.length === 0) {
+    events.push({
+      kind: 'quota.no_cell',
+      quota_ref: quotaRef,
+      ...(resolved.unresolved.length > 0 ? { unresolved: [...resolved.unresolved] } : {}),
+    });
+    return { passed: true, events };
+  }
+
+  const decision = await gateDecision(opts.quota, session.session_id, resolved.cells, {
+    isTest: session.is_test,
+    ttlSeconds: config.policy.reservation_ttl_s,
+    onUnavailable: config.policy.on_store_unavailable,
+  });
+
+  events.push({
+    kind: 'quota.decision',
+    quota_ref: quotaRef,
+    decision: decision.decision,
+    cells: resolved.cells.map(c => c.key),
+    buckets: { ...resolved.buckets },
+    ...(decision.soft_full.length > 0 ? { soft_full: [...decision.soft_full] } : {}),
+    ...(decision.blocked.length > 0 ? { blocked: [...decision.blocked] } : {}),
+  });
+
+  if (decision.decision === 'unavailable_fail_open') {
+    // The caller's duty per `gateDecision`'s own contract: overshoot that cannot be identified
+    // afterwards is indistinguishable from data.
+    events.push({ kind: 'quota.unverified', quota_ref: quotaRef });
+  }
+
+  const passed =
+    decision.decision !== 'full' &&
+    decision.decision !== 'would_be_full' &&
+    decision.decision !== 'unavailable_fail_closed';
+
+  return { passed, events };
+}
+
+/**
+ * Evaluate one bucket `match` AST against the session's variables.
+ *
+ * Uses the engine's own `evalCondition` over the rehydrated program, so a bucket predicate is
+ * decided by exactly the code that decides a display rule — including the Kleene semantics and the
+ * variable tagging (`tagVars`) that makes an enum comparison compare against the right domain. A
+ * second evaluator here would be a second answer to "is this respondent 18-24", and the one in the
+ * compiler's `LGC-Q001` solver already has to agree with it.
+ */
+function quotaConditionVerdict(
+  condition: unknown,
+  session: SessionState,
+  opts: RenderDeps,
+): boolean | null {
+  const tagged = tagVars(
+    session.vars as Record<string, unknown>,
+    opts.manifest,
+    id => opts.logic.schema.ownerQuestion(id as never) as string | undefined,
+  );
+  const tri = evalCondition(condition as never, {
+    vars: varStateOf(tagged as never),
+    ctx: {},
+    cells: NO_CELLS,
+    schema: opts.logic.schema as never,
+  } as never);
+  return tri === 'T' ? true : tri === 'F' ? false : null;
+}
+
+interface QuotaResumed {
+  readonly session: SessionState;
+  readonly page: RenderedPage | null;
+  readonly disposition: string | null;
+  readonly events: readonly { kind: string; [k: string]: unknown }[];
+  readonly debug?: Record<string, unknown>;
+}
+
+/**
+ * Feed the verdict back into the machine and carry out whatever it asks for next.
+ *
+ * A gate's `on_pass`/`on_full` edge leads to more flow — a page to render, a termination to
+ * finalize, or another gate — so the commands the machine returns here have to be interpreted, not
+ * discarded. That is a recursive `interpret`, and it is bounded: `depth` caps the chain so a
+ * pathological artifact (gate -> gate -> gate) cannot spin a respondent request forever. The cap is
+ * generous relative to any real survey and, when hit, the session is left parked with an event
+ * rather than silently advanced.
+ */
+async function resumeAfterQuota(
+  passed: boolean,
+  session: SessionState,
+  opts: RenderDeps,
+  loadPage: PageFetcher,
+  depth = 0,
+): Promise<QuotaResumed> {
+  const gate = opts.quotaGate;
+  if (gate === undefined) {
+    return { session, page: null, disposition: null, events: [] };
+  }
+  if (depth >= MAX_QUOTA_GATE_CHAIN) {
+    return {
+      session,
+      page: null,
+      disposition: null,
+      events: [{ kind: 'quota.gate_chain_exhausted', depth }],
+    };
+  }
+
+  const stepped = gate.step(session, { i: 'quota_result', passed });
+  const out = await interpret(stepped.cmds, stepped.next, loadPage, opts);
+  return {
+    session: out.session,
+    page: out.page,
+    disposition: out.disposition,
+    events: out.events,
+    ...(out.debug ? { debug: out.debug } : {}),
+  };
+}
+
+/**
+ * How many quota gates one request may resolve in a chain.
+ *
+ * Interlocked designs legitimately place two or three gates in sequence (a main plan, then a
+ * vendor limit). Ten is far above anything real and far below anything that would tie up a
+ * request; the point is that the bound EXISTS, because the resume path is recursive and an
+ * artifact is not required to be sensible.
+ */
+const MAX_QUOTA_GATE_CHAIN = 10;
+
+/**
+ * The `quotaGate` dependency for one session, or `undefined` when the survey declares no quotas.
+ *
+ * `counter_scope` is resolved here, and it is the whole reason this is a function rather than a
+ * literal: schema's `QuotaPolicy` states the field has no safe default because it decides whether
+ * counters carry over when a live survey is republished mid-field. `'survey'` keys counters to the
+ * survey id (correct for a tracker fixing a typo on day three); `'version'` keys them to the
+ * version id (correct when the new version asks a different question). Guessing either would
+ * silently reset or silently merge a client's quotas.
+ */
+function quotaGateFor(head: ArtifactHead, session: SessionState, now: number): RenderDeps['quotaGate'] {
+  const config = head.quotas;
+  // Built even when the config is absent-but-indeterminate: the gate needs to know the difference
+  // to pick its event, and it cannot know if this returns undefined.
+  if (config === undefined && head.quotasIndeterminate !== true) return undefined;
+  return {
+    ...(config ? { config } : {}),
+    ...(head.quotasIndeterminate === true ? { indeterminate: true } : {}),
+    // With no readable config there is no `counter_scope` to honour and no cell to key; the gate
+    // will short-circuit on `config === undefined` before `scope` is used. The version id is the
+    // narrower of the two, so an indeterminate head cannot accidentally address survey-wide
+    // counters.
+    scope:
+      config?.policy.counter_scope === 'survey' ? session.survey_id : session.survey_version_id,
+    step: (state, input) => {
+      const out = step(state, input, asMachineArtifact(head), machineCtx(state, now));
+      return { next: out.next, cmds: out.cmds };
+    },
+  };
+}
+
 function asMachineArtifact(head: ArtifactHead): MachineArtifact {
   return head as unknown as MachineArtifact;
 }
@@ -931,11 +1193,13 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     machineCtx(session, now),
   );
   const labels = await labelsFor(ctx, head.hash, language);
+  const quotaGate = quotaGateFor(head, session, now);
   const out = await interpret(cmds, next, pageFetcher(ctx, head.hash, language), {
     logic: logicFor(head),
     manifest: head.manifest,
     escapeContext: 'html_text',
     groupFor: groupsFor(head),
+    ...(quotaGate ? { quotaGate } : {}),
     ...(labels ? { labels } : {}),
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
   });
@@ -1431,12 +1695,14 @@ async function handleBack(res: ServerResponse, ctx: Ctx): Promise<void> {
   }
 
   const backLabels = await labelsFor(ctx, session.artifact_hash, session.language);
+  const backQuotaGate = quotaGateFor(head, session, ctx.deps.now());
   const out = await interpret(cmds, next, pageFetcher(ctx, session.artifact_hash, session.language), {
     ...(backLabels ? { labels: backLabels } : {}),
     logic: logicFor(head),
     manifest: head.manifest,
     escapeContext: 'html_text',
     groupFor: groupsFor(head),
+    ...(backQuotaGate ? { quotaGate: backQuotaGate } : {}),
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
   });
   await ctx.deps.sessions.save(out.session);
@@ -1670,11 +1936,13 @@ async function handlePreviewEntry(res: ServerResponse, ctx: Ctx, hash: string): 
 
   const entered = step(session, { i: 'enter' }, asMachineArtifact(head), machineCtx(session, now));
   const labels = await labelsFor(ctx, hash, language);
+  const entryQuotaGate = quotaGateFor(head, session, now);
   const out = await interpret(entered.cmds, entered.next, pageFetcher(ctx, hash, language), {
     logic: logicFor(head),
     manifest: head.manifest,
     escapeContext: 'html_text',
     groupFor: groupsFor(head),
+    ...(entryQuotaGate ? { quotaGate: entryQuotaGate } : {}),
     ...(labels ? { labels } : {}),
     ...(ctx.deps.quota ? { quota: ctx.deps.quota } : {}),
   });

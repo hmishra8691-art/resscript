@@ -68,19 +68,57 @@ function memSource(
   };
 }
 
+/** `quotas.json` as the compiler emits it — enough of a plan for the loader to carry. */
+const QUOTAS = {
+  policy: {
+    count_at: 'reservation',
+    reservation_ttl_s: 5400,
+    on_store_unavailable: 'fail_closed',
+    counter_scope: 'survey',
+  },
+  dimensions: [],
+  plans: [],
+};
+
+/**
+ * A COMPLETE artifact, `quotas.json` included.
+ *
+ * Complete matters for the tier tests: an optional file the fixture omits is legitimately looked
+ * for in every tier (it might be in a later one), so a fixture missing `quotas.json` would make
+ * "the first source that answers serves the head" false for a reason that has nothing to do with
+ * tiering. `filesWithout` builds the incomplete variants where that is the point.
+ */
 function fullFiles(): Record<string, unknown> {
   return {
     'manifest.json': MANIFEST,
     'graph.json': GRAPH,
     'logic.json': LOGIC,
+    'quotas.json': QUOTAS,
     'pages/en/pg_1.json': PAGE_1,
     'pages/en/pg_2.json': { id: 'pg_2', ref: 'P2', questions: [] },
   };
 }
 
+function filesWithout(path: string): Record<string, unknown> {
+  const files = fullFiles();
+  delete files[path];
+  return files;
+}
+
 /* ---------------------------------------------------------------- *
  * Head
  * ---------------------------------------------------------------- */
+
+/**
+ * How many files one head costs: manifest, graph, logic, quotas.
+ *
+ * Named rather than inlined because three separate tests assert it and what they are each really
+ * asserting is "the head is a FIXED cost, independent of survey size / served by one tier" — not
+ * the number itself. `quotas.json` made it four (roadmap P2-06); the next addition should be one
+ * edit here, and any test that has to change by more than this constant is asserting something
+ * else and should say so.
+ */
+const HEAD_FILE_COUNT = 4;
 
 describe('head', () => {
   it('loads manifest, graph and logic', async () => {
@@ -93,9 +131,15 @@ describe('head', () => {
     expect(head.logic).toBeDefined();
   });
 
-  it('fetches exactly the three head files — no pages', async () => {
+  it('fetches exactly the head files — no pages', async () => {
     // The whole point of the split. A head that pulled pages would make entry cost scale with
     // survey size.
+    //
+    // `quotas.json` joined the head with the quota gate (roadmap P2-06): it is small, immutable
+    // and needed at the one step that already has to talk to Redis, so fetching it here rather
+    // than at the gate keeps storage latency off a respondent who is waiting on a decision. It is
+    // optional — a survey with no quotas has no such file and the fetch answers null — which is
+    // why the assertion is on the set of requests and not on a count.
     const src = memSource(fullFiles());
     await createLoader({ sources: [src] }).head(HASH);
 
@@ -103,7 +147,41 @@ describe('head', () => {
       `${HASH}/graph.json`,
       `${HASH}/logic.json`,
       `${HASH}/manifest.json`,
+      `${HASH}/quotas.json`,
     ]);
+  });
+
+  it('carries quotas.json when the survey has one', async () => {
+    const head = await createLoader({ sources: [memSource(fullFiles())] }).head(HASH);
+
+    expect(head.quotas?.policy.counter_scope).toBe('survey');
+    expect(head.quotasIndeterminate).toBeUndefined();
+  });
+
+  it('a survey with no quotas.json loads with no quotas and no complaint', async () => {
+    // The common case by far. Absence is a legitimate answer, not a degraded one.
+    const head = await createLoader({
+      sources: [memSource(filesWithout('quotas.json'))],
+    }).head(HASH);
+
+    expect(head.quotas).toBeUndefined();
+    expect(head.quotasIndeterminate).toBeUndefined();
+  });
+
+  it('a quotas.json that could not be READ is marked indeterminate, not treated as absent', async () => {
+    // The distinction the gate depends on. A broken tier plus no tier holding the file means the
+    // plan may exist and be unreadable — and a gate that then admitted everyone would overshoot
+    // the client's quota silently. The head still loads (the required files are all present);
+    // it just refuses to claim the survey has no quotas.
+    const down = memSource({}, { name: 'down', fail: true });
+    const up = memSource(filesWithout('quotas.json'), { name: 'up' });
+
+    const head = await createLoader({ sources: [down, up] }).head(HASH);
+
+    expect(head.quotas).toBeUndefined();
+    expect(head.quotasIndeterminate).toBe(true);
+    // And the rest of the head is intact — an unreadable optional file must not break rendering.
+    expect(head.graph.nodes).toHaveLength(3);
   });
 
   it('caches, so a second session on the same survey fetches nothing', async () => {
@@ -214,7 +292,7 @@ describe('page', () => {
     const afterHead = src.fetches.length;
     await loader.page(HASH, 'en', 'pg_big_499');
 
-    expect(afterHead).toBe(3);
+    expect(afterHead).toBe(HEAD_FILE_COUNT);
     expect(src.fetches.length - afterHead).toBe(1);
   });
 
@@ -308,7 +386,7 @@ describe('source tiers', () => {
     const second = memSource(fullFiles(), { name: 'second' });
     await createLoader({ sources: [first, second] }).head(HASH);
 
-    expect(first.fetches).toHaveLength(3);
+    expect(first.fetches).toHaveLength(HEAD_FILE_COUNT);
     expect(second.fetches).toHaveLength(0);
   });
 
@@ -318,7 +396,7 @@ describe('source tiers', () => {
     const head = await createLoader({ sources: [down, up] }).head(HASH);
 
     expect(head.graph.nodes).toHaveLength(3);
-    expect(up.fetches).toHaveLength(3);
+    expect(up.fetches).toHaveLength(HEAD_FILE_COUNT);
   });
 
   it('falls through when a tier reports absence', async () => {
