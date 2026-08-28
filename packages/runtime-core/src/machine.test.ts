@@ -29,9 +29,10 @@ import {
  */
 function artifact(
   nodes: FlowNodeLike[],
-  pages: Array<{ id: string; entry?: string; authored?: string }>,
+  pages: Array<{ id: string; entry?: string; authored?: string; group?: string }>,
 ): MachineArtifact {
   const authored = pages.filter(p => p.authored !== undefined);
+  const grouped = pages.filter(p => p.group !== undefined);
   return {
     graph: {
       page_order: pages.map(p => p.id),
@@ -44,6 +45,9 @@ function artifact(
               authored.map(p => [p.id, p.authored as string]),
             ),
           }),
+      ...(grouped.length === 0
+        ? {}
+        : { page_group: Object.fromEntries(grouped.map(p => [p.id, p.group as string])) }),
     },
   };
 }
@@ -830,5 +834,172 @@ describe('a loop node walks its unrolled iterations', () => {
     });
     walk(linearSurvey(), c);
     expect(asked).toContain('pg_1');
+  });
+});
+
+
+/* ------------------------------------------------------------------ *
+ * A randomizer PRESENTS its targets (P2-03)
+ * ------------------------------------------------------------------ */
+
+describe('a randomizer renders the pages it owns', () => {
+  /**
+   * THE DEFECT. `case 'randomizer'` used to set `cursor = node.next` and nothing else, with a
+   * comment saying the seeded modes "derive order, store nothing". Order was never derived and the
+   * pages were never rendered — and because the compiler gives a randomizer ownership of EVERY page
+   * of every target (`layoutSitesOf` returns one site per target), every page under a randomizer
+   * was unreachable. A survey shuffling three blocks showed none of them.
+   *
+   * The old test in `describe('randomizer')` above did not catch it because its fixture puts the
+   * pages under a SEPARATE `sequence` node — the one arrangement where passing through is correct.
+   * It is kept, because that arrangement is still correct and still worth pinning.
+   */
+  function shuffledSurvey(mode: string, extra: Record<string, unknown> = {}) {
+    return artifact(
+      [
+        { id: 'fn_start', type: 'start', next: 'fn_rand' },
+        {
+          id: 'fn_rand',
+          type: 'randomizer',
+          targets: ['blk_a', 'blk_b', 'blk_c'],
+          mode,
+          next: 'fn_end',
+          ...extra,
+        } as never,
+        { id: 'fn_end', type: 'end', disposition: 'COMPLETE' },
+      ],
+      [
+        { id: 'pg_a1', entry: 'fn_rand', group: 'blk_a' },
+        { id: 'pg_a2', entry: 'fn_rand', group: 'blk_a' },
+        { id: 'pg_b1', entry: 'fn_rand', group: 'blk_b' },
+        { id: 'pg_c1', entry: 'fn_rand', group: 'blk_c' },
+      ],
+    );
+  }
+
+  function walkAll(art: MachineArtifact, c: PureCtx): string[] {
+    let s = session();
+    const seen: string[] = [];
+    let out = step(s, { i: 'enter' }, art, c);
+    s = out.next;
+    for (const cmd of out.cmds) if (cmd.c === 'render') seen.push(cmd.page_id);
+    for (let guard = 0; guard < 20; guard += 1) {
+      if (s.current_page_id === null) break;
+      out = step(s, { i: 'submitted', page_id: s.current_page_id }, art, c);
+      s = out.next;
+      let rendered = false;
+      for (const cmd of out.cmds) {
+        if (cmd.c === 'render') {
+          seen.push(cmd.page_id);
+          rendered = true;
+        }
+      }
+      if (!rendered) break;
+    }
+    return seen;
+  }
+
+  it('renders EVERY page it owns, which it previously rendered none of', () => {
+    const seen = walkAll(shuffledSurvey('shuffle'), ctx({ random: (s: string) => (s.length % 7) / 7 }));
+    expect(seen).toHaveLength(4);
+    expect([...seen].sort()).toEqual(['pg_a1', 'pg_a2', 'pg_b1', 'pg_c1']);
+  });
+
+  it('keeps each target pages TOGETHER and in authored order', () => {
+    // `shuffle` on a randomizer reorders the blocks the author listed; each block's pages stay put.
+    // Permuting the flat page list would interleave pages from different blocks — a different
+    // feature nobody asked for, and one that reads as correct in a diff.
+    const seen = walkAll(shuffledSurvey('shuffle'), ctx({ random: (s: string) => (s.length % 7) / 7 }));
+    expect(seen.indexOf('pg_a2')).toBe(seen.indexOf('pg_a1') + 1);
+  });
+
+  it('permutes the TARGET order from the seed', () => {
+    // Two different draws must be able to produce two different orders, or the "randomizer" is a
+    // sequence with extra steps.
+    const orders = new Set<string>();
+    for (const bias of [0.1, 0.9]) {
+      for (const flip of [1, -1]) {
+        const seen = walkAll(
+          shuffledSurvey('shuffle'),
+          ctx({ random: (s: string) => bias + flip * ((s.charCodeAt(s.length - 1) % 5) / 20) }),
+        );
+        orders.add(seen.join(','));
+      }
+    }
+    expect(orders.size).toBeGreaterThan(1);
+  });
+
+  it('is STABLE within a session — the same draws give the same order every step', () => {
+    // The machine is a pure reducer with nowhere to store a permutation, and does not need one:
+    // ctx.random is the seeded counter-based PRNG (ADR-006), so the same salt yields the same draw
+    // all session. An unstable order would re-shuffle mid-survey and re-ask pages.
+    const c = ctx({ random: (s: string) => (s.charCodeAt(s.length - 1) % 11) / 11 });
+    expect(walkAll(shuffledSurvey('shuffle'), c)).toEqual(walkAll(shuffledSurvey('shuffle'), c));
+  });
+
+  it('takes the first n of the permuted targets for `subset`', () => {
+    // The first n of ONE permutation, not n independent draws — which would over-represent whatever
+    // the tie-break favours.
+    const seen = walkAll(
+      shuffledSurvey('subset', { n: 2 }),
+      ctx({ random: (s: string) => (s.charCodeAt(s.length - 1) % 11) / 11 }),
+    );
+    const groups = new Set(seen.map(p => p.slice(0, 4)));
+    expect(groups.size).toBe(2);
+  });
+
+  it('leaves `fixed_order` in authored order', () => {
+    const seen = walkAll(shuffledSurvey('fixed_order'), ctx({ random: () => 0.99 }));
+    expect(seen).toEqual(['pg_a1', 'pg_a2', 'pg_b1', 'pg_c1']);
+  });
+
+  it('falls back to the seeded order for the counter-backed modes rather than dropping pages', () => {
+    // `rotate` and `even_distribution` need the cross-session counter of ADR-008, which a pure
+    // reducer cannot reach. A seeded permutation is a valid order — just not an evenly distributed
+    // one — and rendering nothing would be strictly worse than rendering an unevenly ordered
+    // survey. randomize.ts reports the same situation as `needs_counter` rather than pretending.
+    const seen = walkAll(shuffledSurvey('rotate'), ctx({ random: () => 0.5 }));
+    expect(seen).toHaveLength(4);
+  });
+
+  it('advances to `next` once its pages are exhausted', () => {
+    let s = session();
+    const art = shuffledSurvey('shuffle');
+    const c = ctx({ random: () => 0.5 });
+    let out = step(s, { i: 'enter' }, art, c);
+    s = out.next;
+    for (let i = 0; i < 4; i += 1) {
+      out = step(s, { i: 'submitted', page_id: s.current_page_id as string }, art, c);
+      s = out.next;
+    }
+    expect(out.cmds.some(cmd => cmd.c === 'finalize')).toBe(true);
+  });
+
+  it('skips an invisible page without abandoning the rest of the target', () => {
+    const c = ctx({ random: () => 0.5, isPageVisible: (id: string) => id !== 'pg_a1' });
+    const seen = walkAll(shuffledSurvey('shuffle'), c);
+    expect(seen).not.toContain('pg_a1');
+    expect(seen).toContain('pg_a2');
+  });
+
+  it('degrades to per-page ordering when the graph carries no page_group', () => {
+    // An artifact compiled before `page_group` existed, or a hand-built graph. Each page becomes its
+    // own group, which orders pages rather than blocks — not ideal, and far better than rendering
+    // nothing, which is what the old code did.
+    const art = artifact(
+      [
+        { id: 'fn_start', type: 'start', next: 'fn_rand' },
+        {
+          id: 'fn_rand',
+          type: 'randomizer',
+          targets: ['blk_a', 'blk_b'],
+          mode: 'shuffle',
+          next: 'fn_end',
+        } as never,
+        { id: 'fn_end', type: 'end', disposition: 'COMPLETE' },
+      ],
+      [{ id: 'pg_a1', entry: 'fn_rand' }, { id: 'pg_b1', entry: 'fn_rand' }],
+    );
+    expect(walkAll(art, ctx({ random: () => 0.5 }))).toHaveLength(2);
   });
 });

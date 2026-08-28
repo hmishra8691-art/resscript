@@ -87,6 +87,41 @@ export function buildArtifactGraph(graph: FlowGraph, survey?: Survey): ArtifactG
   // artifact simply carries no groups — the same shape a version-1 artifact had.
   const orderGroups = survey === undefined ? undefined : buildOrderGroups(survey, graph);
 
+  // Which randomizer TARGET each page came from (P2-03).
+  //
+  // The machine needs this and cannot derive it: `page_entry` says which flow node owns a page, and
+  // a randomizer owns every page of every target. Permuting the flat page list would shuffle pages
+  // ACROSS blocks, which is not what a block-level randomizer means — `shuffle` reorders the
+  // targets and keeps each target's pages in their authored order. Grouping needs the target.
+  const pageGroup: { [pageId: string]: string } = {};
+  if (survey !== undefined) {
+    // Page id → its ancestor content ids, so a target can claim the pages beneath it. Built here
+    // from the document rather than read off `FlowGraph`, which exposes content→flow-nodes and not
+    // target→pages.
+    const ancestorsOf = pageAncestors(survey);
+    for (const [nodeId, node] of graph.nodes) {
+      if (node.type !== 'randomizer') continue;
+      const targets: ReadonlySet<string> = new Set<string>(node.targets);
+      for (const [pageId, owner] of graph.pageEntry) {
+        // Only pages this randomizer actually owns — a page laid out by a different node is
+        // CMP-0004's business, not this map's.
+        if (owner !== nodeId) continue;
+        const chain = ancestorsOf.get(pageId) ?? [];
+        // The NEAREST enclosing target, so a randomizer over two blocks that each contain
+        // sub-blocks groups by the block the author listed rather than by an inner one.
+        for (let i = chain.length - 1; i >= 0; i -= 1) {
+          const candidate = chain[i] as string;
+          if (targets.has(candidate)) {
+            pageGroup[pageId] = candidate;
+            break;
+          }
+        }
+        // A target that IS the page (a randomizer over pages rather than blocks).
+        if (pageGroup[pageId] === undefined && targets.has(pageId)) pageGroup[pageId] = pageId;
+      }
+    }
+  }
+
   // Only for the pages unrolling actually derived, so a survey with no loops emits a graph with no
   // such key at all and therefore byte-identical bytes to before this feature.
   const pageAuthored: { [derived: string]: string } = {};
@@ -106,7 +141,31 @@ export function buildArtifactGraph(graph: FlowGraph, survey?: Survey): ArtifactG
       ? {}
       : { order_groups: orderGroups }),
     ...(Object.keys(pageAuthored).length === 0 ? {} : { page_authored: pageAuthored }),
+    ...(Object.keys(pageGroup).length === 0 ? {} : { page_group: pageGroup }),
   };
+}
+
+/**
+ * Page id → its ancestor content ids, outermost first.
+ *
+ * A local walk rather than a reuse of `emit/pages.ts`' `blockPathOf`, because that module builds it
+ * as part of a larger index this emitter deliberately does not depend on: `buildArtifactGraph` stays
+ * independently callable from a hand-built `FlowGraph` with no document, which is how this package's
+ * own fixtures and the QA suite drive it.
+ */
+function pageAncestors(survey: Survey): ReadonlyMap<string, readonly string[]> {
+  const out = new Map<string, readonly string[]>();
+  const visit = (nodes: readonly unknown[], chain: readonly string[]): void => {
+    for (const raw of nodes) {
+      const node = raw as { id?: string; type?: string; children?: readonly unknown[] };
+      const id = node.id ?? '';
+      if (node.type === 'page') out.set(id, chain);
+      const next = [...chain, id];
+      if (Array.isArray(node.children)) visit(node.children, next);
+    }
+  };
+  visit(survey.content ?? [], []);
+  return out;
 }
 
 /* ========================================================================== */

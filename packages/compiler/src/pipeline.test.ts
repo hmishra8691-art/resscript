@@ -1198,3 +1198,81 @@ describe('a loop block compiles to one page per iteration', () => {
     expect(a.bundle.hash).not.toBe(b.bundle.hash);
   });
 });
+
+
+/* -------------------------------------------------------------------------- */
+/* A randomizer's pages carry their target (P2-03)                            */
+/* -------------------------------------------------------------------------- */
+
+describe('page_group connects the compiler to the machine randomizer', () => {
+  it('maps every page a randomizer owns to the target it came from', () => {
+    // Without this the machine cannot permute at block granularity: `page_entry` says a randomizer
+    // owns a page and nothing says WHICH target it came from, so the only available permutation
+    // would shuffle pages across blocks. Emitted here and consumed by `randomizerPages`.
+    const ids = deterministicIds(3131);
+    const qa = ask(ids, 'QA');
+    const qb = ask(ids, 'QB');
+
+    const pageA1 = page(ids, 'A1', [qa.node]);
+    const pageA2 = page(ids, 'A2', []);
+    const pageB1 = page(ids, 'B1', [qb.node]);
+    const blockA = { id: ids.next('block'), type: 'block' as const, ref: 'BA', children: [pageA1, pageA2] };
+    const blockB = { id: ids.next('block'), type: 'block' as const, ref: 'BB', children: [pageB1] };
+
+    const start = ids.next('flow_node');
+    const rand = ids.next('flow_node');
+    const end = ids.next('flow_node');
+
+    const survey = makeSurvey(ids, {
+      content: [blockA, blockB] as never,
+      languages: bundleOf({ 'QA.label': 'a?', 'QB.label': 'b?' }),
+      variables: [qa.variable, qb.variable],
+      nodes: [
+        { id: start, type: 'start', next: rand },
+        {
+          id: rand,
+          type: 'randomizer',
+          targets: [blockA.id, blockB.id],
+          mode: 'shuffle',
+          next: end,
+        },
+        { id: end, type: 'end', disposition: 'COMPLETE' },
+      ] as never,
+    });
+
+    const result = compile(survey);
+    if (!result.ok) throw new Error(`compile failed: ${JSON.stringify(codes(result))}`);
+
+    const group = result.bundle.artifact.graph.page_group ?? {};
+    expect(group[pageA1.id]).toBe(blockA.id);
+    expect(group[pageA2.id]).toBe(blockA.id);
+    expect(group[pageB1.id]).toBe(blockB.id);
+    // And all three pages belong to the randomizer, which is what made them unreachable before.
+    const entry = result.bundle.artifact.graph.page_entry;
+    expect(entry[pageA1.id]).toBe(rand);
+    expect(entry[pageB1.id]).toBe(rand);
+  });
+
+  it('adds nothing for a survey with no randomizer', () => {
+    // The field is in the artifact hash, so a survey without one must compile identically.
+    const ids = deterministicIds(11);
+    const asked = ask(ids, 'Q1');
+    const blockId = ids.next('block');
+    const start = ids.next('flow_node');
+    const seq = ids.next('flow_node');
+    const end = ids.next('flow_node');
+    const survey = makeSurvey(ids, {
+      content: [{ id: blockId, type: 'block', ref: 'B1', children: [page(ids, 'P1', [asked.node])] }],
+      languages: bundleOf(LABELS),
+      variables: [asked.variable],
+      nodes: [
+        { id: start, type: 'start', next: seq },
+        { id: seq, type: 'sequence', target_id: blockId, next: end },
+        { id: end, type: 'end', disposition: 'COMPLETE' },
+      ] as never,
+    });
+    const result = compile(survey);
+    if (!result.ok) throw new Error('compile failed');
+    expect(result.bundle.artifact.graph.page_group).toBeUndefined();
+  });
+});

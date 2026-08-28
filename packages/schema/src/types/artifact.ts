@@ -131,6 +131,17 @@ export interface ArtifactGraph {
    * rules — see `compiler/src/loops.ts` for why that is exact rather than approximate.
    */
   readonly page_authored?: { readonly [derivedPageId: string]: string };
+  /**
+   * Page id → the `randomizer` TARGET it belongs to (P2-03), absent when no randomizer lays out
+   * pages.
+   *
+   * **Artifact schema version 2, append-only.** The machine needs it and cannot derive it:
+   * `page_entry` says which flow node owns a page, and a randomizer owns every page of every
+   * target. Permuting the flat page list would shuffle pages ACROSS blocks, which is not what a
+   * block-level randomizer means — `shuffle` reorders the TARGETS and keeps each target's pages in
+   * their authored order.
+   */
+  readonly page_group?: { readonly [pageId: string]: string };
 }
 
 /**

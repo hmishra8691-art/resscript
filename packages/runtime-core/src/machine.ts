@@ -116,6 +116,8 @@ export interface MachineArtifact {
      * looped page would hide none of its iterations.
      */
     readonly page_authored?: { readonly [derivedPageId: string]: string };
+    /** Page id → the `randomizer` target it belongs to (P2-03). See `pagesForNode`. */
+    readonly page_group?: { readonly [pageId: string]: string };
   };
 }
 
@@ -220,6 +222,88 @@ export function pagesForNode(artifact: MachineArtifact, node_id: string): string
 }
 
 /**
+ * The pages a `randomizer` node presents, in this session's order (E §8.5, roadmap P2-03).
+ *
+ * ## The defect this fixes
+ *
+ * `case 'randomizer'` used to set `cursor = node.next` and nothing else, with a comment saying the
+ * seeded modes "derive order, store nothing". Order was never derived and the pages were never
+ * rendered: the compiler gives a randomizer ownership of EVERY page of every target
+ * (`layoutSitesOf` returns one site per target), so advancing straight to `next` made every page
+ * under a randomizer unreachable. A survey that shuffled three blocks showed none of them.
+ *
+ * The old unit test did not catch it because its fixture put the pages under a SEPARATE `sequence`
+ * node — the one arrangement in which passing through is correct.
+ *
+ * ## Permuted by TARGET, not by page
+ *
+ * `shuffle` on a randomizer reorders the blocks the author listed; each block's pages stay in their
+ * authored order. Permuting the flat page list would interleave pages from different blocks, which
+ * is a different feature nobody asked for. `graph.page_group` is what makes the target visible here.
+ *
+ * ## Recomputed on every step, deliberately
+ *
+ * The machine is a pure reducer with nowhere to store a permutation, and it does not need one:
+ * `ctx.random(salt)` is the seeded counter-based PRNG (ADR-006), so the same salt yields the same
+ * draw for the whole session and the order is stable across steps without being persisted. That is
+ * the same property that lets the renderer derive option order per session without storing it.
+ *
+ * `subset` takes the first `n` of the permuted targets, which is what makes a subset unbiased —
+ * choosing n by n independent draws would over-represent whatever the tie-break favours.
+ *
+ * The COUNTER-BACKED modes (`rotate`, `even_distribution`) are not implemented here and are not
+ * silently approximated: they need the cross-session counter ADR-008 describes, which a pure
+ * reducer cannot reach. They fall back to the seeded permutation, which is a valid order — just not
+ * an evenly distributed one — and `randomize.ts` reports the same situation as `needs_counter`
+ * rather than pretending.
+ */
+export function randomizerPages(
+  artifact: MachineArtifact,
+  ctx: PureCtx,
+  node: FlowNodeLike & { type: 'randomizer' },
+): string[] {
+  const owned = pagesForNode(artifact, node.id);
+  if (owned.length === 0) return [];
+  const groupOf = artifact.graph.page_group ?? {};
+
+  // Group in FIRST-APPEARANCE order, which is authored order: `page_order` is flow-traversal order
+  // and a randomizer's sites are visited in the order the author listed its targets.
+  const groups: string[] = [];
+  const pagesByGroup = new Map<string, string[]>();
+  for (const pageId of owned) {
+    // A page with no group entry is its own group, so a hand-built graph (or an artifact compiled
+    // before this field existed) degrades to per-page ordering rather than to no pages at all.
+    const group = groupOf[pageId] ?? pageId;
+    const list = pagesByGroup.get(group);
+    if (list === undefined) {
+      groups.push(group);
+      pagesByGroup.set(group, [pageId]);
+    } else {
+      list.push(pageId);
+    }
+  }
+
+  if (node.mode === 'fixed_order' || groups.length < 2) {
+    return owned;
+  }
+
+  // One draw per group, then sort by it: a Fisher-Yates would need a stream of draws, and
+  // `ctx.random(salt)` is a keyed lookup rather than a generator. Sorting by key is the standard
+  // way to permute with keyed randomness and is stable for equal keys, which the salt makes
+  // vanishingly unlikely and harmless.
+  const salt = node.seed_salt ?? node.id;
+  const keyed = groups.map(group => ({ group, key: ctx.random(`${salt}#${group}`) }));
+  keyed.sort((a, b) => (a.key === b.key ? (a.group < b.group ? -1 : 1) : a.key - b.key));
+
+  const chosen =
+    node.mode === 'subset' && typeof node.n === 'number' && node.n > 0
+      ? keyed.slice(0, Math.min(node.n, keyed.length))
+      : keyed;
+
+  return chosen.flatMap(({ group }) => pagesByGroup.get(group) ?? []);
+}
+
+/**
  * Page visibility, resolved through the AUTHORED page id for an unrolled loop iteration (P2-02).
  *
  * `graph.page_authored` maps a derived per-iteration id back to the page whose rules govern it. It
@@ -247,7 +331,22 @@ function nextPageInNode(
   node_id: string,
   after: string | null,
 ): string | null {
-  const pages = pagesForNode(artifact, node_id);
+  return nextPageInPages(artifact, ctx, pagesForNode(artifact, node_id), after);
+}
+
+/**
+ * The same walk over an explicit page list, so a randomizer's permuted order can use it.
+ *
+ * Factored out rather than duplicated: the "skip invisible, resume strictly after" rule is subtle
+ * (see the comment on `nextPageInNode`) and two copies would drift, with the randomizer's copy being
+ * the one nobody exercises.
+ */
+function nextPageInPages(
+  artifact: MachineArtifact,
+  ctx: PureCtx,
+  pages: readonly string[],
+  after: string | null,
+): string | null {
   const start = after === null ? 0 : pages.indexOf(after) + 1;
   if (after !== null && start === 0) {
     // `after` is not in this sequence — treat it as "start from the beginning".
@@ -397,9 +496,43 @@ function traverse<S extends MachineSession>(
       }
 
       case 'randomizer': {
-        // Order is derived from the seed, so nothing is stored for the seeded modes. The
-        // counter-backed modes (`rotate`, `even_distribution`) persist a `design` variable
-        // instead — E §8.5, wired in P1-10 where the counter infrastructure lives.
+        // A randomizer PRESENTS its targets, in this session's order — it is a sequence whose page
+        // order is permuted per session (E §8.5). Previously this arm set `cursor = node.next` and
+        // nothing else, which made every page under a randomizer unreachable: the compiler gives
+        // the node ownership of every page of every target, so skipping straight to `next` skipped
+        // all of them. See `randomizerPages`.
+        //
+        // Nothing is stored: the order is derived from the seeded PRNG, so it is stable across
+        // steps without being persisted.
+        const ordered = randomizerPages(artifact, ctx, node);
+        const page = nextPageInPages(artifact, ctx, ordered, resumeAfter);
+        if (page !== null) {
+          cmds.push({ c: 'render', page_id: page });
+          return {
+            next: {
+              ...state,
+              machine_state: { state: 'PAGE_LOOP', current_page_id: page },
+              current_page_id: page,
+              flow_cursor: { ...state.flow_cursor, node_id: node.id },
+              history: [
+                ...state.history,
+                {
+                  page_id: page,
+                  entered_at: ctx.now_ms,
+                  submitted_at: null,
+                  wrote: [],
+                  shown: [],
+                  attempt: 1,
+                },
+              ],
+              last_activity_at: ctx.now_ms,
+              server_time_ms: ctx.now_ms,
+              revision: state.revision + 1,
+            },
+            cmds,
+          };
+        }
+        // Exhausted — every page it owns was either visited or invisible.
         cursor = node.next;
         resumeAfter = null;
         break;
