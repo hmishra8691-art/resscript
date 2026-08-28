@@ -52,8 +52,18 @@
  *     is still in translation" is expressible, and taking the OR is what keeps a single blocking
  *     language blocking. Reducing it to AND, or to the base row alone, would let the one language
  *     that must not ship incomplete ship incomplete.
- *  4. **`quotas`, `designs` and `assets`.** No columns. All three are optional in
- *     `Survey` and their absence is merely a feature not yet reachable. **`vendors` used to be the
+ *  4. **`quotas` and `designs`.** No columns. Both are optional in `Survey` and their absence is
+ *     merely a feature not yet reachable. **`assets` used to be listed here and is not any more**:
+ *     0019 gave it `content.code_assets` and this file now reads it (`assetsOf`). That omission
+ *     cost the same way the two below did — custom JS, author CSS and HTML templates were all
+ *     built end to end against `Survey.assets` and none of them could execute.
+ *
+ *     Three entries have now left this list for the same reason, which makes it a rule rather than
+ *     a coincidence: **a new content table is not finished until `assembleSurvey` reads it.** The
+ *     failure is silent by construction, because every consumer reads these fields as
+ *     `survey.x ?? []` and an empty list is a legal survey. `ops.content_tables_not_cloned()`
+ *     enforces the equivalent rule for cloning from the catalog and has caught real mistakes;
+ *     there is no catalog equivalent here, because "assembled" is not a property of a column. **`vendors` used to be the
  *     fourth entry here and is not any more**: 0024 gave it `content.vendors`,
  *     `content.vendor_inbound_params` and `content.vendor_limits`, and this file now reads it like
  *     every other table. That omission was not benign the way the remaining three are — every piece
