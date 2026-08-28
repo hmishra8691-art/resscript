@@ -304,6 +304,20 @@ export function PublishDialog(props: PublishDialogProps): React.JSX.Element {
  * been compiled; showing a green tick for it is exactly the inference that endpoint's header warns
  * about.
  */
+/*
+ * The note above the diagnostics, and why its wording changed.
+ *
+ * It used to end "The diagnostics below are from that compile", which is true and reads as though
+ * the list is current. It is not: `compile_diagnostics` is whatever the last compile stored, and it
+ * survives every subsequent edit untouched. That cost three separate round-trips in one session —
+ * a survey's labels were repaired, the pane kept showing the errors from a compile 24 minutes
+ * earlier, and it looked as though the repair had not worked.
+ *
+ * The copy now names the risk. The better fix is DETECTION rather than a warning: store the
+ * version's `revision` alongside the diagnostics, so a client can say "these describe revision 12,
+ * you are on 19" and offer to re-run. That needs a column and the compile job writing it, which is
+ * a migration rather than a string — worth doing, and deliberately not smuggled into a copy change.
+ */
 function CompileStateNote({
   compileState,
   diagnosticCount,
@@ -320,7 +334,8 @@ function CompileStateNote({
         : 'The last compile failed' +
           (diagnosticCount === 0
             ? ' and recorded no diagnostics, which means it did not reach the gate. Publishing runs it again.'
-            : '. The diagnostics below are from that compile.')}
+            : '. The diagnostics below are from THAT compile and may predate your most recent ' +
+              'edits — publish again to refresh them.')}
     </p>
   );
 }
