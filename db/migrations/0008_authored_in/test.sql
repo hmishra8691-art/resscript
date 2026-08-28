@@ -418,7 +418,8 @@ SELECT is(
   '{"nodes": 4, "redirects": 2, "languages": 2, "variables": 4, "code_assets": 0, '
   '"logic_rules": 5, "quota_cells": 0, "quota_plans": 0, "i18n_strings": 2, '
   '"quota_buckets": 0, "version_theme": 0, "question_cells": 1, "question_items": 61, '
-  '"quota_dimensions": 0}'::jsonb,
+  '"quota_dimensions": 0, '
+  '"vendors": 0, "vendor_limits": 0, "vendor_inbound_params": 0}'::jsonb,
   'content.clone_version() reports logic_rules alongside every other content table: five '
   'rules in, five rules out. The count map is the mechanical protection against a future '
   'content table being left out of the enumerated list');

@@ -206,6 +206,17 @@ export interface RuntimeWriter {
   startSession(p: {
     token: string; session_id: string; random_seed: string; language: string;
     is_test: boolean; respondent_key?: string | null; resume_token_hash?: Buffer | null;
+    /**
+     * The vendor whose entry link created this session, or null for direct traffic.
+     *
+     * Added in P2-04. `runtime.start_session` has taken a `p_vendor_ref` since 0011 and
+     * `runtime.sessions.vendor_ref` has existed since 0011, and this call passed a literal NULL in
+     * that slot — so the column was ALWAYS null. The in-memory session carried the vendor and the
+     * durable row did not, which means a session rebuilt from Postgres after a Redis loss came back
+     * as direct traffic: its redirect would resolve through `default` instead of `by_vendor`, and
+     * any per-vendor field report was empty.
+     */
+    vendor_ref?: string | null;
     entry_payload?: Record<string, unknown>;
   }): Promise<void>;
   loadSession(sessionId: string): Promise<LoadedDocument | null>;
@@ -268,9 +279,12 @@ export function createPgWriter(databaseUrl: string): RuntimeWriter {
     async startSession(p) {
       try {
         await pool.query(
-          'SELECT runtime.start_session($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, NULL, $7, $8)',
+          // The 7th positional is `p_vendor_ref`. It was a literal NULL here until P2-04 — see the
+          // interface comment; the three NULLs that remain are device / ua_class / country, which
+          // the entry path does not yet capture.
+          'SELECT runtime.start_session($1, $2, $3, $4, $5, $6, $7, NULL, NULL, NULL, $8, $9)',
           [p.token, p.session_id, p.random_seed, p.language, p.is_test,
-           p.respondent_key ?? null, p.resume_token_hash ?? null,
+           p.respondent_key ?? null, p.vendor_ref ?? null, p.resume_token_hash ?? null,
            JSON.stringify(p.entry_payload ?? {})],
         );
       } catch (err) {

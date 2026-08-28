@@ -1323,6 +1323,11 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
       random_seed: session.random_seed,
       language,
       is_test: session.is_test,
+      // From the session, which the entry path set from `?src=` a few lines above. Passing it at
+      // all is P2-04: this call put a literal NULL in the RPC's `p_vendor_ref` slot, so
+      // `runtime.sessions.vendor_ref` was always null and a session rebuilt from Postgres came back
+      // as direct traffic — resolving its redirect through `default` instead of `by_vendor`.
+      vendor_ref: session.vendor_ref,
       resume_token_hash: resumeHash,
       entry_payload: { entry_params: session.entry_params },
     });

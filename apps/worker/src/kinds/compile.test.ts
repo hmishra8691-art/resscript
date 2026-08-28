@@ -279,6 +279,8 @@ function fixtureRows(options: { readonly withRules?: boolean } = {}): AuthoringR
         : [],
     redirects: REDIRECT_ROWS,
     themeChain: [],
+    vendors: [],
+    vendorLimits: [],
   };
 }
 
@@ -633,6 +635,100 @@ describe('a survey that passes the static gate', () => {
     const hashOf = (o: { result: unknown }) => String((o.result as JsonObject)['artifact_hash']);
     expect(hashOf(themed)).not.toBe(hashOf(plain));
     expect(hashOf(themedAgain)).toBe(hashOf(themed));
+  });
+
+  it('emits vendors.json, so signed entry and by_vendor redirects become reachable', async () => {
+    // P2-04's end. Every piece of vendor handling — vendorFromParams, verifyEntry,
+    // bindInboundParams, resolveTemplate's by_vendor tier — was built and tested seventeen
+    // migrations ago against `Survey.vendors`, and `assembleSurvey` never set it because there were
+    // no columns. So `vendors.json` was never emitted, `head.vendors` was always absent, and the
+    // whole feature was unreachable in production.
+    const rows = fixtureRows();
+    const h = harness({
+      ...rows,
+      vendors: [
+        {
+          id: tid('vnd', 'pana'),
+          ref: 'PANEL_A',
+          name: 'Panel A',
+          entry_url_template: null,
+          max_completes: 500,
+          quota_plan_overrides: [],
+          inbound_params: [{ param: 'pid', variable_ref: 'Q1', required: true }],
+          security: {
+            hash_param: 'hash',
+            algorithm: 'sha256' as const,
+            secret_ref: 'vendor/panel_a/hmac',
+            signed_params: ['pid', 'ts'],
+          },
+        },
+      ],
+    });
+    const outcome = await h.run(publishPayload());
+    if (outcome.status !== 'succeeded') {
+      throw new Error(`compile failed: ${JSON.stringify(outcome.error)}`);
+    }
+    const hash = String((outcome.result as JsonObject)['artifact_hash']);
+
+    expect(h.artifacts.puts).toContain(artifactKey(hash, 'vendors.json'));
+    // Parsed, not substring-matched: the artifact is canonical JSON with whitespace, so
+    // `"param":"pid"` never appears literally. Asserting on structure also means the test says what
+    // the runtime needs rather than what the serializer happens to emit.
+    const vendors = JSON.parse(
+      (await h.artifacts.get(artifactKey(hash, 'vendors.json'))) ?? '[]',
+    ) as { ref: string; inbound_params: { param: string; variable_ref: string }[] }[];
+
+    expect(vendors.map((v) => v.ref)).toEqual(['PANEL_A']);
+    // The inbound allowlist reaches the artifact — without it `bindInboundParams` binds nothing and
+    // a panel id never becomes a variable, which is the allowlist that stops a respondent setting
+    // any hidden variable by appending to the query string.
+    expect(vendors[0]?.inbound_params).toEqual([
+      { param: 'pid', variable_ref: 'Q1', required: true },
+    ]);
+  });
+
+  it('carries the secret REFERENCE and never a secret value', async () => {
+    // assertNoSecrets rebuilds a vendor from a whitelist and throws on anything that looks like a
+    // key. 0024 refuses one at write time too. This asserts the reference itself does survive —
+    // a compiler that stripped it would leave a signed vendor with nothing to verify against, which
+    // fails as a 403 the respondent sees.
+    const rows = fixtureRows();
+    const h = harness({
+      ...rows,
+      vendors: [
+        {
+          id: tid('vnd', 'panb'),
+          ref: 'PANEL_B',
+          name: 'Panel B',
+          entry_url_template: null,
+          max_completes: null,
+          quota_plan_overrides: [],
+          inbound_params: [],
+          security: {
+            hash_param: 'hash',
+            algorithm: 'sha256' as const,
+            secret_ref: 'vendor/panel_b/hmac',
+            signed_params: ['pid'],
+          },
+        },
+      ],
+    });
+    const outcome = await h.run(publishPayload());
+    const hash = String((outcome.result as JsonObject)['artifact_hash']);
+    const json = (await h.artifacts.get(artifactKey(hash, 'vendors.json'))) ?? '';
+
+    expect(json).toContain('vendor/panel_b/hmac');
+    expect(json).not.toContain('secret"');
+  });
+
+  it('emits NO vendors.json for a survey with none', async () => {
+    // `Survey.vendors` is omitted rather than set to [] when empty, so the artifact's file set does
+    // not change for a survey that has no panels.
+    const h = harness(fixtureRows());
+    const outcome = await h.run(publishPayload());
+    const hash = String((outcome.result as JsonObject)['artifact_hash']);
+
+    expect(h.artifacts.puts).not.toContain(artifactKey(hash, 'vendors.json'));
   });
 
   it('reports progress once per pipeline stage, so "step N of M" has something to render', async () => {

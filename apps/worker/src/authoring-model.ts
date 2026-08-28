@@ -52,8 +52,14 @@
  *     is still in translation" is expressible, and taking the OR is what keeps a single blocking
  *     language blocking. Reducing it to AND, or to the base row alone, would let the one language
  *     that must not ship incomplete ship incomplete.
- *  4. **`quotas`, `vendors`, `designs` and `assets`.** No columns. All four are optional in
- *     `Survey` and their absence is merely a feature not yet reachable. **`redirects` used to be
+ *  4. **`quotas`, `designs` and `assets`.** No columns. All three are optional in
+ *     `Survey` and their absence is merely a feature not yet reachable. **`vendors` used to be the
+ *     fourth entry here and is not any more**: 0024 gave it `content.vendors`,
+ *     `content.vendor_inbound_params` and `content.vendor_limits`, and this file now reads it like
+ *     every other table. That omission was not benign the way the remaining three are — every piece
+ *     of P2-04's vendor handling was already built and tested against `Survey.vendors`, so signed
+ *     entry links, inbound parameter binding and the `by_vendor` redirect tier were all unreachable
+ *     in production for want of the columns. **`redirects` used to be
  *     the fifth entry here and is not any more**: it was never in that category, because
  *     `CMP-0300` blocks the publish of any survey whose flow can reach `COMPLETE` with nowhere to
  *     send the respondent and the synthesized flow always can — so with no store, NO SURVEY COULD
@@ -85,6 +91,8 @@
  */
 
 import {
+  type Vendor,
+  type VendorId,
   asId,
   type BlockId,
   type ContentNode,
@@ -244,6 +252,34 @@ export interface AuthoringStringRow {
  * `CUSTOM` — both pinned by biconditional CHECKs, so the empty strings are the table's own
  * encoding of "not applicable" rather than a convention this file has to defend.
  */
+export interface AuthoringVendorRow {
+  readonly id: string;
+  readonly ref: string;
+  readonly name: string;
+  readonly entry_url_template: string | null;
+  readonly max_completes: number | null;
+  readonly quota_plan_overrides: readonly string[];
+  readonly inbound_params: readonly {
+    readonly param: string;
+    readonly variable_ref: string;
+    readonly required: boolean;
+  }[];
+  readonly security?: {
+    readonly hash_param: string;
+    readonly algorithm: 'sha256' | 'sha1' | 'md5';
+    readonly secret_ref: string;
+    readonly signed_params: readonly string[];
+    readonly max_skew_s?: number;
+    readonly timestamp_param?: string;
+    readonly nonce_param?: string;
+  };
+}
+
+export interface AuthoringVendorLimitRow {
+  readonly vendor_ref: string;
+  readonly max_completes: number;
+}
+
 export interface AuthoringThemeRow {
   readonly id: string;
   readonly name: string;
@@ -291,6 +327,10 @@ export interface AuthoringRows {
    * compiler's own default vocabulary is the whole theme.
    */
   readonly themeChain: readonly AuthoringThemeRow[];
+  /** 0024's content.vendors, joined to their inbound params. Empty when the survey has none. */
+  readonly vendors: readonly AuthoringVendorRow[];
+  /** 0024's content.vendor_limits, which the artifact carries under `quotas.vendor_limits`. */
+  readonly vendorLimits: readonly AuthoringVendorLimitRow[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -353,6 +393,7 @@ export function assembleSurvey(rows: AuthoringRows): Survey {
   const description = rows.survey.description;
   const themeRef = rows.survey.theme_id;
   const redirects = redirectsOf(rows.redirects);
+  const vendors = vendorsOf(rows);
 
   return {
     meta: {
@@ -376,10 +417,47 @@ export function assembleSurvey(rows: AuthoringRows): Survey {
       .sort(bySortKey)
       .map((row) => ruleOf(row, rows.nodes)),
     ...(redirects === undefined ? {} : { redirects }),
+    // OMITTED when empty, not set to []. `Survey.vendors` is `?` with no `| null` (unlike
+    // `quotas?: QuotaConfig | null`), and an empty array is not the same document as an absent
+    // field: the compiler emits `vendors.json` only when the list is non-empty, so an empty array
+    // would change the artifact's file set without changing what the survey means.
+    ...(vendors.length === 0 ? {} : { vendors }),
     ...(rows.version.entitlement_reqs.length === 0
       ? {}
       : { entitlement_reqs: [...rows.version.entitlement_reqs] }),
   };
+}
+
+/**
+ * `Survey.vendors` from the two vendor reads.
+ *
+ * The per-plan limits are NOT folded in here. `QuotaConfig.vendor_limits[]` lives on the quota
+ * config, and `assembleSurvey` does not build one — quotas remain among the fields with no columns.
+ * When it does, `rows.vendorLimits` is what populates it; carrying the rows through the load rather
+ * than dropping them is what makes that a one-line change instead of a second migration's worth of
+ * plumbing.
+ */
+function vendorsOf(rows: AuthoringRows): readonly Vendor[] {
+  return rows.vendors.map((row) => ({
+    id: asId('vnd', row.id) as VendorId,
+    ref: row.ref,
+    name: row.name,
+    inbound_params: row.inbound_params.map((p) => ({
+      param: p.param,
+      variable_ref: p.variable_ref,
+      required: p.required,
+    })),
+    ...(row.entry_url_template === null ? {} : { entry_url_template: row.entry_url_template }),
+    ...(row.max_completes === null ? {} : { max_completes: row.max_completes }),
+    ...(row.quota_plan_overrides.length === 0
+      ? {}
+      : { quota_plan_overrides: [...row.quota_plan_overrides] }),
+    // Passed through as-is. `assertNoSecrets` rebuilds this from a whitelist before it reaches the
+    // artifact and throws on a value that looks like a secret; 0024 refuses one at write time. This
+    // is the third layer and it deliberately adds nothing — a filter here would be a fourth place
+    // for the rule to be stated slightly differently.
+    ...(row.security === undefined ? {} : { security: row.security }),
+  }));
 }
 
 /**

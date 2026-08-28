@@ -970,11 +970,14 @@ SELECT is(
   -- 0023, which found that 0016, 0019 and 0021 had each added a content table without a
   -- clone_version branch — so the publish-then-clone workflow ADR-002 requires was silently
   -- discarding quotas, code assets and the theme pin. This map is what caught it, exactly as the
-  -- comment on the next assertion has claimed since 0010.
+  -- comment on the next assertion has claimed since 0010. The three vendor keys arrived with 0024,
+  -- which 0023's ops.content_tables_not_cloned() refused on its first run — the check catching a
+  -- forgotten table on the very next opportunity.
   '{"nodes": 0, "redirects": 0, "languages": 0, "variables": 0, "code_assets": 0, '
   '"logic_rules": 0, "quota_cells": 0, "quota_plans": 0, "i18n_strings": 0, '
   '"quota_buckets": 0, "version_theme": 0, "question_cells": 0, "question_items": 0, '
-  '"quota_dimensions": 0}'::jsonb,
+  '"quota_dimensions": 0, '
+  '"vendors": 0, "vendor_limits": 0, "vendor_inbound_params": 0}'::jsonb,
   'cloning ANOTHER TENANT''S version copies exactly zero rows from every content table');
 SELECT is_empty($$
   SELECT 1 FROM content.nodes
@@ -1002,7 +1005,8 @@ SELECT is(
   '{"nodes": 4, "redirects": 2, "languages": 2, "variables": 4, "code_assets": 0, '
   '"logic_rules": 0, "quota_cells": 0, "quota_plans": 0, "i18n_strings": 2, '
   '"quota_buckets": 0, "version_theme": 0, "question_cells": 1, "question_items": 61, '
-  '"quota_dimensions": 0}'::jsonb,
+  '"quota_dimensions": 0, '
+  '"vendors": 0, "vendor_limits": 0, "vendor_inbound_params": 0}'::jsonb,
   'cloning a FROZEN version into a fresh draft copies every content table in one '
   'INSERT ... SELECT each, as `authoring`: the source is read through a policy that permits '
   'reading a frozen version and the target through the draft-only write policies');

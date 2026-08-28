@@ -62,6 +62,8 @@ import type {
   AuthoringStringRow,
   AuthoringSurveyRow,
   AuthoringThemeRow,
+  AuthoringVendorLimitRow,
+  AuthoringVendorRow,
   AuthoringVariableRow,
   AuthoringVersionRow,
 } from './authoring-model.js';
@@ -279,6 +281,44 @@ export const PUBLISH_SQL = {
     'FROM content.redirects WHERE survey_version_id = $1::app.ulid ' +
     'ORDER BY scope, scope_key, disposition, custom_key',
   /**
+   * 0024's content.vendors, joined to its inbound params.
+   *
+   * ONE query with a lateral aggregate rather than two reads and a join in TypeScript: these
+   * queries are sequential on a shared client (see `loadAuthoringRows`), so a second round trip is a
+   * second round trip, and assembling a 1-N relationship in SQL is what SQL is for.
+   *
+   * `variable_ref` comes from the JOIN, not from a stored name. 0024 stores `variable_id` because
+   * that is what a foreign key can hold — content.variables enforces name uniqueness with a partial
+   * expression index, which no FK can reference — and the DOCUMENT wants a ref (schema §9,
+   * "because vendors are authored by hand"). Deriving it here is also what makes a variable rename
+   * flow into the vendor configuration instead of dangling.
+   */
+  vendors:
+    'SELECT v.id, v.ref, v.name, v.entry_url_template, v.max_completes, v.quota_plan_overrides, ' +
+    '       v.hash_param, v.algorithm::text AS algorithm, v.secret_ref, v.signed_params, ' +
+    '       v.max_skew_s, v.timestamp_param, v.nonce_param, ' +
+    '       COALESCE(p.params, \'[]\'::jsonb) AS inbound_params ' +
+    '  FROM content.vendors v ' +
+    '  LEFT JOIN LATERAL (' +
+    '    SELECT jsonb_agg(jsonb_build_object(' +
+    '             \'param\', ip.param, \'variable_ref\', var.name, \'required\', ip.required) ' +
+    '           ORDER BY ip.sort_key, ip.param) AS params ' +
+    '      FROM content.vendor_inbound_params ip ' +
+    '      JOIN content.variables var ' +
+    '        ON var.survey_version_id = ip.survey_version_id AND var.id = ip.variable_id ' +
+    '     WHERE ip.survey_version_id = v.survey_version_id AND ip.vendor_id = v.id' +
+    '  ) p ON true ' +
+    ' WHERE v.survey_version_id = $1::app.ulid ' +
+    ' ORDER BY v.sort_key, v.ref',
+  /** 0024's content.vendor_limits, which the artifact carries under `quotas.vendor_limits`. */
+  vendorLimits:
+    'SELECT v.ref AS vendor_ref, l.max_completes ' +
+    '  FROM content.vendor_limits l ' +
+    '  JOIN content.vendors v ' +
+    '    ON v.survey_version_id = l.survey_version_id AND v.id = l.vendor_id ' +
+    ' WHERE l.survey_version_id = $1::app.ulid ' +
+    ' ORDER BY v.ref',
+  /**
    * The theme's token layers, ROOT-FIRST, walking `parent_theme_id` up from the survey's theme.
    *
    * Root-first because that is the order `resolveTokens(...layers)` expects — nearest-last — so the
@@ -415,6 +455,10 @@ export class PgPublishStore implements PublishStore {
       const themeChain = await session.query<Record<string, unknown>>(PUBLISH_SQL.themeTokens, [
         versionId,
       ]);
+      const vendors = await session.query<Record<string, unknown>>(PUBLISH_SQL.vendors, [versionId]);
+      const vendorLimits = await session.query<Record<string, unknown>>(PUBLISH_SQL.vendorLimits, [
+        versionId,
+      ]);
 
       return {
         version: versionRowOf(version),
@@ -428,6 +472,8 @@ export class PgPublishStore implements PublishStore {
         rules: rules.rows.map(ruleRowOf),
         redirects: redirects.rows.map(redirectRowOf),
         themeChain: themeChain.rows.map(themeRowOf),
+        vendors: vendors.rows.map(vendorRowOf),
+        vendorLimits: vendorLimits.rows.map(vendorLimitRowOf),
       };
     });
   }
@@ -754,6 +800,65 @@ function themeRowOf(row: Record<string, unknown>): AuthoringThemeRow {
     }
   }
   return { id: str(row['id']), name: str(row['name']), tokens };
+}
+
+/**
+ * One vendor row, with its inbound params already aggregated by the query.
+ *
+ * The security fields are folded back into a nested `security` object only when the vendor is
+ * actually signed. 0024's `vendors_security_all_or_none` CHECK means the three columns are either
+ * all present or all absent, so testing one is testing all three — but it is tested on `secret_ref`
+ * specifically, because that is the field whose absence means "unsigned" to a reader.
+ */
+function vendorRowOf(row: Record<string, unknown>): AuthoringVendorRow {
+  const secretRef = row['secret_ref'];
+  const params = Array.isArray(row['inbound_params']) ? row['inbound_params'] : [];
+  return {
+    id: str(row['id']),
+    ref: str(row['ref']),
+    name: str(row['name']),
+    entry_url_template: row['entry_url_template'] === null ? null : str(row['entry_url_template']),
+    max_completes: row['max_completes'] === null ? null : Number(row['max_completes']),
+    quota_plan_overrides: Array.isArray(row['quota_plan_overrides'])
+      ? (row['quota_plan_overrides'] as unknown[]).map(String)
+      : [],
+    inbound_params: params.map((raw) => {
+      const p = raw as Record<string, unknown>;
+      return {
+        param: str(p['param']),
+        variable_ref: str(p['variable_ref']),
+        required: p['required'] === true,
+      };
+    }),
+    ...(typeof secretRef === 'string' && secretRef !== ''
+      ? {
+          security: {
+            hash_param: str(row['hash_param']),
+            // Narrowed rather than cast, like `redirectRowOf`'s scope: the ENUM has exactly these
+            // three labels, and defaulting the unreachable case keeps the load total.
+            algorithm:
+              str(row['algorithm']) === 'sha1'
+                ? ('sha1' as const)
+                : str(row['algorithm']) === 'md5'
+                  ? ('md5' as const)
+                  : ('sha256' as const),
+            secret_ref: secretRef,
+            signed_params: Array.isArray(row['signed_params'])
+              ? (row['signed_params'] as unknown[]).map(String)
+              : [],
+            ...(row['max_skew_s'] === null ? {} : { max_skew_s: Number(row['max_skew_s']) }),
+            ...(row['timestamp_param'] === null
+              ? {}
+              : { timestamp_param: str(row['timestamp_param']) }),
+            ...(row['nonce_param'] === null ? {} : { nonce_param: str(row['nonce_param']) }),
+          },
+        }
+      : {}),
+  };
+}
+
+function vendorLimitRowOf(row: Record<string, unknown>): AuthoringVendorLimitRow {
+  return { vendor_ref: str(row['vendor_ref']), max_completes: Number(row['max_completes']) };
 }
 
 function redirectRowOf(row: Record<string, unknown>): AuthoringRedirectRow {
