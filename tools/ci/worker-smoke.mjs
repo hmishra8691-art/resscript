@@ -120,7 +120,25 @@ async function checkRoundTrip() {
     return;
   }
 
-  const { default: pg } = await import('pg');
+  // `pg` is resolved at RUN time, not imported at the top, and the failure is spelled out
+  // because of where this script gets used. It lives in `tools/`, which is NOT in the worker
+  // image — this is an EXTERNAL prober by design, so an operator typically runs it from a fresh
+  // clone where `pnpm install` has not happened yet, and Node's bare "Cannot find package 'pg'"
+  // gives no hint that the fix is an install in the repo rather than something wrong with the
+  // deployment being tested. The HTTP checks above need no dependencies at all and have already
+  // run by this point, so a missing `pg` costs you the round trip and nothing else.
+  let pg;
+  try {
+    ({ default: pg } = await import('pg'));
+  } catch {
+    fail(
+      'job round trip',
+      "cannot resolve the 'pg' package. This script runs from the REPO (it is not in the worker " +
+        'image); run `pnpm install` in the repo root first. The /health and /ready checks above ' +
+        'did run and need no dependencies.',
+    );
+    return;
+  }
   const pool = new pg.Pool({ connectionString: url, max: 2 });
   // A dedicated kind, so this never collides with real work and is trivially greppable in
   // `ops.jobs`. `jobs_kind_fmt` is `^[a-z][a-z0-9_]{1,63}$` — no hyphens, no leading digit.
