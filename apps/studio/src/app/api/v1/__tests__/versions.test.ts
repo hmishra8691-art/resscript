@@ -154,6 +154,18 @@ describe('PATCH /api/v1/versions/:id', () => {
   });
 });
 
+/**
+ * Remove the fixture's draft so a survey can accept a new version.
+ *
+ * `sv_one_draft` is a partial unique index allowing exactly one editable draft per survey, and the
+ * harness seeds one. Every test below that creates a version needs it gone first.
+ */
+function dropDraft(h: ReturnType<typeof createHarness>): void {
+  const at = h.data.versions.findIndex((v) => v.id === h.ids.draftA);
+  if (at < 0) throw new Error('fixture draft missing');
+  h.data.versions.splice(at, 1);
+}
+
 describe('POST /api/v1/surveys/:id/versions', () => {
   it('refuses a second draft (sv_one_draft) with 409', async () => {
     const h = createHarness();
@@ -186,12 +198,12 @@ describe('POST /api/v1/surveys/:id/versions', () => {
     const h = createHarness();
     const repos = h.reposFor({ userId: h.ids.programmerA, activeOrgId: h.ids.orgA });
 
-    // `sv_one_draft` allows exactly one draft per survey, so the fixture's is frozen first. That
-    // is also the real sequence: ADR-002 makes cloning a published version the only way to edit
-    // it, so a new version is never minted beside a live draft.
-    const existing = h.data.versions.find((v) => v.id === h.ids.draftA);
-    if (existing === undefined) throw new Error('fixture draft missing');
-    existing.status = 'production';
+    // `sv_one_draft` allows exactly one draft per survey, so the fixture's is removed first — the
+    // precondition this test needs is simply "this survey has no draft". Removing rather than
+    // reassigning `status`: `SurveyVersionRow` is readonly field-by-field, and a cast to get around
+    // that would be a test reaching past the type to do something the store would never do. The
+    // array itself is mutable, which is the fixture seam.
+    dropDraft(h);
 
     const fresh = await repos.surveys.createVersion({
       survey_id: h.ids.surveyA,
@@ -207,9 +219,7 @@ describe('POST /api/v1/surveys/:id/versions', () => {
     const h = createHarness();
     const repos = h.reposFor({ userId: h.ids.programmerA, activeOrgId: h.ids.orgA });
 
-    const existing = h.data.versions.find((v) => v.id === h.ids.draftA);
-    if (existing === undefined) throw new Error('fixture draft missing');
-    existing.status = 'production';
+    dropDraft(h);
 
     const clone = await repos.surveys.createVersion({
       survey_id: h.ids.surveyA,
@@ -226,9 +236,7 @@ describe('POST /api/v1/surveys/:id/versions', () => {
   it('honours an explicit base_language', async () => {
     const h = createHarness();
     const repos = h.reposFor({ userId: h.ids.programmerA, activeOrgId: h.ids.orgA });
-    const existing = h.data.versions.find((v) => v.id === h.ids.draftA);
-    if (existing === undefined) throw new Error('fixture draft missing');
-    existing.status = 'production';
+    dropDraft(h);
 
     const fresh = await repos.surveys.createVersion({
       survey_id: h.ids.surveyA,
