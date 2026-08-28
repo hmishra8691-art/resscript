@@ -27,6 +27,7 @@ import { createPgWriter, createRedisSessionStore } from './session/durable.js';
 import { Pool } from 'pg';
 
 import { createQuotaClient } from './quota/index.js';
+import { createRotationCounter } from './rotation.js';
 import { createTtlProvider, pgLoiLoader, type TtlProvider } from './quota/ttl.js';
 import { createPgTokenResolver, createStaticTokenResolver, type ResolvedToken } from './token.js';
 
@@ -121,6 +122,11 @@ export function buildDeps(): RuntimeDeps {
     // The quota arbiter shares the session Redis. ADR-008 allows a dedicated instance later;
     // splitting is a URL, not a refactor.
     ...(redisUrl ? { quota: createQuotaClient(redisUrl) } : {}),
+    // The counter-backed randomization ticket (P2-03). Shares the session Redis, like the quota
+    // arbiter above and for the same reason: ADR-008 allows a dedicated instance later and
+    // splitting is a URL, not a refactor. Absent without Redis, which makes `rotate` report
+    // `needs_counter` rather than silently seeding an order.
+    ...(redisUrl ? { rotation: createRotationCounter(redisUrl) } : {}),
     ...(ttl ? { ttl } : {}),
     now: () => Date.now(),
     newId: generateULID,

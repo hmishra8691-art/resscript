@@ -35,6 +35,20 @@ export interface SessionState {
 
   // ---- the authoritative data -----------------------------------------
   random_seed: string; // 128-bit hex
+  /**
+   * This respondent's ticket for the counter-backed randomization modes (E §8.4, P2-03), or null
+   * when no counter was reachable at entry.
+   *
+   * PERSISTED, not re-read. E §8.5 requires the chosen offset be stored because — unlike a seeded
+   * order — it is not recoverable from `random_seed`: the ticket came from a shared counter, and a
+   * replay that re-read that counter would get a different number and reconstruct a different
+   * survey. `durable.ts` calls `random_seed` "ADR-006's replay key. Without it a replay would be a
+   * re-simulation with fresh randomness"; an unpersisted ticket reintroduces exactly that.
+   *
+   * Issued ONCE at entry, for the whole session, so every rotating axis derives from one number —
+   * see `rotation.ts` on why one ticket per session beats one per axis.
+   */
+  rotation_index: number | null;
   vars: Record<VariableId, Value | null>; // variable_id -> Value
   var_provenance: Record<VariableId, Provenance>; // who set each var
 

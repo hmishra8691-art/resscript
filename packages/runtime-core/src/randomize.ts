@@ -85,6 +85,16 @@ export interface RandomizeResult<T extends RandomizeItem = RandomizeItem> {
   readonly subset_codes?: readonly number[];
   /** Set when a counter-backed mode was requested but no counter was supplied. */
   readonly needs_counter?: boolean;
+  /**
+   * The cyclic shift `rotate` applied, for persistence as a `design` variable.
+   *
+   * E §8.5 requires the chosen offset be stored, because unlike a seeded order it is NOT
+   * recoverable from the session seed — the ticket came from a shared counter. A replay that
+   * re-read the counter would get a different number, so the offset is written once and read back.
+   */
+  readonly rotation_offset?: number;
+  /** Which of `spec.fixed_orders` was used, same persistence reason as `rotation_offset`. */
+  readonly fixed_order_index?: number;
   readonly event?: string;
 }
 
@@ -196,6 +206,80 @@ function permuteSubBlocks<T extends RandomizeItem>(
  * E §8.3 work, and omitting it when a `group_ref` is set silently degrades a battery to
  * independent orders — so that case emits an event rather than passing quietly.
  */
+/**
+ * The counter-backed orders: `rotate`, `fixed_order_list`, and `even_distribution`.
+ *
+ * ## rotate
+ *
+ * A CYCLIC SHIFT of the declared order by the respondent's ticket — E §8.4's
+ * `position = (respondent_index + offset) mod n`. Not a shuffle seeded by the ticket, and the
+ * difference is the whole feature: over n respondents a cyclic shift puts each item in each position
+ * exactly once, which is what "within one of even" means. A ticket-seeded shuffle would be uniform
+ * only in expectation, and over 1,000 entries would miss that bound routinely.
+ *
+ * ## fixed_order_list
+ *
+ * `spec.fixed_orders[ticket mod fixed_orders.length]` — the author supplies the orders and the
+ * counter picks which one this respondent sees, so the rotation is over WHOLE ORDERS rather than
+ * positions. Items named in the chosen order come first, in that order; anything the order does not
+ * name keeps its declared position after them, because an author who lists six of eight brands has
+ * said nothing about the other two and dropping them would be a different feature.
+ *
+ * ## even_distribution
+ *
+ * On an ITEM axis this is `rotate`: distributing item positions evenly across respondents IS a
+ * cyclic shift. The flag means something different on a `randomizer` FLOW node — least-filled-cell
+ * allocation, which needs a read-min-then-increment in one Lua round trip and cannot be a pure
+ * function of a ticket. `machine.ts` owns that case and says so; here the flag is honoured as the
+ * rotation it is on this axis, rather than refused for being ambiguous.
+ */
+function rotateByTicket<T extends RandomizeItem>(
+  items: readonly T[],
+  spec: RandomizationSpec,
+  ticket: number,
+): RandomizeResult<T> {
+  // The same shape the seeded path uses: produce a full ordering, then let `applyAnchors` pull the
+  // anchored items back to their required slots against the DECLARED list. Rotating anchored items
+  // would move a "None of these" out of last place, which is the one thing an anchor promises.
+  const anchor = (ordered: readonly T[]): readonly T[] =>
+    spec.respect_anchors === true ? applyAnchors(ordered, items) : [...ordered];
+
+  if (spec.mode === 'fixed_order_list') {
+    const orders = spec.fixed_orders ?? [];
+    if (orders.length === 0) {
+      // A `fixed_order_list` with no orders has nothing to rotate over. Reported rather than
+      // silently shuffled: the author meant to supply orders and did not.
+      return { items, needs_counter: true, event: 'randomize.no_fixed_orders' };
+    }
+    const index = ticket % orders.length;
+    const chosen = orders[index] ?? [];
+    const byRef = new Map(items.map((item) => [item.ref ?? item.id, item]));
+    const named: T[] = [];
+    for (const ref of chosen) {
+      const item = byRef.get(ref);
+      if (item !== undefined && !named.includes(item)) named.push(item);
+    }
+    // Everything the chosen order does not name, in DECLARED order, after the named ones. An
+    // author who lists six of eight brands has said nothing about the other two, and dropping them
+    // would be a different feature.
+    const rest = items.filter((item) => !named.includes(item));
+    return {
+      items: anchor([...named, ...rest]),
+      event: 'randomize.fixed_order',
+      fixed_order_index: index,
+    };
+  }
+
+  // rotate / even_distribution: cyclic shift by the ticket.
+  const shift = ticket % items.length;
+  const rotated = [...items.slice(shift), ...items.slice(0, shift)];
+  return {
+    items: anchor(rotated),
+    event: 'randomize.rotated',
+    rotation_offset: shift,
+  };
+}
+
 export function randomize<T extends RandomizeItem>(
   items: readonly T[],
   spec: RandomizationSpec,
@@ -203,19 +287,45 @@ export function randomize<T extends RandomizeItem>(
   // `group` is deliberately the base `OrderGroup` and not `OrderGroup<T>`: it is a code domain the
   // permutation runs over, mapped back onto `items` by code, so it neither needs nor should claim
   // to carry the caller's item shape.
-  opts: { axis_key: string; group?: OrderGroup },
+  opts: {
+    axis_key: string;
+    group?: OrderGroup;
+    /**
+     * This respondent's 0-based ticket for the counter-backed modes (E §8.4, roadmap P2-03).
+     *
+     * A RESOLVED INTEGER, not a callback. `rotate` and `fixed_order_list` distribute ACROSS
+     * respondents, which needs shared state — a Redis `INCR` — and this function is pure and
+     * synchronous, which is what lets every order be unit-tested and replayed. So the caller
+     * resolves the ticket once per session and hands over a number. Same split `verifyEntry`
+     * uses for `consumeNonce`.
+     *
+     * Absent still yields `needs_counter`, which is what makes "a counter-backed mode with no
+     * counter" a reported fact rather than a silent shuffle.
+     */
+    respondent_index?: number;
+  },
 ): RandomizeResult<T> {
   if (spec.mode === 'none' || items.length < 2) {
     return { items };
   }
 
-  // Counter-backed modes need cross-respondent state (ADR-008). Say so; do not substitute.
-  if (spec.mode === 'rotate' || spec.mode === 'fixed_order_list' || spec.even_distribution) {
-    return {
-      items,
-      needs_counter: true,
-      event: 'randomize.needs_counter',
-    };
+  // ---- Counter-backed modes (E §8.4) ---------------------------------------
+  //
+  // These distribute across respondents rather than within a session, so a seeded PRNG cannot
+  // produce them: the roadmap's acceptance line is "rotation across 1,000 sequential entries
+  // distributes starting offsets within one of even", and a uniform random offset over 1,000 draws
+  // deviates far beyond +/-1. A monotonic ticket is the only thing that satisfies it.
+  const counterBacked =
+    spec.mode === 'rotate' || spec.mode === 'fixed_order_list' || spec.even_distribution === true;
+  if (counterBacked) {
+    const ticket = opts.respondent_index;
+    if (ticket === undefined || !Number.isFinite(ticket)) {
+      // No counter supplied. Reported, never substituted — "randomize" and "randomize evenly" are
+      // different features that users conflate, and a silent substitution produces an unbalanced
+      // cell nobody notices until fieldwork ends.
+      return { items, needs_counter: true, event: 'randomize.needs_counter' };
+    }
+    return rotateByTicket(items, spec, Math.max(0, Math.floor(ticket)));
   }
 
   const salt = saltFor(spec, opts.axis_key);

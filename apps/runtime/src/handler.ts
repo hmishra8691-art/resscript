@@ -46,6 +46,7 @@ import { rebuildSession, type RuntimeWriter } from './session/durable.js';
 import { gateDecision, type QuotaClient } from './quota/index.js';
 import { planFor, resolveCells } from './quota/cells.js';
 import { createTtlProvider, type TtlProvider } from './quota/ttl.js';
+import type { RotationCounter } from './rotation.js';
 import { bindInboundParams } from './vendor/inbound.js';
 import { vendorFromParams, verifyEntry } from './vendor/verify.js';
 import { handleSubmitCore, type SubmitBody } from './submit.js';
@@ -95,6 +96,12 @@ export interface RuntimeDeps {
    * the pre-P2-07 behaviour and the correct fallback for a deployment with no measurement path.
    */
   readonly ttl?: TtlProvider;
+  /**
+   * The shared rotation counter (P2-03). Absent = no counter, so `rotate` and `fixed_order_list`
+   * report `randomize.needs_counter` and leave the declared order alone — which is the honest
+   * degradation rather than a seeded shuffle wearing a rotation's name.
+   */
+  readonly rotation?: RotationCounter;
   /** Injected so a replayed request produces identical timestamps (ADR-006). */
   readonly now: () => number;
   /** ULID generator. */
@@ -418,6 +425,10 @@ function evaluateAndRender(
     page,
     logic,
     seed: session.random_seed,
+    // The counter ticket (P2-03). From the SESSION, never re-read from Redis here: it was issued
+    // once at entry and persisted, because a replay that re-read the counter would get a different
+    // number and reconstruct a different survey.
+    ...(session.rotation_index === null ? {} : { respondentIndex: session.rotation_index }),
     vars: session.vars as Record<string, unknown>,
     // Tagged for the engine, raw for the renderer. `tagVars`' header explains why the two maps
     // are separate and why this one is not optional.
@@ -561,6 +572,12 @@ export interface RenderDeps {
    * the pre-P2-07 behaviour and the correct fallback for a deployment with no measurement path.
    */
   readonly ttl?: TtlProvider;
+  /**
+   * The shared rotation counter (P2-03). Absent = no counter, so `rotate` and `fixed_order_list`
+   * report `randomize.needs_counter` and leave the declared order alone — which is the honest
+   * degradation rather than a seeded shuffle wearing a rotation's name.
+   */
+  readonly rotation?: RotationCounter;
   /**
    * Everything a `quota_gate` needs to reach a verdict and let the machine continue.
    *
@@ -1338,6 +1355,17 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     // vendor-specific-beats-language-specific precedence) but never SET, so `by_vendor` could not
     // fire for any respondent. It is set here, from the identification above.
     vendor_ref: vendor?.ref ?? null,
+    // The counter ticket, issued ONCE for the whole session (P2-03). Every rotating axis derives
+    // its offset from this one number — see rotation.ts on why one ticket per session beats one per
+    // axis — and it is persisted with the session because it is not recoverable from the seed.
+    //
+    // A null here means no counter was reachable, and `randomize()` then reports
+    // `randomize.needs_counter` and leaves the declared order alone. An unrotated survey is
+    // visibly unrotated; a seeded shuffle standing in for a rotation is an unbalanced design
+    // nobody notices until fieldwork ends.
+    rotation_index: ctx.deps.rotation
+      ? await ctx.deps.rotation.next(resolved.survey_version_id)
+      : null,
     vars: { ...base.vars, ...inbound.vars },
     started_at: now,
     last_activity_at: now,

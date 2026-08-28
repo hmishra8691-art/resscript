@@ -127,6 +127,14 @@ export interface EvaluatePageInput {
   /** The session seed. Fixed at entry and never changed (ADR-006). */
   readonly seed: string;
   /**
+   * This respondent's counter ticket for the counter-backed randomization modes (P2-03).
+   *
+   * Passed to BOTH `computeOrders` and the render hooks, for the reason `RenderCtx.orders` gives
+   * about structural agreement: a rotation applied to one and not the other makes the position a
+   * rule reasons about differ from the position the respondent sees.
+   */
+  readonly respondentIndex?: number;
+  /**
    * The session's RAW vars, as stored. Used for piping and rendering, which want the value a
    * respondent would recognise (a number, a string) rather than a tagged one.
    */
@@ -167,6 +175,9 @@ export interface EvaluatedPage {
     | 'optionState'
     | 'groupFor'
     | 'orders'
+    // Added in P2-03: the counter ticket, so a `rotate` axis rotates in the render as well as in
+    // the order the engine was given.
+    | 'respondentIndex'
     // Added in P2-02. Its absence was a live defect rather than a missing feature: the renderer
     // defaults a missing fallback to `skip_question` ("not showing a question is recoverable,
     // showing an unanswerable one is a dead end"), which is the right default and the wrong answer
@@ -208,7 +219,12 @@ export interface EvaluatedPage {
  */
 export function evaluatePage(input: EvaluatePageInput): EvaluatedPage {
   // ---- 1. orders, before evaluation ------------------------------------
+  // The ticket goes to BOTH the order computation and the renderer. `orders` exists precisely so
+  // the engine and the renderer agree structurally rather than coincidentally (see RenderCtx.orders),
+  // and a rotation applied to one and not the other would make the position a rule reasons about
+  // differ from the position the respondent sees.
   const orders = computeOrders(input.page, input.seed, {
+    ...(input.respondentIndex === undefined ? {} : { respondentIndex: input.respondentIndex }),
     ...(input.groupFor ? { groupFor: input.groupFor } : {}),
   });
 
@@ -323,6 +339,9 @@ export function evaluatePage(input: EvaluatePageInput): EvaluatedPage {
       itemsFor,
       optionState,
       orders,
+      ...(input.respondentIndex === undefined
+        ? {}
+        : { respondentIndex: input.respondentIndex }),
       emptyFallbackFor,
       ...(input.groupFor ? { groupFor: input.groupFor } : {}),
     },

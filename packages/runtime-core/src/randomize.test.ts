@@ -630,3 +630,191 @@ describe('orderGroupResolver', () => {
     expect(q6.event).toBeUndefined();
   });
 });
+
+
+/* ---------------------------------------------------------------- *
+ * Counter-backed modes (P2-03)
+ * ---------------------------------------------------------------- */
+
+describe('counter-backed rotation', () => {
+  /**
+   * The roadmap's acceptance line is the reason this is a cyclic shift and not a ticket-seeded
+   * shuffle: "Rotation across 1,000 sequential entries distributes starting offsets within one of
+   * even." A uniform random offset over 1,000 draws misses that bound routinely; a cyclic shift
+   * hits it exactly.
+   */
+  const BRANDS = [
+    { id: 'o1', code: 1, ref: 'A' },
+    { id: 'o2', code: 2, ref: 'B' },
+    { id: 'o3', code: 3, ref: 'C' },
+    { id: 'o4', code: 4, ref: 'D' },
+  ];
+  const SEED = 'a3f9c1d2e4b6a8f0c2d4e6b8a0f2c4d6';
+
+  const rotate = (ticket: number | undefined, over = BRANDS) =>
+    randomize(over, { mode: 'rotate' }, SEED, {
+      axis_key: 'q1.options',
+      ...(ticket === undefined ? {} : { respondent_index: ticket }),
+    });
+
+  it('still reports needs_counter when no ticket is supplied', () => {
+    // The pre-P2-03 behaviour, and the property that keeps "a counter-backed mode with no counter"
+    // a reported fact rather than a silent shuffle. "Randomize" and "randomize evenly" are
+    // different features users conflate.
+    const r = rotate(undefined);
+    expect(r.needs_counter).toBe(true);
+    expect(r.event).toBe('randomize.needs_counter');
+    expect(r.items.map(i => i.code)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('is a CYCLIC SHIFT of the declared order, not a shuffle', () => {
+    expect(rotate(0).items.map(i => i.code)).toEqual([1, 2, 3, 4]);
+    expect(rotate(1).items.map(i => i.code)).toEqual([2, 3, 4, 1]);
+    expect(rotate(2).items.map(i => i.code)).toEqual([3, 4, 1, 2]);
+    expect(rotate(3).items.map(i => i.code)).toEqual([4, 1, 2, 3]);
+  });
+
+  it('wraps, so ticket n returns to ticket 0', () => {
+    expect(rotate(4).items.map(i => i.code)).toEqual(rotate(0).items.map(i => i.code));
+    expect(rotate(9).items.map(i => i.code)).toEqual(rotate(1).items.map(i => i.code));
+  });
+
+  it('reports the offset for persistence as a design variable', () => {
+    // E §8.5: the offset is NOT recoverable from the session seed, because the ticket came from a
+    // shared counter. A replay that re-read the counter would get a different number, so the offset
+    // is written once and read back — which is only possible if this reports it.
+    expect(rotate(6).rotation_offset).toBe(2);
+    expect(rotate(6).needs_counter).toBeUndefined();
+  });
+
+  it('puts each item in each position EXACTLY once over n respondents', () => {
+    // The property "within one of even" is a consequence of this one, and it is exact rather than
+    // statistical — which is the whole reason a cyclic shift was chosen.
+    const seen = new Map<number, Set<number>>();
+    for (let ticket = 0; ticket < BRANDS.length; ticket += 1) {
+      rotate(ticket).items.forEach((item, position) => {
+        const slots = seen.get(item.code) ?? new Set<number>();
+        slots.add(position);
+        seen.set(item.code, slots);
+      });
+    }
+    for (const slots of seen.values()) expect(slots.size).toBe(BRANDS.length);
+  });
+
+  it('distributes 1,000 sequential entries within ONE of even — the acceptance line', () => {
+    const counts = new Map<number, number>();
+    for (let ticket = 0; ticket < 1000; ticket += 1) {
+      const first = rotate(ticket).items[0]?.code ?? 0;
+      counts.set(first, (counts.get(first) ?? 0) + 1);
+    }
+    const values = [...counts.values()];
+    expect(counts.size).toBe(BRANDS.length);
+    expect(Math.max(...values) - Math.min(...values)).toBeLessThanOrEqual(1);
+  });
+
+  it('does not depend on the seed at all', () => {
+    // The counter is the source of order here. A rotation that varied with the seed would be a
+    // shuffle wearing a rotation's name, and the distribution guarantee would be gone.
+    const a = randomize(BRANDS, { mode: 'rotate' }, SEED, {
+      axis_key: 'q1.options',
+      respondent_index: 3,
+    });
+    const b = randomize(BRANDS, { mode: 'rotate' }, 'ffffffffffffffffffffffffffffffff', {
+      axis_key: 'q1.options',
+      respondent_index: 3,
+    });
+    expect(a.items.map(i => i.code)).toEqual(b.items.map(i => i.code));
+  });
+
+  it('honours an anchor, so a rotation cannot move "None of these" off the end', () => {
+    // The one thing an anchor promises. Rotating an anchored item would break it silently.
+    const withAnchor = [...BRANDS, { id: 'o5', code: 99, ref: 'NONE', anchor: 'last' as const }];
+    for (let ticket = 0; ticket < 6; ticket += 1) {
+      const out = randomize(withAnchor, { mode: 'rotate', respect_anchors: true }, SEED, {
+        axis_key: 'q1.options',
+        respondent_index: ticket,
+      });
+      expect(out.items[out.items.length - 1]?.code).toBe(99);
+    }
+  });
+
+  it('treats a negative or fractional ticket as a whole number rather than producing NaN', () => {
+    // A ticket arrives from a counter and should always be a non-negative integer; a NaN shift
+    // would produce an empty array, which is a page with no options.
+    expect(rotate(-3).items).toHaveLength(4);
+    expect(rotate(2.7).items.map(i => i.code)).toEqual([3, 4, 1, 2]);
+  });
+
+  it('leaves a single-item axis alone', () => {
+    const one = [{ id: 'o1', code: 1, ref: 'A' }];
+    expect(randomize(one, { mode: 'rotate' }, SEED, {
+      axis_key: 'q1.options', respondent_index: 5,
+    }).items.map(i => i.code)).toEqual([1]);
+  });
+});
+
+describe('fixed_order_list', () => {
+  const BRANDS = [
+    { id: 'o1', code: 1, ref: 'A' },
+    { id: 'o2', code: 2, ref: 'B' },
+    { id: 'o3', code: 3, ref: 'C' },
+  ];
+  const SEED = 'a3f9c1d2e4b6a8f0c2d4e6b8a0f2c4d6';
+  const spec = {
+    mode: 'fixed_order_list' as const,
+    fixed_orders: [['C', 'A', 'B'], ['B', 'C', 'A']],
+  };
+  const pick = (ticket: number) =>
+    randomize(BRANDS, spec, SEED, { axis_key: 'q1.options', respondent_index: ticket });
+
+  it('rotates over WHOLE ORDERS the author supplied', () => {
+    expect(pick(0).items.map(i => i.ref)).toEqual(['C', 'A', 'B']);
+    expect(pick(1).items.map(i => i.ref)).toEqual(['B', 'C', 'A']);
+    expect(pick(2).items.map(i => i.ref)).toEqual(['C', 'A', 'B']);
+  });
+
+  it('reports which order was used, for persistence', () => {
+    expect(pick(0).fixed_order_index).toBe(0);
+    expect(pick(3).fixed_order_index).toBe(1);
+  });
+
+  it('keeps unnamed items in declared order AFTER the named ones', () => {
+    // An author who lists two of three brands has said nothing about the third, and dropping it
+    // would be a different feature.
+    const partial = { mode: 'fixed_order_list' as const, fixed_orders: [['C']] };
+    const r = randomize(BRANDS, partial, SEED, { axis_key: 'q1.options', respondent_index: 0 });
+    expect(r.items.map(i => i.ref)).toEqual(['C', 'A', 'B']);
+  });
+
+  it('reports needs_counter when the author supplied NO orders', () => {
+    // Nothing to rotate over. Reported rather than silently shuffled: the author meant to supply
+    // orders and did not.
+    const empty = { mode: 'fixed_order_list' as const, fixed_orders: [] };
+    const r = randomize(BRANDS, empty, SEED, { axis_key: 'q1.options', respondent_index: 0 });
+    expect(r.event).toBe('randomize.no_fixed_orders');
+    expect(r.items.map(i => i.ref)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('ignores a ref the survey does not have, rather than emitting a hole', () => {
+    const ghosty = { mode: 'fixed_order_list' as const, fixed_orders: [['GHOST', 'B']] };
+    const r = randomize(BRANDS, ghosty, SEED, { axis_key: 'q1.options', respondent_index: 0 });
+    expect(r.items.map(i => i.ref)).toEqual(['B', 'A', 'C']);
+  });
+});
+
+describe('even_distribution on an item axis', () => {
+  it('is honoured as the rotation it is, not refused for being ambiguous', () => {
+    // On an ITEM axis, distributing positions evenly across respondents IS a cyclic shift. The flag
+    // means something else on a `randomizer` FLOW node — least-filled-cell allocation, which needs
+    // a read-min-then-increment in one Lua round trip and cannot be a pure function of a ticket.
+    // machine.ts owns that case.
+    const items = [
+      { id: 'o1', code: 1, ref: 'A' },
+      { id: 'o2', code: 2, ref: 'B' },
+    ];
+    const r = randomize(items, { mode: 'shuffle', even_distribution: true },
+      'a3f9c1d2e4b6a8f0c2d4e6b8a0f2c4d6', { axis_key: 'q1.options', respondent_index: 1 });
+    expect(r.items.map(i => i.code)).toEqual([2, 1]);
+    expect(r.rotation_offset).toBe(1);
+  });
+});

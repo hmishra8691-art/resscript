@@ -985,6 +985,54 @@ describe('no-JavaScript flow — the P1-09 acceptance line', () => {
     } as never);
   }
 
+  it('issues ONE rotation ticket per session and persists it (P2-03)', async () => {
+    // E §8.5 requires the offset be stored, because unlike a seeded order it is not recoverable
+    // from `random_seed` — the ticket came from a shared counter, and a replay that re-read that
+    // counter would get a different number and reconstruct a different survey. `durable.ts` calls
+    // random_seed "ADR-006's replay key. Without it a replay would be a re-simulation with fresh
+    // randomness"; an unpersisted ticket reintroduces exactly that.
+    const issued: string[] = [];
+    const d = deps({
+      rotation: {
+        next: async (versionId: string) => {
+          issued.push(versionId);
+          return 7;
+        },
+        close: async () => undefined,
+      } as never,
+    });
+    const r = await browse(d, `/s/${TOKEN}`);
+    const sessionId = /data-session="([^"]+)"/.exec(r.raw)?.[1] ?? '';
+    const stored = await d.sessions.load(sessionId);
+
+    expect(stored?.rotation_index).toBe(7);
+    // ONE ticket for the whole session, not one per axis: a six-question battery issuing six
+    // tickets would advance the counter six times per respondent, and "even across respondents"
+    // would stop being true of any of them.
+    expect(issued).toHaveLength(1);
+  });
+
+  it('records a NULL ticket when no counter is reachable, rather than 0', async () => {
+    // A zero would put every respondent at offset 0 — a survey with no rotation pretending to have
+    // one. Null makes randomize() report needs_counter and leave the declared order alone.
+    const d = deps({
+      rotation: { next: async () => null, close: async () => undefined } as never,
+    });
+    const r = await browse(d, `/s/${TOKEN}`);
+    const sessionId = /data-session="([^"]+)"/.exec(r.raw)?.[1] ?? '';
+    const stored = await d.sessions.load(sessionId);
+
+    expect(stored?.rotation_index).toBeNull();
+  });
+
+  it('records null when no rotation counter is configured at all', async () => {
+    // The pre-P2-03 shape, and the correct fallback for a deployment with no Redis.
+    const d = deps();
+    const r = await browse(d, `/s/${TOKEN}`);
+    const sessionId = /data-session="([^"]+)"/.exec(r.raw)?.[1] ?? '';
+    expect((await d.sessions.load(sessionId))?.rotation_index).toBeNull();
+  });
+
   it('renders the AUTHOR page shell around the form (P2-12)', async () => {
     // The end of the last dead-ended chain P2-12's audit found. `PageSettings.html_template_ref`
     // was declared, its id resolved by validateStructural, its source scanned by CMP-0500 — and no

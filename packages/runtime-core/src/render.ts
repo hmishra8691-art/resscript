@@ -150,6 +150,17 @@ export interface RenderCtx {
    * evaluation (and is what the tests below mostly do).
    */
   readonly orders?: { readonly [scope: string]: readonly number[] };
+  /**
+   * This respondent's ticket for the counter-backed randomization modes (E §8.4, roadmap P2-03).
+   *
+   * A RESOLVED INTEGER, because this render is synchronous and pure — the ticket comes from a
+   * shared Redis counter and `apps/runtime` resolves it once per session before rendering. Absent
+   * means `rotate` and `fixed_order_list` report `randomize.needs_counter` and leave the declared
+   * order alone, which is the honest degradation: an unrotated survey is visibly unrotated, while a
+   * seeded shuffle standing in for a rotation is an unbalanced design nobody notices until
+   * fieldwork ends.
+   */
+  readonly respondentIndex?: number;
   /** What a null pipe target renders as. Per-survey configurable; default `""`. */
   readonly emptyToken?: string;
   /** Output context for piped text. The renderer owns escaping, not the author. */
@@ -233,7 +244,15 @@ export function orderScope(questionId: string, axis: Axis): string {
 export function computeOrders(
   page: RenderPage,
   seed: string,
-  opts: { groupFor?: (group_ref: string) => OrderGroup | undefined } = {},
+  opts: {
+    groupFor?: (group_ref: string) => OrderGroup | undefined;
+    /**
+     * This respondent's counter ticket (P2-03). MUST match what the renderer is given, or the
+     * engine reasons about a different order than the respondent sees — which is the exact class of
+     * divergence `orders` is shared between the two to prevent.
+     */
+    respondentIndex?: number;
+  } = {},
 ): { readonly [scope: string]: readonly number[] } {
   const out: { [scope: string]: readonly number[] } = {};
 
@@ -251,6 +270,7 @@ export function computeOrders(
       const r = randomize(base, orderSpec, seed, {
         axis_key: `${q.id}.${axis}`,
         ...(group ? { group } : {}),
+        ...(opts.respondentIndex === undefined ? {} : { respondent_index: opts.respondentIndex }),
       });
       out[orderScope(q.id, axis)] = r.items.map(i => i.code);
     }
@@ -316,6 +336,7 @@ function renderAxis(
     const r = randomize(base, orderSpec, seed, {
       axis_key: `${q.id}.${axis}`,
       ...(group ? { group } : {}),
+      ...(ctx.respondentIndex === undefined ? {} : { respondent_index: ctx.respondentIndex }),
     });
     ordered = r.items;
     if (r.event) events.push({ kind: r.event, question_id: q.id, detail: axis });

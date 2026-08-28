@@ -99,6 +99,8 @@ export function createSession(params: {
 
     // Provenance
     vendor_ref: null,
+    // Resolved by the entry handler from the rotation counter, once per session (P2-03).
+    rotation_index: null,
     entry_params: {},
     language: params.language,
     device: { class: 'desktop', ua_class: 'unknown' }, // parsed from User-Agent later
