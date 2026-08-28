@@ -281,6 +281,7 @@ function fixtureRows(options: { readonly withRules?: boolean } = {}): AuthoringR
     themeChain: [],
     vendors: [],
     vendorLimits: [],
+  codeAssets: [],
   };
 }
 
@@ -305,6 +306,92 @@ describe('assembling a Survey from content rows', () => {
       SYNTHETIC_END_ID,
     ]);
     expect(survey.flow.nodes[2]).toMatchObject({ type: 'end', disposition: 'COMPLETE' });
+  });
+
+  /*
+   * `content.code_assets` reaches `Survey.assets`.
+   *
+   * The read did not exist. This file's own header note 4 listed `assets` among the fields with
+   * "no columns", which was true until migration 0019 created the table and then quietly was not.
+   * Nothing failed, because every consumer reads `survey.assets?.scripts ?? []` — so custom JS,
+   * author CSS and HTML templates all degraded to "there are none" with no error anywhere, and
+   * P2-11 was marked Done while being unable to execute: `scriptHashes` hashed an empty list,
+   * `cspDirectives` pinned nothing, `bundle.ts` wrote no `scripts/*.js`, `collectEntitlements`
+   * never required `custom_js`, and the HTML/CSS sanitizers never ran on real data.
+   *
+   * It is the third time one omission has been made in `assembleSurvey` — `redirects` (0010) and
+   * `vendors` (0024) were the first two, and the header narrates both. Hence a test that asserts
+   * the mapping directly rather than trusting a downstream effect.
+   *
+   * `ast_` is asserted because `AssetId` is `Id<'ast'>` and `SCH-1002` rejects a wrong prefix,
+   * while the column is a bare `app.ulid` that accepts any 2–5 letter prefix and pins none. That
+   * convention lives only in the document, so it is only true if something checks it.
+   */
+  it('maps content.code_assets into Survey.assets, one array per kind', () => {
+    const rows = fixtureRows();
+    const survey = assembleSurvey({
+      ...rows,
+      codeAssets: [
+        {
+          id: 'ast_0A100000000000000000000000',
+          kind: 'script',
+          ref: 'PINME',
+          source: 'console.log(1);',
+          sha256: 'eklycaiFuhhQEzLUt7swgKA4qWFy3ZxPMAN3clWo7ag=',
+          runs_on: 'client',
+          scope: 'survey',
+          hooks: ['on_load'],
+        },
+        {
+          id: 'ast_0A200000000000000000000000',
+          kind: 'html_template',
+          ref: 'TPL',
+          source: '<div>{{questions}}</div>',
+          sha256: null,
+          runs_on: null,
+          scope: null,
+          hooks: [],
+        },
+        {
+          id: 'ast_0A300000000000000000000000',
+          kind: 'css',
+          ref: 'SKIN',
+          source: '.rs-page { color: red }',
+          sha256: null,
+          runs_on: null,
+          scope: 'survey',
+          hooks: [],
+        },
+      ],
+    });
+
+    expect(survey.assets?.scripts).toEqual([
+      {
+        id: 'ast_0A100000000000000000000000',
+        ref: 'PINME',
+        scope: 'survey',
+        hooks: ['on_load'],
+        source: 'console.log(1);',
+        runs_on: 'client',
+        sha256: 'eklycaiFuhhQEzLUt7swgKA4qWFy3ZxPMAN3clWo7ag=',
+      },
+    ]);
+    expect(survey.assets?.html_templates).toEqual([
+      { id: 'ast_0A200000000000000000000000', ref: 'TPL', source: '<div>{{questions}}</div>' },
+    ]);
+    expect(survey.assets?.css).toEqual([
+      { id: 'ast_0A300000000000000000000000', ref: 'SKIN', source: '.rs-page { color: red }', scope: 'survey' },
+    ]);
+    // `sha256` omitted rather than set to null: the field is `?` and a null would make
+    // "a hash was declared" true of an asset that declared none.
+    expect(survey.assets?.html_templates?.[0]).not.toHaveProperty('sha256');
+  });
+
+  it('omits assets entirely when the version has no code assets', () => {
+    // Matching `vendors` directly above it in `assembleSurvey`: `Assets` is optional with no
+    // `| null`, so an empty object would make "this survey has assets" true and would change the
+    // artifact bytes for every survey that has none.
+    expect(assembleSurvey(fixtureRows()).assets).toBeUndefined();
   });
 
   it('materializes a dense 1-based position from sort_key without touching code', () => {

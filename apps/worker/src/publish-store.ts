@@ -61,6 +61,7 @@ import type {
   AuthoringRuleRow,
   AuthoringStringRow,
   AuthoringSurveyRow,
+  AuthoringCodeAssetRow,
   AuthoringThemeRow,
   AuthoringVendorLimitRow,
   AuthoringVendorRow,
@@ -310,6 +311,21 @@ export const PUBLISH_SQL = {
     '  ) p ON true ' +
     ' WHERE v.survey_version_id = $1::app.ulid ' +
     ' ORDER BY v.sort_key, v.ref',
+  /**
+   * 0019's content.code_assets: scripts, HTML templates and author CSS.
+   *
+   * `sha256` is the generated column, carried through so the compiler can compare a declared hash
+   * against the one it computes rather than trusting either (see `scriptHashes`' header). Ordered
+   * by `(kind, ref)` so the artifact's bytes are canonical — `buildManifest` sorts its binding
+   * table by ref anyway, but `bundle.ts` writes one file per asset and a stable order here keeps
+   * the whole artifact reproducible rather than only the parts that re-sort.
+   */
+  codeAssets:
+    'SELECT id, kind::text AS kind, ref, source, sha256, ' +
+    '       runs_on::text AS runs_on, scope::text AS scope, hooks ' +
+    '  FROM content.code_assets ' +
+    ' WHERE survey_version_id = $1::app.ulid ' +
+    ' ORDER BY kind, ref',
   /** 0024's content.vendor_limits, which the artifact carries under `quotas.vendor_limits`. */
   vendorLimits:
     'SELECT v.ref AS vendor_ref, l.max_completes ' +
@@ -456,6 +472,9 @@ export class PgPublishStore implements PublishStore {
         versionId,
       ]);
       const vendors = await session.query<Record<string, unknown>>(PUBLISH_SQL.vendors, [versionId]);
+      const codeAssets = await session.query<Record<string, unknown>>(PUBLISH_SQL.codeAssets, [
+        versionId,
+      ]);
       const vendorLimits = await session.query<Record<string, unknown>>(PUBLISH_SQL.vendorLimits, [
         versionId,
       ]);
@@ -473,6 +492,7 @@ export class PgPublishStore implements PublishStore {
         redirects: redirects.rows.map(redirectRowOf),
         themeChain: themeChain.rows.map(themeRowOf),
         vendors: vendors.rows.map(vendorRowOf),
+        codeAssets: codeAssets.rows.map(codeAssetRowOf),
         vendorLimits: vendorLimits.rows.map(vendorLimitRowOf),
       };
     });
@@ -791,6 +811,36 @@ function ruleRowOf(row: Record<string, unknown>): AuthoringRuleRow {
  * to defend against. Anything that is not a string is dropped, not coerced: `String({})` is
  * "[object Object]", which would be interpolated into a stylesheet as a token value.
  */
+/**
+ * One `content.code_assets` row.
+ *
+ * `hooks` is `text[]`, which node-postgres already hands back as a JS array; the filter is for the
+ * NULL element a `text[]` can legally contain and an array-typed column can therefore deliver.
+ * `runs_on` and `scope` are nullable because one table serves three kinds — 0019's CHECKs pin
+ * which kind may set which — so they pass through as null rather than being defaulted here; the
+ * mapping into `Survey.assets` is where a per-kind default belongs.
+ */
+function codeAssetRowOf(row: Record<string, unknown>): AuthoringCodeAssetRow {
+  const rawHooks = row['hooks'];
+  const hooks = Array.isArray(rawHooks)
+    ? rawHooks.filter((h): h is string => typeof h === 'string')
+    : [];
+  return {
+    id: str(row['id']),
+    kind: str(row['kind']) as AuthoringCodeAssetRow['kind'],
+    ref: str(row['ref']),
+    source: str(row['source']),
+    sha256: typeof row['sha256'] === 'string' ? row['sha256'] : null,
+    runs_on: typeof row['runs_on'] === 'string'
+      ? (row['runs_on'] as AuthoringCodeAssetRow['runs_on'])
+      : null,
+    scope: typeof row['scope'] === 'string'
+      ? (row['scope'] as AuthoringCodeAssetRow['scope'])
+      : null,
+    hooks,
+  };
+}
+
 function themeRowOf(row: Record<string, unknown>): AuthoringThemeRow {
   const raw = row['tokens'];
   const tokens: { [k: string]: string } = {};

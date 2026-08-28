@@ -105,6 +105,9 @@ import {
   type JsonObject,
   type JsonValue,
   type LanguageDef,
+  type Assets,
+  type CssAsset,
+  type HtmlTemplateAsset,
   type LogicRule,
   type Mask,
   type OptionId,
@@ -118,6 +121,8 @@ import {
   type RuleEvaluation,
   type RuleKind,
   type RuleTarget,
+  type ScriptAsset,
+  type ScriptHook,
   type StringBundle,
   type Survey,
   type SurveySettings,
@@ -286,6 +291,25 @@ export interface AuthoringThemeRow {
   readonly tokens: { readonly [k: string]: string };
 }
 
+/**
+ * One `content.code_assets` row (0019): a script, an HTML template, or an author stylesheet.
+ *
+ * `sha256` is the column, which is `GENERATED ALWAYS AS (content.source_sha256(source)) STORED` —
+ * carried through so the compiler can compare a declared hash against the one it computes rather
+ * than trusting either. `runs_on`, `scope` and `hooks` are NULL/empty for the kinds that do not
+ * use them, which is why they are nullable here rather than per-kind types.
+ */
+export interface AuthoringCodeAssetRow {
+  readonly id: string;
+  readonly kind: 'script' | 'html_template' | 'css';
+  readonly ref: string;
+  readonly source: string;
+  readonly sha256: string | null;
+  readonly runs_on: 'client' | 'server' | null;
+  readonly scope: 'survey' | 'page' | 'question' | null;
+  readonly hooks: readonly string[];
+}
+
 export interface AuthoringRedirectRow {
   readonly scope: 'default' | 'vendor' | 'language';
   readonly scope_key: string;
@@ -331,6 +355,12 @@ export interface AuthoringRows {
   readonly vendors: readonly AuthoringVendorRow[];
   /** 0024's content.vendor_limits, which the artifact carries under `quotas.vendor_limits`. */
   readonly vendorLimits: readonly AuthoringVendorLimitRow[];
+  /**
+   * 0019's content.code_assets — custom scripts, HTML templates and author CSS.
+   *
+   * See note 4 in this file's header for why the absence of this read was not benign.
+   */
+  readonly codeAssets: readonly AuthoringCodeAssetRow[];
 }
 
 /* -------------------------------------------------------------------------- */
@@ -394,6 +424,7 @@ export function assembleSurvey(rows: AuthoringRows): Survey {
   const themeRef = rows.survey.theme_id;
   const redirects = redirectsOf(rows.redirects);
   const vendors = vendorsOf(rows);
+  const assets = assetsOf(rows);
 
   return {
     meta: {
@@ -422,6 +453,9 @@ export function assembleSurvey(rows: AuthoringRows): Survey {
     // field: the compiler emits `vendors.json` only when the list is non-empty, so an empty array
     // would change the artifact's file set without changing what the survey means.
     ...(vendors.length === 0 ? {} : { vendors }),
+    // Omitted when empty, matching `vendors` directly above and for the same reason: `Assets` is
+    // optional with no `| null`, and an empty object would make "the survey has assets" true.
+    ...(assets === undefined ? {} : { assets }),
     ...(rows.version.entitlement_reqs.length === 0
       ? {}
       : { entitlement_reqs: [...rows.version.entitlement_reqs] }),
@@ -437,6 +471,94 @@ export function assembleSurvey(rows: AuthoringRows): Survey {
  * than dropping them is what makes that a one-line change instead of a second migration's worth of
  * plumbing.
  */
+/**
+ * `content.code_assets` → `Survey.assets`.
+ *
+ * ## Why this function did not exist, and what that cost
+ *
+ * Note 4 in this file's header listed `assets` among the fields with "no columns", whose absence
+ * was "merely a feature not yet reachable". That was true when it was written and stopped being
+ * true at migration 0019, which created `content.code_assets`. Nothing noticed, because the field
+ * is optional and every consumer reads it as `survey.assets?.scripts ?? []` — so the whole feature
+ * degraded to "there are no scripts" without a single error anywhere.
+ *
+ * What was already built on the other side of the gap: `scriptHashes` and `cspDirectives` compute
+ * a `'sha256-…'` source per script; `buildManifest` emits `script_hashes` and the binding table;
+ * `bundle.ts` writes `scripts/<ref>.js` into the artifact; `collectEntitlements` requires
+ * `custom_js` the moment a script exists; the compiler sanitizes author CSS and HTML templates;
+ * and `apps/runtime` serves `/author/<hash>.css` and enforces the manifest's CSP. Every one of
+ * those ran, correctly, over an empty list. P2-11 is marked Done and could not execute.
+ *
+ * This is the same omission the header already narrates twice — `vendors` (0024) and `redirects`
+ * (0010), each built end to end against a `Survey` field that nothing populated. Three instances
+ * of one mistake in one function is a pattern worth stating plainly: **a new content table is not
+ * finished until this file reads it**, and the catalog check that enforces the equivalent rule for
+ * cloning (`ops.content_tables_not_cloned`) has no counterpart for assembly.
+ *
+ * `undefined` rather than an empty `Assets` when there is nothing, so the caller can omit the field
+ * entirely; `media` is genuinely still columnless (DB §11 puts it in `app.media_assets`, org-scoped
+ * rather than version-scoped, and it needs object storage before it can be served).
+ *
+ * ## The id prefix is `ast`, and the table has no writer yet
+ *
+ * `AssetId` is `Id<'ast'>` and `SCH-1002` rejects a wrong prefix, so `content.code_assets.id` must
+ * hold `ast_…`. The column is a bare `app.ulid`, which accepts any 2–5 letter prefix and pins
+ * none — so this is a convention the document enforces and the schema does not. There is no legacy
+ * data to reconcile because NOTHING creates these rows either: `apps/studio` has no code-asset
+ * repo method and no route, though API §2.11 specifies `POST /v1/code-assets`. This function makes
+ * the read side work; the write side is still missing, so today the only way to get a row in is by
+ * hand.
+ */
+function assetsOf(rows: AuthoringRows): Assets | undefined {
+  if (rows.codeAssets.length === 0) return undefined;
+
+  const scripts: ScriptAsset[] = [];
+  const htmlTemplates: HtmlTemplateAsset[] = [];
+  const css: CssAsset[] = [];
+
+  for (const row of rows.codeAssets) {
+    switch (row.kind) {
+      case 'script':
+        // `runs_on` and `scope` are NOT NULL in practice for a script — 0019 constrains them —
+        // but the column is nullable because one table serves three kinds. Defaulting rather than
+        // throwing: a script with no target is a `client` script, which is what an author who left
+        // it unset meant, and `ScriptTarget` has no other safe default.
+        scripts.push({
+          id: asId('ast', row.id),
+          ref: row.ref,
+          scope: row.scope ?? 'survey',
+          hooks: row.hooks as readonly ScriptHook[],
+          source: row.source,
+          runs_on: row.runs_on ?? 'client',
+          ...(row.sha256 === null ? {} : { sha256: row.sha256 }),
+        });
+        break;
+      case 'html_template':
+        htmlTemplates.push({
+          id: asId('ast', row.id),
+          ref: row.ref,
+          source: row.source,
+          ...(row.sha256 === null ? {} : { sha256: row.sha256 }),
+        });
+        break;
+      case 'css':
+        css.push({
+          id: asId('ast', row.id),
+          ref: row.ref,
+          source: row.source,
+          scope: row.scope ?? 'survey',
+        });
+        break;
+    }
+  }
+
+  return {
+    ...(scripts.length === 0 ? {} : { scripts }),
+    ...(htmlTemplates.length === 0 ? {} : { html_templates: htmlTemplates }),
+    ...(css.length === 0 ? {} : { css }),
+  };
+}
+
 function vendorsOf(rows: AuthoringRows): readonly Vendor[] {
   return rows.vendors.map((row) => ({
     id: asId('vnd', row.id) as VendorId,
