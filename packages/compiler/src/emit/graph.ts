@@ -40,6 +40,7 @@ import {
   type ArtifactGraph,
   type FlowNode,
   type OrderGroupEntry,
+  type PageId,
   type QuestionItem,
   type QuestionNode,
   type RandomizationSpec,
@@ -47,6 +48,7 @@ import {
 } from '@resscript/schema';
 
 import type { FlowGraph } from '../types.js';
+import { loopsByPage, unrollPageOrder, type UnrolledPage } from '../loops.js';
 
 export function buildArtifactGraph(graph: FlowGraph, survey?: Survey): ArtifactGraph {
   const nodes: FlowNode[] = [];
@@ -58,21 +60,52 @@ export function buildArtifactGraph(graph: FlowGraph, survey?: Survey): ArtifactG
     if (node !== undefined) nodes.push(node);
   }
 
+  // Loop unrolling (P2-02). `graph.pageOrder` lists each authored page once; a page inside a loop
+  // becomes one entry per iteration here, and `page_entry` gains the same keys pointing at the same
+  // flow node. That is the whole runtime change: `machine.ts`'s `pagesForNode` filters `page_order`
+  // by `page_entry`, so a loop node whose target contributes N x the pages is walked correctly by
+  // the `case 'sequence': case 'loop':` arm that already existed — its comment treating the two
+  // identically becomes true rather than a placeholder.
+  const loops = survey === undefined ? new Map<string, never>() : loopsByPage(survey);
+  const unrolled = unrollPageOrder(graph.pageOrder, loops);
+
   const pageEntry: { [pageId: string]: string } = {};
-  for (const [pageId, flowNodeId] of graph.pageEntry) pageEntry[pageId] = flowNodeId;
+  for (const page of unrolled) {
+    const owner = graph.pageEntry.get(page.authoredId);
+    if (owner !== undefined) pageEntry[page.id] = owner;
+  }
+  // Any authored page the flow laid out but that unrolling did not reach keeps its entry, so a
+  // graph built by hand (this emitter stays independently callable — see below) is unaffected.
+  for (const [pageId, flowNodeId] of graph.pageEntry) {
+    if (pageEntry[pageId] === undefined && loops.get(pageId) === undefined) {
+      pageEntry[pageId] = flowNodeId;
+    }
+  }
 
   // `survey` is optional so the emitter stays independently callable (the QA suite and this
   // package's own fixtures drive it with a hand-built FlowGraph and no document). Absent it, the
   // artifact simply carries no groups — the same shape a version-1 artifact had.
   const orderGroups = survey === undefined ? undefined : buildOrderGroups(survey, graph);
 
+  // Only for the pages unrolling actually derived, so a survey with no loops emits a graph with no
+  // such key at all and therefore byte-identical bytes to before this feature.
+  const pageAuthored: { [derived: string]: string } = {};
+  for (const page of unrolled) {
+    if (page.iteration !== 0) pageAuthored[page.id] = page.authoredId;
+  }
+
   return {
-    page_order: graph.pageOrder,
+    // Cast rather than re-branded: `derivedPageId` preserves the `pg_` prefix and the ULID body
+    // shape by construction (it replaces four body characters, never the length or the prefix), and
+    // `checkDerivedPageIds` reports the one way that can go wrong. A runtime re-validation here
+    // would be a second, weaker statement of a property loops.ts already guarantees.
+    page_order: unrolled.map((p: UnrolledPage) => p.id) as unknown as readonly PageId[],
     nodes,
     page_entry: pageEntry,
     ...(orderGroups === undefined || Object.keys(orderGroups).length === 0
       ? {}
       : { order_groups: orderGroups }),
+    ...(Object.keys(pageAuthored).length === 0 ? {} : { page_authored: pageAuthored }),
   };
 }
 

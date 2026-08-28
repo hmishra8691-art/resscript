@@ -979,3 +979,222 @@ describe('the compile budget', () => {
     expect(elapsed).toBeLessThan(5000);
   });
 });
+
+
+/* -------------------------------------------------------------------------- */
+/* Loop unrolling, end to end (P2-02)                                         */
+/* -------------------------------------------------------------------------- */
+
+describe('a loop block compiles to one page per iteration', () => {
+  /**
+   * A block with `settings.loop` over two questions on two pages, plus one page outside the loop.
+   *
+   * The variables are written by hand at the two iterations rather than through
+   * `buildVariableRegistry`, so this fixture asserts what the EMITTER does with an unrolled
+   * registry rather than re-testing the unrolling `schema/variables.ts` already covers.
+   */
+  function loopedScene(iterations: number) {
+    const ids = deterministicIds(9090);
+    const q1 = ask(ids, 'Q1');
+    const outsideQ = ask(ids, 'Q0');
+
+    const loopPage = page(ids, 'LP', [q1.node]);
+    const plainPage = page(ids, 'PP', [outsideQ.node]);
+    const loopBlock = {
+      id: ids.next('block'),
+      type: 'block' as const,
+      ref: 'LB',
+      children: [loopPage],
+      settings: {
+        loop: {
+          source: { kind: 'numeric_range' as const, from: 1, to: iterations },
+          max_iterations: iterations,
+          iteration_variable_ref: 'BRAND',
+          variable_naming: '{ref}_{iteration}',
+        },
+      },
+    };
+    const plainBlock = {
+      id: ids.next('block'),
+      type: 'block' as const,
+      ref: 'PB',
+      children: [plainPage],
+    };
+
+    // One variable per iteration for the looped question, named the way applyLoopNaming would.
+    const loopVars: Variable[] = Array.from({ length: iterations }, (_, i) => ({
+      id: ids.next('variable'),
+      name: `Q1_${String(i + 1)}`,
+      kind: 'response' as const,
+      type: 'number' as const,
+      source: { question_id: q1.node.id, part: { kind: 'scalar' as const }, iteration: i + 1 },
+      export: { include: true, column: `Q1_${String(i + 1)}` },
+      pii: false,
+      persist: true,
+    }));
+
+    const start = ids.next('flow_node');
+    const loopNode = ids.next('flow_node');
+    const plainNode = ids.next('flow_node');
+    const end = ids.next('flow_node');
+
+    const survey = makeSurvey(ids, {
+      content: [loopBlock, plainBlock] as never,
+      // Both label keys, or SCH-1008 refuses the compile before any of this is exercised.
+      languages: bundleOf({ 'Q1.label': 'How many?', 'Q0.label': 'And overall?' }),
+      variables: [...loopVars, outsideQ.variable],
+      nodes: [
+        { id: start, type: 'start', next: loopNode },
+        { id: loopNode, type: 'loop', target_id: loopBlock.id, next: plainNode },
+        { id: plainNode, type: 'sequence', target_id: plainBlock.id, next: end },
+        { id: end, type: 'end', disposition: 'COMPLETE' },
+      ] as never,
+    });
+
+    return { survey, loopPage, plainPage, loopNode, q1, loopVars };
+  }
+
+  it('emits N page files for one looped page, plus the unlooped one', () => {
+    // The whole point. Before P2-02 a `loop` flow node ran its target ONCE: flow.ts treated it as a
+    // `sequence` and nothing unrolled the pages, so a loop over four brands asked about one.
+    const { survey } = loopedScene(3);
+    const result = compile(survey);
+    if (!result.ok) throw new Error(`compile failed: ${JSON.stringify(codes(result))}`);
+
+    const pages = Object.keys(result.bundle.artifact.pages);
+    expect(pages).toHaveLength(4); // 3 iterations + 1 page outside the loop
+  });
+
+  it('puts every iteration in page_order, in iteration order, before the unlooped page', () => {
+    const { survey, plainPage } = loopedScene(3);
+    const result = compile(survey);
+    if (!result.ok) throw new Error('compile failed');
+
+    const order = result.bundle.artifact.graph.page_order;
+    expect(order).toHaveLength(4);
+    // The unlooped page is last, because its flow node follows the loop's.
+    expect(order[3]).toBe(plainPage.id);
+    // And the three iterations are distinct ids.
+    expect(new Set(order.slice(0, 3)).size).toBe(3);
+  });
+
+  it('maps every derived id back to the authored page, on the GRAPH', () => {
+    // On the graph and not only on each CompiledPage, because the consumer is the flow machine: it
+    // asks "is this page visible" while walking page_order, before any page file is fetched. A
+    // derived id the logic program has never seen would fall through to baseVisible (true), and a
+    // rule hiding a looped page would hide none of its iterations.
+    const { survey, loopPage } = loopedScene(2);
+    const result = compile(survey);
+    if (!result.ok) throw new Error('compile failed');
+
+    const map = result.bundle.artifact.graph.page_authored ?? {};
+    expect(Object.keys(map)).toHaveLength(2);
+    for (const authored of Object.values(map)) expect(authored).toBe(loopPage.id);
+  });
+
+  it('gives every iteration the SAME flow-node entry, so the machine walks them as one sequence', () => {
+    // This is why the runtime needed no change: `pagesForNode` filters page_order by page_entry, so
+    // a loop node owning N x the pages is walked correctly by the `case 'sequence': case 'loop':`
+    // arm that already existed.
+    const { survey, loopNode } = loopedScene(3);
+    const result = compile(survey);
+    if (!result.ok) throw new Error('compile failed');
+
+    const entry = result.bundle.artifact.graph.page_entry;
+    const owned = Object.entries(entry).filter(([, node]) => node === loopNode);
+    expect(owned).toHaveLength(3);
+  });
+
+  it('binds each iteration page to THAT iteration variables only', () => {
+    // The bug this prevents: `emitsOf` collects every variable whose source.question_id matches,
+    // which for a looped question is all N iterations. One rendered question carrying N iterations'
+    // variables writes an answer at iteration 2 into iteration 1's export column, or into all.
+    const { survey, loopVars } = loopedScene(3);
+    const result = compile(survey);
+    if (!result.ok) throw new Error('compile failed');
+
+    const pages = Object.values(result.bundle.artifact.pages);
+    const looped = pages.filter((p) => p.iteration !== undefined);
+    expect(looped).toHaveLength(3);
+
+    for (const p of looped) {
+      const emits = p.questions[0]?.emits ?? [];
+      expect(emits).toHaveLength(1);
+      const expected = loopVars[(p.iteration ?? 0) - 1];
+      expect(emits[0]).toBe(expected?.id);
+    }
+  });
+
+  it('records the iteration and the authored id on each looped page', () => {
+    const { survey, loopPage } = loopedScene(2);
+    const result = compile(survey);
+    if (!result.ok) throw new Error('compile failed');
+
+    const looped = Object.values(result.bundle.artifact.pages)
+      .filter((p) => p.iteration !== undefined)
+      .sort((a, b) => (a.iteration ?? 0) - (b.iteration ?? 0));
+
+    expect(looped.map((p) => p.iteration)).toEqual([1, 2]);
+    for (const p of looped) expect(p.authored_id).toBe(loopPage.id);
+  });
+
+  it('keeps the questions AUTHORED id, so the logic cells are shared', () => {
+    // Deliberate, and exact rather than approximate: no expression in the logic AST reads the
+    // current iteration, so a rule's verdict is provably iteration-invariant. loops.test.ts asserts
+    // that invariant against the real Expr union so adding such a node breaks a test rather than
+    // silently invalidating this.
+    const { survey, q1 } = loopedScene(2);
+    const result = compile(survey);
+    if (!result.ok) throw new Error('compile failed');
+
+    for (const p of Object.values(result.bundle.artifact.pages)) {
+      if (p.iteration === undefined) continue;
+      expect(p.questions[0]?.id).toBe(q1.node.id);
+    }
+  });
+
+  it('adds NOTHING to a survey with no loops', () => {
+    // These bytes are in the artifact hash, so a survey without loops must compile identically to
+    // before this feature: no page_authored key, no iteration field.
+    const ids = deterministicIds(7);
+    const asked = ask(ids, 'Q1');
+    const blockId = ids.next('block');
+    const start = ids.next('flow_node');
+    const seq = ids.next('flow_node');
+    const end = ids.next('flow_node');
+    const survey = makeSurvey(ids, {
+      content: [{ id: blockId, type: 'block', ref: 'B1', children: [page(ids, 'P1', [asked.node])] }],
+      languages: bundleOf(LABELS),
+      variables: [asked.variable],
+      nodes: [
+        { id: start, type: 'start', next: seq },
+        { id: seq, type: 'sequence', target_id: blockId, next: end },
+        { id: end, type: 'end', disposition: 'COMPLETE' },
+      ] as never,
+    });
+    const result = compile(survey);
+    if (!result.ok) throw new Error('compile failed');
+
+    expect(result.bundle.artifact.graph.page_authored).toBeUndefined();
+    for (const p of Object.values(result.bundle.artifact.pages)) {
+      expect(p.iteration).toBeUndefined();
+      expect(p.authored_id).toBeUndefined();
+    }
+  });
+
+  it('is deterministic: two compiles of the same looped survey agree byte for byte', () => {
+    // Per-iteration ids are DERIVED, never minted — a fresh ULID per compile would change
+    // graph.json, change the artifact hash, and destroy the property this codebase is judged on.
+    const a = compile(loopedScene(3).survey);
+    const b = compile(loopedScene(3).survey);
+    if (!a.ok || !b.ok) throw new Error('compile failed');
+    expect(a.bundle.hash).toBe(b.bundle.hash);
+  });
+
+  it('changes the artifact when the iteration count changes', () => {
+    const a = compile(loopedScene(2).survey);
+    const b = compile(loopedScene(3).survey);
+    if (!a.ok || !b.ok) throw new Error('compile failed');
+    expect(a.bundle.hash).not.toBe(b.bundle.hash);
+  });
+});

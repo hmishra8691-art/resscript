@@ -95,6 +95,7 @@ import { cellKey, writesOf, type Cell, type CellIdx, type CompiledLogic, type Ru
 
 import type { PluginResolution } from '../analyses/plugins.js';
 import { blockPathOf, pageOfQuestion } from '../flow.js';
+import { emitsAtIteration, loopsByPage, unrollPageOrder } from '../loops.js';
 import type { FlowGraph } from '../types.js';
 import { compiledRuleOf } from './logic.js';
 import { artifactLanguages, stringResolver, type StringResolver } from './i18n.js';
@@ -127,20 +128,30 @@ export function buildPages(input: PagesInput): PagesResult {
   const inline = inlineRules(input, index);
   const languages = artifactLanguages(survey);
 
+  const loops = loopsByPage(survey);
   const byLanguage: { [language: string]: { readonly [pageId: string]: CompiledPage } } = {};
   for (const language of languages) {
     const strings = stringResolver(survey, language);
     const pages: { [pageId: string]: CompiledPage } = {};
     // `pageOrder` and not the content tree: these are the pages a respondent can reach. Emitting
     // in flow order also makes a diff of two artifacts read in the order a respondent meets them.
-    for (const pageId of input.graph.pageOrder) {
-      const page = index.pageById.get(pageId);
+    // Unrolled, so a page inside a loop is emitted once per iteration under its DERIVED id. The
+    // same expansion `emit/graph.ts` applies to `page_order`, from the same two functions, so the
+    // artifact cannot contain a page order referencing a page file that does not exist.
+    for (const unrolled of unrollPageOrder(input.graph.pageOrder, loops)) {
+      const page = index.pageById.get(unrolled.authoredId);
       if (page === undefined) continue;
-      pages[pageId] = compilePage(page, {
+      pages[unrolled.id] = compilePage(page, {
         index,
         strings,
         plugins: input.plugins,
-        inline: inline.get(pageId) ?? [],
+        // Inline rules are keyed on the AUTHORED page id and are shared across iterations, which is
+        // correct for the reason loops.ts states at length: no expression in the logic AST can read
+        // the current iteration, so a rule's verdict is provably iteration-invariant.
+        inline: inline.get(unrolled.authoredId) ?? [],
+        survey,
+        iteration: unrolled.iteration,
+        derivedId: unrolled.id,
       });
     }
     byLanguage[language] = pages;
@@ -158,6 +169,11 @@ interface PageContext {
   readonly strings: StringResolver;
   readonly plugins: PluginResolution;
   readonly inline: readonly CompiledRule[];
+  readonly survey: Survey;
+  /** 1-based inside a loop, 0 outside one. */
+  readonly iteration: number;
+  /** The id this page is addressed by — derived when looped, the authored id otherwise. */
+  readonly derivedId: string;
 }
 
 function compilePage(page: PageNode, ctx: PageContext): CompiledPage {
@@ -172,12 +188,23 @@ function compilePage(page: PageNode, ctx: PageContext): CompiledPage {
   }
 
   return {
-    id: page.id,
+    id: ctx.derivedId as typeof page.id,
     ref: page.ref,
     block_path: ctx.index.blockPath.get(page.id) ?? [],
     questions,
     inline_rules: ctx.inline,
     settings: asJsonObject(page.settings),
+    // Only present for a looped page, so a survey without loops emits byte-identical pages to
+    // before this feature — which matters because these bytes are inside the artifact hash.
+    ...(ctx.iteration === 0
+      ? {}
+      : {
+          // The AUTHORED id, which is what the logic program's visibility cell is keyed on. The
+          // runtime resolves page visibility through this rather than through `id`, because N
+          // unrolled pages share one authored page's rules.
+          authored_id: page.id,
+          iteration: ctx.iteration,
+        }),
   };
 }
 
@@ -186,7 +213,16 @@ function compileQuestion(question: QuestionNode, ctx: PageContext): CompiledQues
   const rows = compileItems(question.rows, ctx.strings);
   const columns = compileItems(question.columns, ctx.strings);
   const cells = question.cells;
-  const emits = question.emits ?? ctx.index.emitsOf.get(question.id) ?? [];
+  // AT THIS ITERATION, not every iteration. `emitsOf` collects every variable whose
+  // `source.question_id` matches, which for a looped question is all N iterations' variables — and
+  // one rendered question carrying N iterations' worth of variables is how an answer at iteration 2
+  // gets written into iteration 1's export column, or into all of them.
+  //
+  // Outside a loop this is the same list `emitsOf` would give, so the non-looped path is unchanged.
+  const emits =
+    ctx.iteration === 0
+      ? (question.emits ?? ctx.index.emitsOf.get(question.id) ?? [])
+      : (emitsAtIteration(ctx.survey, question.id, ctx.iteration) as readonly VariableId[]);
 
   return {
     id: question.id,

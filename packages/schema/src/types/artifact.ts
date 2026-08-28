@@ -121,6 +121,16 @@ export interface ArtifactGraph {
    * for a list of integers.
    */
   readonly order_groups?: { readonly [groupRef: string]: OrderGroupEntry };
+  /**
+   * Derived per-iteration page id → the authored page id it came from (P2-02).
+   *
+   * **Artifact schema version 2, append-only, and absent for a survey with no loops.** It lives on
+   * the graph rather than only on each `CompiledPage` because the consumer is the FLOW machine,
+   * which walks `page_order` and asks "is this page visible" before any page file is fetched. Page
+   * visibility is keyed on the authored id, since N unrolled iterations share one authored page's
+   * rules — see `compiler/src/loops.ts` for why that is exact rather than approximate.
+   */
+  readonly page_authored?: { readonly [derivedPageId: string]: string };
 }
 
 /**
@@ -197,6 +207,23 @@ export interface CompiledPage {
   /** Rules whose trigger and target are both on this page, inlined to avoid a fetch. */
   readonly inline_rules: readonly CompiledRule[];
   readonly settings: JsonObject;
+  /**
+   * The AUTHORED page id, present only on an unrolled loop iteration.
+   *
+   * **Added in artifact schema version 2 (P2-02), append-only and absent for a page outside a
+   * loop** — so a survey with no loops compiles to byte-identical pages, which matters because
+   * these bytes are inside the artifact hash.
+   *
+   * `id` is the derived per-iteration id: it addresses the page file, keys `graph.page_entry`, and
+   * is what the machine advances through. `authored_id` is what the LOGIC PROGRAM's cells are
+   * keyed on, because N unrolled iterations share one authored page's rules — which is correct and
+   * not an approximation: `packages/logic`'s `Expr` union has no node that reads the current
+   * iteration, so a rule's verdict is provably iteration-invariant. `compiler/src/loops.ts`'
+   * header sets out the full argument and its one failure mode.
+   */
+  readonly authored_id?: PageId;
+  /** 1-based iteration index, present only on an unrolled loop iteration. */
+  readonly iteration?: number;
 }
 
 /**

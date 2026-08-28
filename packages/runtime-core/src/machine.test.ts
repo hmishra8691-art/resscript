@@ -29,13 +29,21 @@ import {
  */
 function artifact(
   nodes: FlowNodeLike[],
-  pages: Array<{ id: string; entry?: string }>,
+  pages: Array<{ id: string; entry?: string; authored?: string }>,
 ): MachineArtifact {
+  const authored = pages.filter(p => p.authored !== undefined);
   return {
     graph: {
       page_order: pages.map(p => p.id),
       nodes,
       page_entry: Object.fromEntries(pages.map(p => [p.id, p.entry ?? 'fn_seq'])),
+      ...(authored.length === 0
+        ? {}
+        : {
+            page_authored: Object.fromEntries(
+              authored.map(p => [p.id, p.authored as string]),
+            ),
+          }),
     },
   };
 }
@@ -716,5 +724,111 @@ describe('malformed graphs', () => {
 
     expect(r.next.disposition).toBe('TERMINATE');
     expect(r.cmds[0]).toMatchObject({ event: { kind: 'flow.traversal_limit' } });
+  });
+});
+
+
+/* ------------------------------------------------------------------ *
+ * Loop iterations (P2-02)
+ * ------------------------------------------------------------------ */
+
+describe('a loop node walks its unrolled iterations', () => {
+  /**
+   * The compiler unrolls a looped page into one page per iteration and gives each the same
+   * `page_entry`. The claim P2-02 rests on is that this needs NO machine change — so it is verified
+   * here rather than asserted in a comment.
+   *
+   * Two pages under one loop, two iterations, in the iteration-major order `unrollPageOrder`
+   * produces: A1, B1, A2, B2.
+   */
+  function loopedSurvey() {
+    return artifact(
+      [
+        { id: 'fn_start', type: 'start', next: 'fn_loop' },
+        { id: 'fn_loop', type: 'loop', target_id: 'blk_loop', next: 'fn_end' },
+        { id: 'fn_end', type: 'end', disposition: 'COMPLETE' },
+      ],
+      [
+        { id: 'pg_a_i1', entry: 'fn_loop', authored: 'pg_a' },
+        { id: 'pg_b_i1', entry: 'fn_loop', authored: 'pg_b' },
+        { id: 'pg_a_i2', entry: 'fn_loop', authored: 'pg_a' },
+        { id: 'pg_b_i2', entry: 'fn_loop', authored: 'pg_b' },
+      ],
+    );
+  }
+
+  /** Walk from entry to finalization, collecting every page rendered. */
+  function walk(art: MachineArtifact, c: PureCtx = ctx()): string[] {
+    let s = session();
+    const seen: string[] = [];
+    let out = step(s, { i: 'enter' }, art, c);
+    s = out.next;
+    for (const cmd of out.cmds) if (cmd.c === 'render') seen.push(cmd.page_id);
+
+    // Bounded, so a machine that looped forever fails the test instead of hanging it.
+    for (let guard = 0; guard < 20; guard += 1) {
+      const current = s.current_page_id;
+      if (current === null) break;
+      out = step(s, { i: 'submitted', page_id: current }, art, c);
+      s = out.next;
+      let rendered = false;
+      for (const cmd of out.cmds) {
+        if (cmd.c === 'render') {
+          seen.push(cmd.page_id);
+          rendered = true;
+        }
+      }
+      if (!rendered) break;
+    }
+    return seen;
+  }
+
+  it('renders every iteration of every page, in iteration-major order', () => {
+    // Before P2-02 a loop node ran its target ONCE. This is the behaviour change, observed through
+    // the machine rather than inferred from the compiler.
+    expect(walk(loopedSurvey())).toEqual(['pg_a_i1', 'pg_b_i1', 'pg_a_i2', 'pg_b_i2']);
+  });
+
+  it('finalizes after the last iteration rather than looping forever', () => {
+    let s = session();
+    const art = loopedSurvey();
+    let out = step(s, { i: 'enter' }, art, ctx());
+    s = out.next;
+    for (let i = 0; i < 4; i += 1) {
+      out = step(s, { i: 'submitted', page_id: s.current_page_id as string }, art, ctx());
+      s = out.next;
+    }
+    expect(out.cmds.some(c => c.c === 'finalize')).toBe(true);
+  });
+
+  it('resolves page visibility through the AUTHORED id, so a rule hides every iteration', () => {
+    // The one place the machine had to change. A derived id the logic program has never seen falls
+    // through to `baseVisible`, which is `true` — so without the mapping a rule hiding a looped page
+    // would hide none of its iterations, which is the failure that looks like "the rule does
+    // nothing" and is impossible to debug from the outside.
+    const asked: string[] = [];
+    const c = ctx({
+      isPageVisible: (id: string) => {
+        asked.push(id);
+        return id !== 'pg_a';
+      },
+    });
+
+    expect(walk(loopedSurvey(), c)).toEqual(['pg_b_i1', 'pg_b_i2']);
+    // The hook was asked with AUTHORED ids only — never a derived one.
+    expect(asked.every(id => id === 'pg_a' || id === 'pg_b')).toBe(true);
+  });
+
+  it('asks with the page id itself when there is no mapping', () => {
+    // A survey with no loops emits no `page_authored`, and must behave exactly as before.
+    const asked: string[] = [];
+    const c = ctx({
+      isPageVisible: (id: string) => {
+        asked.push(id);
+        return true;
+      },
+    });
+    walk(linearSurvey(), c);
+    expect(asked).toContain('pg_1');
   });
 });

@@ -106,6 +106,16 @@ export interface MachineArtifact {
     readonly nodes: readonly FlowNodeLike[];
     /** `page_id -> flow node id`. Precomputed by the compiler (C §17). */
     readonly page_entry: { readonly [pageId: string]: string };
+    /**
+     * Derived per-iteration page id → the authored page id (P2-02), absent without loops.
+     *
+     * Declared here — in the narrow structural mirror — because the machine is the consumer that
+     * needs it: it asks "is this page visible" while walking `page_order`, BEFORE any page file is
+     * fetched, so it cannot read `CompiledPage.authored_id`. Without this, a derived id the logic
+     * program has never seen falls through to `baseVisible`, which is `true`, and a rule hiding a
+     * looped page would hide none of its iterations.
+     */
+    readonly page_authored?: { readonly [derivedPageId: string]: string };
   };
 }
 
@@ -209,8 +219,19 @@ export function pagesForNode(artifact: MachineArtifact, node_id: string): string
   return artifact.graph.page_order.filter(pageId => artifact.graph.page_entry[pageId] === node_id);
 }
 
-function isVisible(ctx: PureCtx, page_id: string): boolean {
-  return ctx.isPageVisible ? ctx.isPageVisible(page_id) : true;
+/**
+ * Page visibility, resolved through the AUTHORED page id for an unrolled loop iteration (P2-02).
+ *
+ * `graph.page_authored` maps a derived per-iteration id back to the page whose rules govern it. It
+ * matters here specifically: the machine asks "is this page visible" while walking `page_order`,
+ * before any page file is fetched, so it cannot read `CompiledPage.authored_id` — and asking with a
+ * derived id the logic program has never seen would fall back to `baseVisible`, which is `true`. A
+ * rule hiding a looped page would then hide none of its iterations.
+ */
+function isVisible(artifact: MachineArtifact, ctx: PureCtx, page_id: string): boolean {
+  if (!ctx.isPageVisible) return true;
+  const authored = artifact.graph.page_authored?.[page_id];
+  return ctx.isPageVisible(authored ?? page_id);
 }
 
 /**
@@ -230,12 +251,12 @@ function nextPageInNode(
   const start = after === null ? 0 : pages.indexOf(after) + 1;
   if (after !== null && start === 0) {
     // `after` is not in this sequence — treat it as "start from the beginning".
-    for (const p of pages) if (isVisible(ctx, p)) return p;
+    for (const p of pages) if (isVisible(artifact, ctx, p)) return p;
     return null;
   }
   for (let i = start; i < pages.length; i++) {
     const p = pages[i]!;
-    if (isVisible(ctx, p)) return p;
+    if (isVisible(artifact, ctx, p)) return p;
   }
   return null;
 }
