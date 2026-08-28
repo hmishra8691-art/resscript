@@ -35,8 +35,14 @@ import { createLogger } from '@resscript/observability';
 
 const log = createLogger({ service: 'runtime-quota-drain' });
 
-/** The Redis list the reserve/commit/release scripts append dirty cell keys to. */
-export const WRITE_BEHIND_KEY = 'wb:quota';
+/**
+ * The Redis list the reserve/commit/release scripts append dirty cell keys to.
+ *
+ * Re-exported rather than defined here: the WRITERS own it (`quota/index.ts`), and this module is
+ * the reader. It lived here while nothing wrote to it, which is exactly how that went unnoticed.
+ */
+import { WRITE_BEHIND_KEY } from './index.js';
+export { WRITE_BEHIND_KEY };
 /** The per-cell monotonic epoch counter. `INCR`, never a clock — see the module header. */
 export const EPOCH_KEY = 'wb:quota:epoch';
 
@@ -58,7 +64,6 @@ interface CounterRow {
   readonly survey_version_id: string;
   readonly cell_id: string;
   readonly plan_id: string;
-  readonly org_id: string;
   readonly target: number;
   readonly committed: number;
   readonly in_flight: number;
@@ -143,13 +148,19 @@ export function createQuotaDrain(deps: DrainDeps): QuotaDrain {
         log.warn('quota_drain_bad_key', { key });
         continue;
       }
+      // `org_id` is NOT read. `runtime.flush_quota_counters` derives it by joining
+      // `app.survey_versions` (migration 0027), because B §2 forbids a runtime function taking an
+      // org id and the version row is the only authority on which tenant owns a counter. Carrying
+      // it here was worse than redundant: `rebuildRedis` had no org to write and put `''` on every
+      // hash it restored, and the falsy check below then rejected every one of those cells — so a
+      // successful rebuild produced cells the drain refused. One less field on the hash is one
+      // less field a writer can forget.
       const hash = await deps.redis.hmget(
-        key, 'committed', 'in_flight', 'target', 'cell_id', 'survey_version_id', 'org_id', 'is_test',
+        key, 'committed', 'in_flight', 'target', 'cell_id', 'survey_version_id', 'is_test',
       );
       const cellId = hash[3];
       const versionId = hash[4];
-      const orgId = hash[5];
-      if (!cellId || !versionId || !orgId) {
+      if (!cellId || !versionId) {
         // A cell hash without its identity was written by something that is not the reserve
         // script. Skipped rather than guessed: inventing a cell_id here would write a counter row
         // for a cell that may not exist, and the FK would not catch it (the counter table
@@ -164,11 +175,10 @@ export function createQuotaDrain(deps: DrainDeps): QuotaDrain {
         survey_version_id: versionId,
         cell_id: cellId,
         plan_id: parsed.planId,
-        org_id: orgId,
         target: Number(hash[2] ?? 0),
         committed: Number(hash[0] ?? 0),
         in_flight: Number(hash[1] ?? 0),
-        is_test: hash[6] === '1' || hash[6] === 'true',
+        is_test: hash[5] === '1' || hash[5] === 'true',
         redis_epoch: epoch,
       });
     }
@@ -280,7 +290,9 @@ export function createQuotaDrain(deps: DrainDeps): QuotaDrain {
           mode: row.mode,
           cell_id: row.cell_id,
           survey_version_id: surveyVersionId,
-          org_id: '',
+          // No org_id: the drain no longer reads one and the flush derives it. This line used to
+          // be `org_id: ''` — the only value available, since `quota_rebuild_state` returns no org
+          // — and it is why a rebuilt cell was still skipped by the drain.
         });
         pipe.del(`${key}:holders`);
         for (const sessionId of row.holders) {

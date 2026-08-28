@@ -15,6 +15,9 @@
  */
 
 import { createServer } from 'node:http';
+// The drain owns its own connection: it is a background loop, not part of a request, and sharing
+// the session client would put its blocking reads behind respondent traffic.
+import Redis from 'ioredis';
 import { createLogger } from '@resscript/observability';
 import { createArtifactLoader } from './artifact/loader.js';
 import { generateSeed, generateULID } from './entry.js';
@@ -27,6 +30,7 @@ import { createPgWriter, createRedisSessionStore } from './session/durable.js';
 import { Pool } from 'pg';
 
 import { createQuotaClient } from './quota/index.js';
+import { createQuotaDrain, startQuotaDrainLoop } from './quota/drain.js';
 import { createAllocator, createRotationCounter } from './rotation.js';
 import { createTtlProvider, pgLoiLoader, type TtlProvider } from './quota/ttl.js';
 import { createPgTokenResolver, createStaticTokenResolver, type ResolvedToken } from './token.js';
@@ -223,8 +227,51 @@ export const handler: ReturnType<typeof createHandler> = async (req, res) => {
   return defaultHandler(req, res);
 };
 
+/**
+ * Start the write-behind drain, or say why not.
+ *
+ * ADR-008 is "Redis is the quota arbiter, Postgres is the durable record". Nothing in this
+ * repository ever started the drain — `createQuotaDrain` and `startQuotaDrainLoop` had zero callers
+ * outside their own tests — so the record half had never executed in any deployment. Redis counted,
+ * nothing was written down, and a Redis loss lost every completed-quota count.
+ *
+ * Requires both halves to be present, and says which one is missing rather than starting a loop
+ * that cannot work. Returns the stopper so a caller that wants to shut down cleanly can.
+ */
+function startQuotaDrain(): (() => void) | undefined {
+  const redisUrl = process.env['REDIS_URL'];
+  const databaseUrl = process.env['DATABASE_URL'];
+  if (redisUrl === undefined || databaseUrl === undefined) {
+    // Loud, because a runtime without a drain still SERVES correctly — the arbiter is Redis — and
+    // the damage is invisible until the day Redis is lost. `durable: false` mirrors the phrasing
+    // `apps/worker` uses for its in-memory job store, which is the same class of silent hazard.
+    log.warn('quota_drain_not_started', {
+      reason: redisUrl === undefined ? 'REDIS_URL is unset' : 'DATABASE_URL is unset',
+      durable: false,
+    });
+    return undefined;
+  }
+
+  const drain = createQuotaDrain({ redis: new Redis(redisUrl), databaseUrl });
+  const stop = startQuotaDrainLoop(drain, {
+    intervalMs: Number(process.env['QUOTA_DRAIN_INTERVAL_MS'] ?? 30_000),
+  });
+  log.info('quota_drain_started', {
+    interval_ms: Number(process.env['QUOTA_DRAIN_INTERVAL_MS'] ?? 30_000),
+  });
+  return stop;
+}
+
 if (process.env['NODE_ENV'] !== 'test') {
   const h = createHandler(buildDeps());
+  const stopDrain = startQuotaDrain();
+  const shutdown = (signal: string): void => {
+    log.info('runtime_signal', { signal });
+    stopDrain?.();
+    process.exit(0);
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
   createServer((req, res) => {
     void h(req, res).catch((err: unknown) => {
       log.error('unhandled_request_error', { err: String(err) });

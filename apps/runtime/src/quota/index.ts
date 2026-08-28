@@ -49,6 +49,20 @@ const log = createLogger({ service: 'runtime-quota' });
  * early-returning — the QA panel needs to show every full cell, not just the first one hit.
  * PASS 2 is only reached when every hard cell had room.
  */
+/**
+ * The write-behind list the mutating scripts append a dirty cell key to.
+ *
+ * Defined HERE, on the writer side, and imported by `drain.ts` — not the other way round. The
+ * drain imports `pg`, and a dependency from this module to that one would pull a Postgres driver
+ * into the request path for the sake of one string.
+ *
+ * That the scripts append at all is new. `drain.ts` has always described this as "the Redis list
+ * the reserve/commit/release scripts append dirty cell keys to" and they never did, so
+ * `drainOnce` scanned an empty list on every pass and `runtime.quota_counters` was never written —
+ * the third and last missing link in ADR-008's record half.
+ */
+export const WRITE_BEHIND_KEY = 'wb:quota';
+
 const RESERVE = `
 local blocked, soft_full = {}, {}
 
@@ -78,6 +92,10 @@ for i = 1, #KEYS do
   redis.call('SADD', reskey, KEYS[i])
   redis.call('ZADD', KEYS[i] .. ':holders',
              tonumber(ARGV[3]) + tonumber(ARGV[2]) * 1000, ARGV[1])
+  -- Mark the cell dirty for the write-behind drain. AFTER the all-or-none decision above, so a
+  -- refused reservation never enqueues work; inside the same script, so a mutation and its dirty
+  -- mark cannot be separated by a crash.
+  redis.call('RPUSH', '${WRITE_BEHIND_KEY}', KEYS[i])
 end
 redis.call('EXPIRE', reskey, tonumber(ARGV[2]))
 return { 1, soft_full, {} }
@@ -91,6 +109,7 @@ for i = 1, #held do
   redis.call('HINCRBY', held[i], 'committed', 1)
   redis.call('HINCRBY', held[i], 'in_flight', -1)
   redis.call('ZREM', held[i] .. ':holders', ARGV[1])
+  redis.call('RPUSH', '${WRITE_BEHIND_KEY}', held[i])
 end
 redis.call('DEL', reskey)
 return #held
@@ -104,6 +123,7 @@ for i = 1, #held do
   local v = redis.call('HINCRBY', held[i], 'in_flight', -1)
   if v < 0 then redis.call('HSET', held[i], 'in_flight', 0) end
   redis.call('ZREM', held[i] .. ':holders', ARGV[1])
+  redis.call('RPUSH', '${WRITE_BEHIND_KEY}', held[i])
 end
 redis.call('DEL', reskey)
 return #held
