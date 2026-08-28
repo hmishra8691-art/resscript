@@ -45,6 +45,7 @@ import { createSession, generateULID } from './entry.js';
 import { rebuildSession, type RuntimeWriter } from './session/durable.js';
 import { gateDecision, type QuotaClient } from './quota/index.js';
 import { planFor, resolveCells } from './quota/cells.js';
+import { createTtlProvider, type TtlProvider } from './quota/ttl.js';
 import { bindInboundParams } from './vendor/inbound.js';
 import { vendorFromParams, verifyEntry } from './vendor/verify.js';
 import { handleSubmitCore, type SubmitBody } from './submit.js';
@@ -89,6 +90,11 @@ export interface RuntimeDeps {
   readonly writer?: RuntimeWriter;
   /** The Redis quota arbiter. Optional for the same reason the writer is. */
   readonly quota?: QuotaClient;
+  /**
+   * The adaptive reservation-TTL provider (P2-07). Absent = always use the authored value, which is
+   * the pre-P2-07 behaviour and the correct fallback for a deployment with no measurement path.
+   */
+  readonly ttl?: TtlProvider;
   /** Injected so a replayed request produces identical timestamps (ADR-006). */
   readonly now: () => number;
   /** ULID generator. */
@@ -461,6 +467,16 @@ function evaluateAndRender(
 }
 
 /**
+ * The TTL provider used when none is injected: NO measurement, so every survey gets its authored
+ * value.
+ *
+ * A provider rather than a bare `config.policy.reservation_ttl_s` read, so the one code path in
+ * `resolveQuotaGate` is the same whether measurement is configured or not. A branch there would be
+ * a second place for the absolute bounds to be forgotten.
+ */
+const DEFAULT_TTL_PROVIDER: TtlProvider = createTtlProvider();
+
+/**
  * Stamp a render digest onto the visit the machine just created.
  *
  * The machine emits `{c:'render'}` without knowing what the render produced; only this side can
@@ -502,6 +518,11 @@ export interface RenderDeps {
   /** The pinned artifact's shared-order group resolver (E §8.3), from `groupsFor`. */
   readonly groupFor?: (group_ref: string) => OrderGroup | undefined;
   readonly quota?: QuotaClient;
+  /**
+   * The adaptive reservation-TTL provider (P2-07). Absent = always use the authored value, which is
+   * the pre-P2-07 behaviour and the correct fallback for a deployment with no measurement path.
+   */
+  readonly ttl?: TtlProvider;
   /**
    * Everything a `quota_gate` needs to reach a verdict and let the machine continue.
    *
@@ -791,9 +812,19 @@ async function resolveQuotaGate(
     return { passed: true, events };
   }
 
+  // The ADAPTIVE TTL (E §10.3, P2-07). `config.policy.reservation_ttl_s` is the AUTHORED estimate
+  // and used to be the whole story, which left both failure modes E §10.3 names live: too short and
+  // a slow respondent's reservation vanishes and the cell overfills, too long and abandons hold
+  // cells for hours. Below 50 completes the authored value is still what is used — see ttl.ts for
+  // why an unstable measurement is worse than a deliberate guess.
+  const ttl = await (opts.ttl ?? DEFAULT_TTL_PROVIDER).decide(
+    session.survey_version_id,
+    config.policy.reservation_ttl_s,
+  );
+
   const decision = await gateDecision(opts.quota, session.session_id, resolved.cells, {
     isTest: session.is_test,
-    ttlSeconds: config.policy.reservation_ttl_s,
+    ttlSeconds: ttl.ttlSeconds,
     onUnavailable: config.policy.on_store_unavailable,
   });
 

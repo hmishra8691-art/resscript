@@ -24,7 +24,10 @@ import { createEgressProxy } from './script/egress.js';
 import { withEgress } from './script/egress-bridge.js';
 import { createMemorySessionStore } from './session/store.js';
 import { createPgWriter, createRedisSessionStore } from './session/durable.js';
+import { Pool } from 'pg';
+
 import { createQuotaClient } from './quota/index.js';
+import { createTtlProvider, pgLoiLoader, type TtlProvider } from './quota/ttl.js';
 import { createPgTokenResolver, createStaticTokenResolver, type ResolvedToken } from './token.js';
 
 const log = createLogger({ service: 'runtime' });
@@ -88,9 +91,28 @@ function resolveWriter() {
   return undefined;
 }
 
+/**
+ * The adaptive-TTL provider, or nothing (P2-07).
+ *
+ * Its own small pool rather than the writer's: this is one short read every five minutes per
+ * survey version, and borrowing a connection from the pool that is persisting responses would put a
+ * quota measurement in front of a respondent's answer under load. `max: 1` because the cache means
+ * concurrency here is a handful of queries an hour.
+ *
+ * Absent without a database URL, which makes every survey use its authored TTL — the pre-P2-07
+ * behaviour and the right fallback rather than a failure.
+ */
+function resolveTtlProvider(): TtlProvider | undefined {
+  const url = process.env['RUNTIME_DATABASE_URL'] ?? process.env['DATABASE_URL'];
+  if (!url) return undefined;
+  const pool = new Pool({ connectionString: url, max: 1, options: '-c role=runtime_writer' });
+  return createTtlProvider({ loadSample: pgLoiLoader(pool) });
+}
+
 export function buildDeps(): RuntimeDeps {
   const writer = resolveWriter();
   const redisUrl = process.env['REDIS_URL'];
+  const ttl = resolveTtlProvider();
   return {
     tokens: resolveTokens(writer),
     artifacts: createArtifactLoader(),
@@ -99,6 +121,7 @@ export function buildDeps(): RuntimeDeps {
     // The quota arbiter shares the session Redis. ADR-008 allows a dedicated instance later;
     // splitting is a URL, not a refactor.
     ...(redisUrl ? { quota: createQuotaClient(redisUrl) } : {}),
+    ...(ttl ? { ttl } : {}),
     now: () => Date.now(),
     newId: generateULID,
     newSeed: generateSeed,

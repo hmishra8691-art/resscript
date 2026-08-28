@@ -1356,10 +1356,50 @@ describe('interpret', () => {
       },
     );
 
+    // 5400 is GATE_CONFIG's AUTHORED reservation_ttl_s, and with no TTL provider injected that is
+    // still what reaches Redis — the pre-P2-07 behaviour, kept as the fallback for a deployment
+    // with no measurement path.
     expect(reserved).toEqual([{ cells: ['q:srv_1:qp_main:M'], ttl: 5400 }]);
     // Fed back, which is the whole point — without this the respondent never leaves the gate.
     expect(stepped).toEqual([{ passed: true }]);
     expect(out.events.map(e => e.kind)).toContain('quota.decision');
+  });
+
+  it('reserves with the MEASURED ttl when a provider is injected (P2-07)', async () => {
+    // The policy is unit-tested in quota/ttl.test.ts; this asserts the number ARRIVES. A decided
+    // TTL that nothing passes to `reserve` is the same bug in a different place — and it is the
+    // shape of bug this codebase keeps finding (a computed value with no consumer).
+    const reserved: { ttl: number }[] = [];
+    const quota = {
+      reserve: async (_sid: string, _cells: unknown, ttl: number) => {
+        reserved.push({ ttl });
+        return { ok: true, soft_full: [], blocked: [] };
+      },
+      evaluateOnly: async () => ({ ok: true, soft_full: [], blocked: [] }),
+    };
+
+    await interpret(
+      [{ c: 'reserve_quota', quota_ref: 'MAIN', node_id: 'fn_q' }],
+      session(),
+      fetcher(),
+      {
+        logic: REHYDRATED,
+        manifest: INTERPRET_MANIFEST,
+        escapeContext: 'none',
+        quota: quota as never,
+        // 3 x a measured 900s median, which is nothing like the authored 5400.
+        ttl: {
+          decide: async () => ({ ttlSeconds: 2700, basis: 'measured' as const, completes: 200 }),
+        },
+        quotaGate: {
+          config: GATE_CONFIG as never,
+          scope: 'srv_1',
+          step: (state: never) => ({ next: state, cmds: [] }),
+        },
+      } as never,
+    );
+
+    expect(reserved).toEqual([{ ttl: 2700 }]);
   });
 
   it('routes a FULL cell to on_full by stepping with passed:false', async () => {
@@ -2151,3 +2191,4 @@ describe('entry signature verification', () => {
     expect(second.body.reason).toBe('INVALID_LINK');
   });
 });
+
