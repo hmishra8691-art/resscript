@@ -1,6 +1,13 @@
 -- 0024_vendors — the vendor registry (roadmap P2-04's DB line: `content.vendors`,
 -- `content.vendor_limits`).
---
+
+-- Timeouts first, ahead of this file's header prose rather than after it: B §14 wants them set
+-- before any DDL, and `tools/ci/lint-migrations.mjs` looks for them in the first 60 lines. They
+-- were below the header here, at line 72, which satisfied the intent and failed the check —
+-- MISSING_TIMEOUT_HEADER, on a migration that did set both.
+SET lock_timeout = '3s';
+SET statement_timeout = '120s';
+
 -- ## What was already built, and why none of it ran
 --
 -- P2-04's vendor machinery is complete except for the table that feeds it. `vendorFromParams`
@@ -69,8 +76,6 @@
 -- is P2-08 machinery pointed at a new key. Stored and unenforced is stated here rather than
 -- discovered later.
 
-SET lock_timeout = '3s';
-SET statement_timeout = '120s';
 
 /* ------------------------------------------------------------------ *
  * 1. content.vendors
@@ -265,41 +270,118 @@ CREATE TRIGGER vendor_limits_draft_only
 -- A vendor row is that relationship directly, plus a pointer into the secrets store — a `secret_ref`
 -- is not a secret, but a list of them is a map of the secret store, and a review link is shared
 -- outside the programming team.
-DO $do$
-DECLARE t text;
-BEGIN
-  FOREACH t IN ARRAY ARRAY['vendors', 'vendor_inbound_params', 'vendor_limits'] LOOP
-    EXECUTE format('ALTER TABLE content.%I ENABLE ROW LEVEL SECURITY', t);
-    EXECUTE format('ALTER TABLE content.%I FORCE ROW LEVEL SECURITY', t);
-    EXECUTE format($p$
-      CREATE POLICY %1$s_select ON content.%1$I FOR SELECT TO authoring
-      USING (org_id = app.current_org() AND app.has_role('programmer')
-             AND app.can_see_version(survey_version_id))$p$, t);
-    EXECUTE format($p$
-      CREATE POLICY %1$s_insert ON content.%1$I FOR INSERT TO authoring
-      WITH CHECK (org_id = app.current_org() AND app.has_role('programmer')
-                  AND app.can_see_version(survey_version_id)
-                  AND app.version_is_draft(survey_version_id))$p$, t);
-    EXECUTE format($p$
-      CREATE POLICY %1$s_update ON content.%1$I FOR UPDATE TO authoring
-      USING (org_id = app.current_org() AND app.has_role('programmer')
-             AND app.can_see_version(survey_version_id)
-             AND app.version_is_draft(survey_version_id))
-      WITH CHECK (org_id = app.current_org() AND app.has_role('programmer')
-                  AND app.can_see_version(survey_version_id)
-                  AND app.version_is_draft(survey_version_id))$p$, t);
-    EXECUTE format($p$
-      CREATE POLICY %1$s_delete ON content.%1$I FOR DELETE TO authoring
-      USING (org_id = app.current_org() AND app.has_role('programmer')
-             AND app.can_see_version(survey_version_id)
-             AND app.version_is_draft(survey_version_id))$p$, t);
-    -- Explicit rather than relying on 0001's ALTER DEFAULT PRIVILEGES (db/README.md), and the
-    -- REVOKE restated because 0007's blanket revoke applied to the tables that existed when it ran.
-    -- The runtime reads vendors out of the compiled artifact (C §17), never as rows.
-    EXECUTE format('GRANT SELECT, INSERT, UPDATE, DELETE ON content.%I TO authoring', t);
-    EXECUTE format('REVOKE ALL ON content.%I FROM runtime_writer, analytics_reader', t);
-  END LOOP;
-END $do$;
+/* Written out three times rather than looped over `FOREACH t IN ARRAY ARRAY[...]`, which is how
+ * this section was first drafted.
+ *
+ * The loop was correct — the catalog ended up in exactly this state — and it still cost the repo
+ * one of its two protections against precisely this class of mistake.
+ * `tools/ci/lint-migrations.mjs` matches `ALTER TABLE <schema>.<table> (ENABLE|FORCE) ROW LEVEL
+ * SECURITY` STATICALLY, against the text of up.sql, and cannot see through
+ * `format('ALTER TABLE content.%I ENABLE ROW LEVEL SECURITY', t)` because the table name is a
+ * variable. So all three tables were reported as TABLE_WITHOUT_FORCED_RLS, and the useful reading
+ * of that is not "false positive" but "these three tables are now covered by one net instead of
+ * two". The linter's own header says both layers exist on purpose: `ops.tables_without_rls()` is
+ * the catalog net and runs only after a migration has been applied, while this one runs on a pull
+ * request nobody applied to a database and can name the file and line.
+ *
+ * That rule is also the one rule the linter refuses to let anybody waive — STATIC_EXEMPTIBLE holds
+ * CONTENT_TABLE_WITHOUT_DRAFT_TRIGGER and nothing else, with a comment saying a missing-RLS
+ * failure is "a conversation worth having in review rather than one a directive can end". A
+ * migration written so that the check cannot run is that waiver taken silently.
+ *
+ * Sixty lines of repetition for a static guarantee on tenant isolation is a trade this file should
+ * make every time.
+ */
+
+ALTER TABLE content.vendors ENABLE ROW LEVEL SECURITY;
+-- FORCE, so the table owner is not exempt: every migration runs as the owner, so ENABLE alone
+-- leaves the isolation suite passing while production leaks.
+ALTER TABLE content.vendors FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY vendors_select ON content.vendors FOR SELECT TO authoring
+USING (org_id = app.current_org() AND app.has_role('programmer')
+       AND app.can_see_version(survey_version_id));
+CREATE POLICY vendors_insert ON content.vendors FOR INSERT TO authoring
+WITH CHECK (org_id = app.current_org() AND app.has_role('programmer')
+            AND app.can_see_version(survey_version_id)
+            AND app.version_is_draft(survey_version_id));
+CREATE POLICY vendors_update ON content.vendors FOR UPDATE TO authoring
+USING (org_id = app.current_org() AND app.has_role('programmer')
+       AND app.can_see_version(survey_version_id)
+       AND app.version_is_draft(survey_version_id))
+WITH CHECK (org_id = app.current_org() AND app.has_role('programmer')
+            AND app.can_see_version(survey_version_id)
+            AND app.version_is_draft(survey_version_id));
+CREATE POLICY vendors_delete ON content.vendors FOR DELETE TO authoring
+USING (org_id = app.current_org() AND app.has_role('programmer')
+       AND app.can_see_version(survey_version_id)
+       AND app.version_is_draft(survey_version_id));
+
+-- Explicit rather than relying on 0001's ALTER DEFAULT PRIVILEGES (db/README.md), and the REVOKE
+-- restated because 0007's blanket revoke applied to the tables that existed when it ran. The
+-- runtime reads vendors out of the compiled artifact (C §17), never as rows.
+GRANT SELECT, INSERT, UPDATE, DELETE ON content.vendors TO authoring;
+REVOKE ALL ON content.vendors FROM runtime_writer, analytics_reader;
+
+ALTER TABLE content.vendor_inbound_params ENABLE ROW LEVEL SECURITY;
+-- FORCE, so the table owner is not exempt: every migration runs as the owner, so ENABLE alone
+-- leaves the isolation suite passing while production leaks.
+ALTER TABLE content.vendor_inbound_params FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY vendor_inbound_params_select ON content.vendor_inbound_params FOR SELECT TO authoring
+USING (org_id = app.current_org() AND app.has_role('programmer')
+       AND app.can_see_version(survey_version_id));
+CREATE POLICY vendor_inbound_params_insert ON content.vendor_inbound_params FOR INSERT TO authoring
+WITH CHECK (org_id = app.current_org() AND app.has_role('programmer')
+            AND app.can_see_version(survey_version_id)
+            AND app.version_is_draft(survey_version_id));
+CREATE POLICY vendor_inbound_params_update ON content.vendor_inbound_params FOR UPDATE TO authoring
+USING (org_id = app.current_org() AND app.has_role('programmer')
+       AND app.can_see_version(survey_version_id)
+       AND app.version_is_draft(survey_version_id))
+WITH CHECK (org_id = app.current_org() AND app.has_role('programmer')
+            AND app.can_see_version(survey_version_id)
+            AND app.version_is_draft(survey_version_id));
+CREATE POLICY vendor_inbound_params_delete ON content.vendor_inbound_params FOR DELETE TO authoring
+USING (org_id = app.current_org() AND app.has_role('programmer')
+       AND app.can_see_version(survey_version_id)
+       AND app.version_is_draft(survey_version_id));
+
+-- Explicit rather than relying on 0001's ALTER DEFAULT PRIVILEGES (db/README.md), and the REVOKE
+-- restated because 0007's blanket revoke applied to the tables that existed when it ran. The
+-- runtime reads vendors out of the compiled artifact (C §17), never as rows.
+GRANT SELECT, INSERT, UPDATE, DELETE ON content.vendor_inbound_params TO authoring;
+REVOKE ALL ON content.vendor_inbound_params FROM runtime_writer, analytics_reader;
+
+ALTER TABLE content.vendor_limits ENABLE ROW LEVEL SECURITY;
+-- FORCE, so the table owner is not exempt: every migration runs as the owner, so ENABLE alone
+-- leaves the isolation suite passing while production leaks.
+ALTER TABLE content.vendor_limits FORCE ROW LEVEL SECURITY;
+
+CREATE POLICY vendor_limits_select ON content.vendor_limits FOR SELECT TO authoring
+USING (org_id = app.current_org() AND app.has_role('programmer')
+       AND app.can_see_version(survey_version_id));
+CREATE POLICY vendor_limits_insert ON content.vendor_limits FOR INSERT TO authoring
+WITH CHECK (org_id = app.current_org() AND app.has_role('programmer')
+            AND app.can_see_version(survey_version_id)
+            AND app.version_is_draft(survey_version_id));
+CREATE POLICY vendor_limits_update ON content.vendor_limits FOR UPDATE TO authoring
+USING (org_id = app.current_org() AND app.has_role('programmer')
+       AND app.can_see_version(survey_version_id)
+       AND app.version_is_draft(survey_version_id))
+WITH CHECK (org_id = app.current_org() AND app.has_role('programmer')
+            AND app.can_see_version(survey_version_id)
+            AND app.version_is_draft(survey_version_id));
+CREATE POLICY vendor_limits_delete ON content.vendor_limits FOR DELETE TO authoring
+USING (org_id = app.current_org() AND app.has_role('programmer')
+       AND app.can_see_version(survey_version_id)
+       AND app.version_is_draft(survey_version_id));
+
+-- Explicit rather than relying on 0001's ALTER DEFAULT PRIVILEGES (db/README.md), and the REVOKE
+-- restated because 0007's blanket revoke applied to the tables that existed when it ran. The
+-- runtime reads vendors out of the compiled artifact (C §17), never as rows.
+GRANT SELECT, INSERT, UPDATE, DELETE ON content.vendor_limits TO authoring;
+REVOKE ALL ON content.vendor_limits FROM runtime_writer, analytics_reader;
 
 COMMENT ON POLICY vendors_select ON content.vendors IS
   'PROGRAMMER to read, not reviewer — the one content table in this codebase whose read floor is '
