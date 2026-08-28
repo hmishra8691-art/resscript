@@ -39,6 +39,8 @@ interface Ctx {
   readonly known: ReadonlySet<string>;
   /** Question id → the question, for cross-checking variable sources. */
   readonly questions: Map<string, QuestionNode>;
+  /** False when the survey has no base language; suppresses the per-key i18n cascade. */
+  readonly baseLanguageDeclared: boolean;
   readonly assetIds: Set<string>;
   readonly i18nKeys: Set<string>;
 }
@@ -52,6 +54,16 @@ export function validateStructural(survey: Survey): readonly Diagnostic[] {
     questions: new Map(),
     assetIds: collectAssetIds(survey),
     i18nKeys: new Set(Object.keys(survey.languages?.bundles?.[survey.languages.base] ?? {})),
+    /*
+     * Is there a base language at all?
+     *
+     * When there is not, the per-key i18n check below is suppressed, because every key in the
+     * survey would fail against a bundle that does not exist and the resulting list says nothing
+     * the one language diagnostic has not already said. See `checkI18nKey`.
+     */
+    baseLanguageDeclared: (survey.languages?.available ?? []).some(
+      (l) => l.code === survey.languages?.base,
+    ),
   };
 
   declareId(ctx, survey.meta.id, 'svy', pointer('meta', 'id'));
@@ -124,6 +136,25 @@ function checkRef(ctx: Ctx, ref: string, path: string): void {
 
 function checkI18nKey(ctx: Ctx, key: string | undefined | null, path: string): void {
   if (key === undefined || key === null || key === '') return;
+
+  /*
+   * No base language means no cascade.
+   *
+   * `checkLanguages` has already reported SCH-1011 once for the version, and with no base language
+   * there is no bundle for any key to be present in — so every label, instruction, title, option
+   * and enum-domain key in the survey would report SCH-1008 against a bundle that does not exist.
+   * That is what a real one looked like: a four-question survey produced twenty-one SCH-1008s,
+   * each naming a bundle `(en)` that had been invented by `languagesOf` moments earlier because
+   * `content.languages` was empty. Twenty-one diagnostics, none of them the problem.
+   *
+   * Suppressing here rather than making the message cleverer, for the reason `check.ts` in
+   * `packages/logic` gives about `T_NEVER`: a diagnostic whose cause is another diagnostic is
+   * noise, and the fix is to stop at the first one. The narrow condition matters — a base language
+   * that IS declared and simply has keys missing still reports every one of them, because there
+   * the list is the useful part.
+   */
+  if (!ctx.baseLanguageDeclared) return;
+
   if (!ctx.i18nKeys.has(key)) {
     report(
       ctx,
@@ -230,12 +261,21 @@ function checkLanguages(ctx: Ctx): void {
   const languages = ctx.survey.languages;
   const declared = new Set(languages.available.map((l) => l.code));
   if (!declared.has(languages.base)) {
+    // Two different mistakes reach here and they need different sentences. "Not listed in
+    // available" describes a survey that declares languages and got the base wrong. A survey with
+    // NO languages at all is a different and much more confusing situation — it was the state of
+    // every version this application created, because nothing ever wrote the base row — and
+    // telling its author that their base is "not listed" invites them to go looking for a list.
     report(
       ctx,
       'SCH-1011',
       pointer('languages', 'base'),
-      `Base language ${JSON.stringify(languages.base)} is not listed in languages.available.`,
-      { language: languages.base },
+      languages.available.length === 0
+        ? `This version declares no languages, so there is no base language and no string can ` +
+          `resolve. Every label in a survey is a key into the base bundle (schema §16); create ` +
+          `the base language before authoring content.`
+        : `Base language ${JSON.stringify(languages.base)} is not listed in languages.available.`,
+      { language: languages.base, declared_count: languages.available.length },
     );
   }
   for (const code of Object.keys(languages.bundles)) {

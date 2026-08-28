@@ -795,9 +795,27 @@ function synthesizeFlow(roots: readonly AuthoringNodeRow[]): Flow {
 function languagesOf(rows: AuthoringRows): Survey['languages'] {
   const base =
     rows.languages.find((lang) => lang.is_base)?.lang ?? rows.survey.default_language;
+  /*
+   * No language rows means NO languages, and this function used to say otherwise.
+   *
+   * It synthesized `[{ code: base }]` from `survey.default_language` — a language present in no
+   * row of `content.languages` — and handed the compiler a survey that declared a base language
+   * with an empty bundle. The compiler then did the only thing it could: reported every label,
+   * option and enum-domain key as `SCH-1008`, "not present in the base language bundle (en)",
+   * against a bundle invented three lines above. A four-question survey produced twenty-one of
+   * them and not one named the actual problem, which was that the version had no languages at all.
+   *
+   * Reporting the real state costs one diagnostic and gains the right one: `checkLanguages` sees
+   * an empty `available`, reports SCH-1011 once with a sentence that says what is wrong, and
+   * `checkI18nKey` suppresses the per-key cascade because every key would fail for the same
+   * reason. The compile still fails — it must, since nothing can render — but it fails legibly.
+   *
+   * This is a defensible default turning into a lie the moment the thing it defaulted for stopped
+   * being impossible. It was written when every version was assumed to have languages.
+   */
   const available: readonly LanguageDef[] =
     rows.languages.length === 0
-      ? [{ code: base }]
+      ? []
       : rows.languages
           .slice()
           .sort((a, b) => (a.lang < b.lang ? -1 : a.lang > b.lang ? 1 : 0))

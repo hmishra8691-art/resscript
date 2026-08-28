@@ -228,6 +228,50 @@ describe('structural diagnostics', () => {
     expect(found.path).toBe('/languages/bundles/fr');
   });
 
+  /*
+   * A version with no languages reports ONCE, not once per key.
+   *
+   * This is the shape of a real failure. `content.languages` had no writer that could produce the
+   * base row, so every version the application created had none — and `languagesOf` in
+   * `apps/worker` covered for it by synthesizing `[{ code: default_language }]`, handing the
+   * compiler a base language with an empty bundle. A four-question survey then failed with
+   * twenty-one `SCH-1008`s, each naming a bundle `(en)` that had been invented moments earlier,
+   * and none of them naming the cause.
+   *
+   * Both halves are asserted, because either alone would let the noise back: exactly one SCH-1011,
+   * and ZERO SCH-1008 despite the survey being full of label keys.
+   */
+  it('SCH-1011 — no languages at all reports once and suppresses the per-key cascade', () => {
+    const document = doc(makeMiniSurvey());
+    const languages = document['languages'] as Record<string, unknown>;
+    languages['available'] = [];
+    languages['bundles'] = {};
+
+    const diagnostics = validateStructural(asSurvey(document));
+
+    const found = expectCode(diagnostics, 'SCH-1011');
+    expect(found.path).toBe('/languages/base');
+    // The sentence a person can act on, rather than "not listed in languages.available" — which
+    // sends someone hunting through a list that does not exist.
+    expect(found.message).toContain('declares no languages');
+    expect(found.detail).toMatchObject({ declared_count: 0 });
+
+    expect(diagnostics.filter((d) => d.code === 'SCH-1011')).toHaveLength(1);
+    expect(diagnostics.filter((d) => d.code === 'SCH-1008')).toHaveLength(0);
+  });
+
+  it('SCH-1008 — still reports every missing key when the base language IS declared', () => {
+    // The other side of the suppression. A declared base whose bundle is missing keys must still
+    // list them: there the list is the useful part, and over-suppressing would hide the ordinary
+    // "you have not translated these yet" case that SCH-1008 exists for.
+    const document = doc(makeMiniSurvey());
+    const languages = document['languages'] as Record<string, unknown>;
+    languages['bundles'] = { en: {} };
+
+    const diagnostics = validateStructural(asSurvey(document));
+    expect(diagnostics.filter((d) => d.code === 'SCH-1008').length).toBeGreaterThan(0);
+  });
+
   it('SCH-1012 — the quota policy has no explicit counter_scope', () => {
     const document = doc(makeMiniSurvey());
     document['quotas'] = {
