@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { Consumer } from './consumer.js';
 import { createHealthServer, readiness } from './health.js';
+import type { JobStore } from './job-store.js';
 import { MemoryJobStore } from './memory-job-store.js';
 import { JobRegistry, type PayloadMap } from './registry.js';
 import { noopJob, NOOP_KIND } from './kinds/noop.js';
@@ -117,8 +118,73 @@ describe('/ready — readiness', () => {
       stats: Record<string, number>;
     };
     expect(body.ready).toBe(true);
-    expect(body.checks).toEqual({ job_store: 'ok', consumer: 'running' });
+    expect(body.checks).toEqual({ job_store: 'ok', consumer: 'running', claim: 'ok' });
     expect(body.stats).toMatchObject({ claimed: 0, succeeded: 0, inFlight: 0 });
+  });
+
+  /*
+   * The case `/ready` was blind to: the queue is unreachable, and everything else looks fine.
+   *
+   * This is not a hypothetical. `ops.claim_job` returns an all-NULL composite row when the queue
+   * is empty; `PgJobStore.claim` treated that as a job and `mapJobRow` threw on its NULL status,
+   * so a worker against a real database failed EVERY claim, four slots at 5Hz, from boot. Both
+   * of the checks that existed stayed green — `store.ping()` is `SELECT 1` and the slot loops
+   * were still looping — so `/ready` answered 200 while the worker was incapable of starting a
+   * single job. Nothing an orchestrator probes would have caught it.
+   *
+   * The clock is injected rather than waited on: the real threshold is 30s.
+   */
+  it('is 503 when every claim has been failing, though the store pings and the loop runs', async () => {
+    const store = new MemoryJobStore();
+    const broken: JobStore = {
+      ...store,
+      enqueue: store.enqueue.bind(store),
+      heartbeat: store.heartbeat.bind(store),
+      complete: store.complete.bind(store),
+      fail: store.fail.bind(store),
+      get: store.get.bind(store),
+      close: store.close.bind(store),
+      requeueStalled: store.requeueStalled.bind(store),
+      // Exactly the split that made this invisible: the health probe's query works...
+      ping: async () => true,
+      // ...and the one the worker actually needs does not.
+      claim: async () => {
+        throw new Error('unknown ops.jobs.status: null');
+      },
+    };
+
+    let clock = 1_000;
+    const consumer = new Consumer({
+      store: broken,
+      registry: JobRegistry.create().register(NOOP_KIND, noopJob),
+      logger: createCapturingLogger({ service: 'worker' }).logger,
+      pollIntervalMs: 5,
+      heartbeatIntervalMs: 10,
+      stalledAfterMs: 100,
+      sweepIntervalMs: 0,
+      claimStaleAfterMs: 30_000,
+      now: () => clock,
+    }) as unknown as Consumer<PayloadMap>;
+    const base = await serve(store, consumer);
+    consumer.start();
+    cleanups.push(async () => {
+      await consumer.drain();
+    });
+
+    // Before the threshold: a brief outage must NOT flap readiness. This is the half that keeps
+    // a Postgres failover from restarting the fleet.
+    const early = await fetch(`${base}/ready`);
+    expect(early.status).toBe(200);
+    expect(((await early.json()) as { checks: Record<string, string> }).checks['claim']).toBe('ok');
+
+    clock += 30_001;
+
+    const res = await fetch(`${base}/ready`);
+    const body = (await res.json()) as { ready: boolean; checks: Record<string, string> };
+    expect(res.status).toBe(503);
+    expect(body.ready).toBe(false);
+    // The distinction an operator needs: the loop is alive, the queue is not reachable.
+    expect(body.checks).toEqual({ job_store: 'ok', consumer: 'running', claim: 'stale' });
   });
 
   it('is 503 while draining, so a rolling deploy stops sending work', async () => {

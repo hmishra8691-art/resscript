@@ -406,6 +406,55 @@ describe('the stalled sweeper', () => {
     await expect(consumer.sweepStalled()).resolves.toBe(0);
     expect(cap.lines.some((l) => l['msg'] === 'stalled_sweep_failed')).toBe(true);
   });
+
+  /*
+   * The sibling this suite was missing.
+   *
+   * `requeueStalled` and `fail` were both guarded and both had a test; `complete` was guarded by
+   * nothing, so a store error on the SUCCESS path escaped `executeHandler`, `runJob` and
+   * `slotLoop` and terminated the process. It was reached by ordinary input: a compile result
+   * containing an acknowledgement key, whose U+0000 separator Postgres refuses to store in
+   * `jsonb` (22P05). The sweeper then requeued the job into a new process, which recomputed the
+   * same unstorable result and died again.
+   *
+   * Asserted on the three things that make the fallback safe rather than on the absence of a
+   * crash — a test that only checked "did not throw" would still pass if the job were silently
+   * marked done: the call resolves, the failure is logged loudly, and the job is left `running`
+   * so the stalled sweeper (and `max_attempts`) can bound the retry.
+   */
+  it('survives a store that throws from complete, leaving the job for the sweeper', async () => {
+    const store = new MemoryJobStore();
+    const broken: JobStore = {
+      ...store,
+      enqueue: store.enqueue.bind(store),
+      claim: store.claim.bind(store),
+      heartbeat: store.heartbeat.bind(store),
+      fail: store.fail.bind(store),
+      get: store.get.bind(store),
+      ping: store.ping.bind(store),
+      close: store.close.bind(store),
+      requeueStalled: store.requeueStalled.bind(store),
+      complete: async () => {
+        throw new Error('unsupported Unicode escape sequence');
+      },
+    };
+    const cap = nullLog();
+    const consumer = new Consumer({
+      store: broken,
+      registry: JobRegistry.create().register(NOOP_KIND, noopJob),
+      logger: cap.logger,
+      ...FAST,
+    });
+
+    const { id } = await store.enqueue({ kind: NOOP_KIND, payload: {} });
+    consumer.start();
+    await waitFor(() => cap.lines.some((l) => l['msg'] === 'job_complete_write_failed'));
+    await consumer.drain();
+
+    expect(consumer.stats().succeeded).toBe(0);
+    // Still claimable-after-sweep rather than silently finished.
+    expect(await store.get(id)).toMatchObject({ status: 'running' });
+  });
 });
 
 describe('concurrency', () => {

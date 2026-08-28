@@ -185,6 +185,7 @@ export async function main(): Promise<number> {
     stalledAfterMs: intEnv('WORKER_STALLED_AFTER_MS', 30_000),
     sweepIntervalMs: intEnv('WORKER_SWEEP_INTERVAL_MS', 10_000),
     drainTimeoutMs: intEnv('WORKER_DRAIN_TIMEOUT_MS', 25_000),
+    claimStaleAfterMs: intEnv('WORKER_CLAIM_STALE_AFTER_MS', 30_000),
   });
 
   log.info('worker_boot', {

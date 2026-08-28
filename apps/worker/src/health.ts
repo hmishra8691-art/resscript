@@ -60,7 +60,29 @@ export async function readiness(
       ? 'running'
       : 'stopped';
 
-  return { ready: storeOk && consumer.isRunning && !consumer.isDraining, checks };
+  /*
+   * A worker that cannot claim is not ready, even though it pings and its loops are alive.
+   *
+   * The two checks above were both TRUE during a total claim outage: `SELECT 1` answered
+   * (`job_store: ok`) and the slot loops were still looping (`consumer: running`), while every
+   * single `ops.claim_job` call threw and no job could ever start. `/ready` returned 200
+   * throughout, so nothing an orchestrator could probe reflected a worker doing zero work. See
+   * `Consumer.claimIsStale` for why the signal is elapsed-time-since-last-successful-claim
+   * rather than a failure count.
+   *
+   * Reported as its own check rather than folded into `consumer`, so the distinction an operator
+   * needs — the loop is running but the queue is unreachable — survives into the probe body.
+   */
+  const claimStale = consumer.claimIsStale;
+  // Only while the consumer is actually claiming. A `claim` value on a stopped or draining
+  // worker would be answering a question nobody asked — `consumer: stopped` already says why it
+  // is not ready — and "ok" there would be actively misleading.
+  if (consumer.isRunning && !consumer.isDraining) checks['claim'] = claimStale ? 'stale' : 'ok';
+
+  return {
+    ready: storeOk && consumer.isRunning && !consumer.isDraining && !claimStale,
+    checks,
+  };
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {

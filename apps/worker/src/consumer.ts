@@ -114,6 +114,12 @@ export interface ConsumerOptions<M extends PayloadMap> {
   readonly backoffMs?: (attempt: number) => number;
   /** How long `drain()` waits for in-flight jobs before aborting them. Defaults to 25 s. */
   readonly drainTimeoutMs?: number;
+  /**
+   * How long every claim attempt may keep failing before `claimIsStale` (and so `/ready`) turns
+   * false. Defaults to 30 s — long enough that a Postgres failover does not flap readiness,
+   * short enough that a real outage is visible within one orchestrator probe cycle.
+   */
+  readonly claimStaleAfterMs?: number;
   readonly logger?: Logger;
   /**
    * Deployable name stamped on every span. Passed explicitly rather than relying on
@@ -165,6 +171,7 @@ export class Consumer<M extends PayloadMap = PayloadMap> {
   private readonly sweepIntervalMs: number;
   private readonly backoffMs: (attempt: number) => number;
   private readonly drainTimeoutMs: number;
+  private readonly claimStaleAfterMs: number;
   private readonly log: Logger;
   private readonly service: string;
   private readonly now: () => number;
@@ -178,6 +185,15 @@ export class Consumer<M extends PayloadMap = PayloadMap> {
   private heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   private sweepTimer: ReturnType<typeof setInterval> | undefined;
   private readonly inFlight = new Map<string, InFlight>();
+
+  /*
+   * When a claim call last SUCCEEDED — the input to `claimIsStale`, and the reason `/ready` can
+   * be trusted.
+   *
+   * Initialised at construction rather than left at 0, so a worker is not born stale during the
+   * window between `new Consumer(...)` and the first poll.
+   */
+  private lastClaimOkAt: number;
 
   private counters = {
     claimed: 0,
@@ -199,9 +215,13 @@ export class Consumer<M extends PayloadMap = PayloadMap> {
     this.sweepIntervalMs = options.sweepIntervalMs ?? 10_000;
     this.backoffMs = options.backoffMs ?? ((attempt) => defaultBackoffMs(attempt));
     this.drainTimeoutMs = options.drainTimeoutMs ?? 25_000;
+    this.claimStaleAfterMs = options.claimStaleAfterMs ?? 30_000;
     this.log = options.logger ?? nullLogger('worker');
     this.service = options.service ?? 'worker';
     this.now = options.now ?? (() => Date.now());
+    // After `this.now` is assigned, not with the other numeric options above: an initialiser
+    // that reads `this.now()` before that line calls undefined.
+    this.lastClaimOkAt = this.now();
     this.sleep = options.sleep ?? defaultSleep;
     this.workerId =
       options.workerId ??
@@ -232,11 +252,35 @@ export class Consumer<M extends PayloadMap = PayloadMap> {
     return this.draining;
   }
 
+  /**
+   * Has every claim attempt been failing for long enough that this worker is not doing its job?
+   *
+   * `/ready` needs this because the two things it used to check — `store.ping()` and
+   * `isRunning` — were both TRUE throughout a total claim outage. `ops.claim_job` returns an
+   * all-NULL composite on an empty queue, `PgJobStore.claim` did not recognise that shape, and
+   * so every poll threw: four slots, five times a second, forever. `SELECT 1` still answered
+   * and the slot loops were still looping, so the worker reported ready while being incapable
+   * of claiming a single job. An orchestrator had nothing to act on.
+   *
+   * Time-based, not a failure COUNT, because a count means something different at every
+   * concurrency and poll interval — 10 failures is 0.5s of outage at the defaults and 10s at
+   * `WORKER_CONCURRENCY=1, WORKER_POLL_INTERVAL_MS=1000` — while "no claim has succeeded for 30
+   * seconds" means the same thing in both. It also cannot flap: a Postgres failover that takes
+   * a few seconds never crosses the threshold, which is why the slot loop's own comment says a
+   * store error must not kill the slot.
+   */
+  get claimIsStale(): boolean {
+    if (!this.running || this.draining) return false;
+    return this.now() - this.lastClaimOkAt > this.claimStaleAfterMs;
+  }
+
   /** Start the slots and the timers. Returns immediately; the loops run in the background. */
   start(): void {
     if (this.running) return;
     this.running = true;
     this.draining = false;
+    // A consumer constructed long before it is started must not be born stale.
+    this.lastClaimOkAt = this.now();
 
     this.heartbeatTimer = setInterval(() => {
       void this.tickHeartbeats();
@@ -364,6 +408,9 @@ export class Consumer<M extends PayloadMap = PayloadMap> {
   private async claimOne(): Promise<JobRow | null> {
     if (this.draining) return null;
     const job = await this.store.claim(this.workerId, this.kinds);
+    // A claim that returned NO job is still a claim that WORKED, and that distinction is the
+    // whole point of this timestamp: an idle queue is healthy, a queue we cannot ask is not.
+    this.lastClaimOkAt = this.now();
     if (job !== null) this.counters.claimed += 1;
     return job;
   }
@@ -517,9 +564,39 @@ export class Consumer<M extends PayloadMap = PayloadMap> {
     // is stale and must be discarded rather than written over theirs. The `lostOwnership` flag
     // from the heartbeat is a fast path for the same condition; the store's return value is the
     // authoritative check, because ownership can change in the window after the last heartbeat.
-    const wrote = entry.lostOwnership
-      ? false
-      : await this.store.complete(job.id, this.workerId, result);
+    // The try/catch is not defensive padding: `finishFailure` below has had one from the start,
+    // with a comment explaining that a store that cannot record an outcome is unhealthy and must
+    // be reported loudly rather than crashed on — and the SUCCESS path had no equivalent, so a
+    // throw here escaped `executeHandler`, `runJob` and `slotLoop` and terminated the process.
+    //
+    // That is not hypothetical. `acknowledgementKey` used U+0000 as its field separator, which
+    // Postgres cannot store in `jsonb` (22P05), so writing the `blocked` compile result of any
+    // survey carrying a single warning threw here and killed the worker. The stalled sweeper
+    // then requeued the job into a fresh process, which recomputed the identical unstorable
+    // result and died again: one ordinary survey, an entire fleet in a crash loop. The key is
+    // fixed, but the asymmetry that turned a failed write into a dead process is the real bug,
+    // and it would have done the same for a disk-full or a connection reset.
+    //
+    // Leaving the job `running` is the correct fallback and the same one `finishFailure` relies
+    // on: the sweeper requeues it, `claim_job` burns one attempt each time, and `max_attempts`
+    // bounds the loop — so an unstorable result ends as a `worker_stalled` failure instead of an
+    // unbounded restart. The handler's work is lost, which is why this is an error and not a
+    // warning; every job in this app is idempotent by design (ADR-002 makes a republish of
+    // unchanged content a zero-write no-op), so the retry is safe.
+    let wrote: boolean;
+    try {
+      wrote = entry.lostOwnership
+        ? false
+        : await this.store.complete(job.id, this.workerId, result);
+    } catch (err: unknown) {
+      this.counters.failed += 1;
+      log.error('job_complete_write_failed', {
+        err: AppError.from(err).toJSON(),
+        duration_ms: durationMs,
+        note: 'result not recorded; job left running for the stalled sweeper to requeue',
+      });
+      return;
+    }
 
     if (!wrote) {
       this.counters.abandoned += 1;
