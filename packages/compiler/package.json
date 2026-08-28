@@ -13,6 +13,11 @@
       "types": "./src/diagnostics.ts",
       "node": "./dist/diagnostics.js",
       "default": "./src/diagnostics.ts"
+    },
+    "./theme": {
+      "types": "./src/emit/theme.ts",
+      "node": "./dist/emit/theme.js",
+      "default": "./src/emit/theme.ts"
     }
   },
   "scripts": {
