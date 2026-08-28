@@ -1057,6 +1057,28 @@ class SupabaseRepos implements Repos {
       return data as unknown as NodeRow;
     },
 
+    setLabelText: async (
+      versionId: string,
+      nodeId: string,
+      field: 'label' | 'instruction' | 'title',
+      text: string,
+    ): Promise<string> => {
+      // One RPC, because the key and the base-language string must not be separable — see
+      // `NodeRepo.setLabelText`. SECURITY INVOKER on the SQL side, so this caller's RLS and
+      // `content.tg_draft_only` both still apply; the function buys atomicity, not privilege.
+      const { data, error } = await this.contentRpc('set_node_label', {
+        p_survey_version_id: versionId,
+        p_node_id: nodeId,
+        p_field: field,
+        p_text: text,
+      });
+      if (error !== null) raise(error, 'nodes_update');
+      if (typeof data !== 'string') {
+        throw new StoreConstraintError('nodes_update', 'set_node_label returned no key');
+      }
+      return data;
+    },
+
     move: async (nodeId: string, input: MoveNodeInput): Promise<NodeRow> => {
       const current = await this.nodes.get(nodeId);
       if (current === null) throw new StoreConstraintError('nodes_update', 'no rows updated');

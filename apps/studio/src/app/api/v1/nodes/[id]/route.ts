@@ -153,6 +153,25 @@ export const PATCH = route<{ id: string }>(async (ctx, req, params) => {
   };
   const updated = await ctx.repos.nodes.update(params.id, patch);
 
+  /*
+   * The `_text` forms, each one call into `content.set_node_label`.
+   *
+   * AFTER the ordinary patch, not merged into it: the function owns both the key and the
+   * base-language string and returns the key it chose, so folding it into the column patch above
+   * would mean guessing that key here. Every field is independent, so three separate calls is the
+   * honest shape rather than a batched one that would need its own transaction.
+   *
+   * The schema refuses `label` and `label_text` together, so these cannot fight the patch above.
+   */
+  for (const [field, text] of [
+    ['label', value.label_text],
+    ['instruction', value.instruction_text],
+    ['title', value.title_text],
+  ] as const) {
+    if (text === undefined) continue;
+    await ctx.repos.nodes.setLabelText(version.id, params.id, field, text);
+  }
+
   // The recompute runs when the DECLARATION INPUTS moved: the ref (every name derives from it),
   // the config (a plugin's fan-out reads it) or the flags (`pii` and `exclude_from_export` are
   // carried into every emitted row). A label edit changes no column and pays nothing.

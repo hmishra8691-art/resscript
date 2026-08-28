@@ -1301,6 +1301,23 @@ export interface NodeRepo {
   create(input: CreateNodeInput): Promise<NodeRow>;
   update(nodeId: string, patch: UpdateNodeInput): Promise<NodeRow>;
   /**
+   * `content.set_node_label` — set a label/instruction/title from PROSE.
+   *
+   * One call so the key and the base-language string cannot be written separately. That pair
+   * being separable is the bug: the studio wrote the author's prose into `label_key` and nothing
+   * wrote the bundle row, so every label in every survey it authored was a dangling reference.
+   *
+   * Returns the key that was used — minted from the row's immutable id when the column held prose
+   * or nothing, reused when it already held something key-shaped, so a re-label never orphans a
+   * translation.
+   */
+  setLabelText(
+    versionId: string,
+    nodeId: string,
+    field: 'label' | 'instruction' | 'title',
+    text: string,
+  ): Promise<string>;
+  /**
    * `content.move_node` — ONE `sort_key` write, and the two refusals an FK cannot express (a
    * node into its own subtree; C §5's nesting rules). The row count the function returns is
    * what P1-03's "one UPDATE per drag" criterion is measured on, so the store must not do the

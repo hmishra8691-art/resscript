@@ -2456,6 +2456,75 @@ class InMemoryRepos implements Repos {
       return toNodeRow(next);
     },
 
+    setLabelText: async (
+      versionId: string,
+      nodeId: string,
+      field: 'label' | 'instruction' | 'title',
+      text: string,
+    ): Promise<string> => {
+      // Mirrors `content.set_node_label` exactly, including the two decisions that matter: a
+      // key-shaped existing value is REUSED (a moved key orphans every translation of it) and the
+      // minted form derives from the node's immutable id (a `ref` rename must not orphan them
+      // either). A fake that minted a fresh key each time would let a route test pass while the
+      // real function preserved translations — the class of divergence that hid several bugs here.
+      const at = this.nodeAt(nodeId);
+      if (at === null || at.row.deleted_at !== null || !this.hasRole('programmer')) {
+        throw new StoreConstraintError('nodes_update', 'no rows updated');
+      }
+      // The same draft-only refusal the real function inherits from `content.tg_draft_only`.
+      await this.writableVersion(at.row.survey_version_id, 'nodes_update', 'nodes_draft_only');
+      const node = at.row;
+      const base = this.data.languages.find(
+        (l) => l.survey_version_id === versionId && l.is_base,
+      );
+      if (base === undefined) {
+        throw new StoreConstraintError(
+          'nodes_update',
+          `survey version ${versionId} has no base language, so no string can resolve`,
+        );
+      }
+
+      // Switched rather than indexed by a computed column name: `MemoryNodeRow` has no index
+      // signature, and casting one on to write three known fields loses exactly the checking that
+      // would catch a renamed column.
+      const existing =
+        field === 'label' ? node.label_key
+        : field === 'instruction' ? node.instruction_key
+        : node.title_key;
+      const keyShaped =
+        typeof existing === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(existing);
+      const key = keyShaped ? existing : `${field}.${nodeId}`;
+
+      const found = this.data.strings.find(
+        (r) => r.survey_version_id === versionId && r.lang === base.lang && r.key === key,
+      );
+      if (found === undefined) {
+        this.data.seedString({
+          versionId,
+          orgId: node.org_id,
+          lang: base.lang,
+          key,
+          value: text,
+          state: 'reviewed',
+        });
+      } else {
+        found.value = text;
+        found.state = 'reviewed';
+      }
+
+      // Replaced, not mutated: `MemoryNodeRow`'s fields are readonly, and the repo's own `update`
+      // rebuilds the row the same way.
+      this.data.nodes[at.index] = {
+        ...node,
+        ...(field === 'label' ? { label_key: key } : {}),
+        ...(field === 'instruction' ? { instruction_key: key } : {}),
+        ...(field === 'title' ? { title_key: key } : {}),
+        updated_at: this.data.now(),
+      };
+      this.data.recordWrite('content.nodes', 'update', nodeId);
+      return key;
+    },
+
     move: async (nodeId: string, input: MoveNodeInput): Promise<NodeRow> => {
       const at = this.nodeAt(nodeId);
       if (at === null || at.row.deleted_at !== null || !this.hasRole('programmer')) {

@@ -275,6 +275,102 @@ describe('GET /api/v1/versions/:id/tree', () => {
     expect(mine[2]?.diagnostic_counts.errors).toBe(0);
   });
 
+  /*
+   * `label_text` writes the key AND the base-language string, in one call.
+   *
+   * This is the pair whose separation was the bug. The inspector's Label textarea sent the author's
+   * prose in `label`, `PATCH /nodes/:id` mapped it straight onto `label_key`, and nothing wrote the
+   * bundle row — so every label the studio authored was a dangling reference. A four-question
+   * survey failed to publish with twenty-one SCH-1008 diagnostics naming keys that were visibly
+   * sentences: `i18n key "Apple" is not present in the base language bundle (en)`.
+   *
+   * Asserted on both halves plus the tree preview, because any one of them alone would pass
+   * against a version that only did part of the job.
+   */
+  it('label_text mints a key, writes the base string, and the tree shows the text', async () => {
+    const h = createHarness();
+    asProgrammer(h);
+    h.data.seedLanguage({ versionId: h.ids.draftA, orgId: h.ids.orgA, lang: 'en', isBase: true });
+    const { page } = await skeleton(h);
+    const created = id(
+      await createNode(h, {
+        node_kind: 'question',
+        parent_id: page,
+        ref: 'Q500',
+        question_type: 'text',
+      }),
+    );
+
+    const patched = await readJson(
+      await patchNode(
+        req('/api/v1/nodes/' + created, {
+          method: 'PATCH',
+          body: { label_text: 'Which is your favourite fruit?' },
+          headers: ifMatch(h, h.ids.draftA),
+        }),
+        params({ id: created }),
+      ),
+    );
+    expect(patched.status).toBe(200);
+
+    // The column holds a KEY, derived from the node's immutable id — so renaming the question
+    // later cannot orphan its translations.
+    const node = h.data.nodes.find((n) => n.id === created);
+    expect(node?.label_key).toBe('label.' + created);
+    expect(node?.label_key).not.toBe('Which is your favourite fruit?');
+
+    // And the base-language string exists, which is what makes the reference resolve.
+    const row = h.data.strings.find(
+      (r) => r.survey_version_id === h.ids.draftA && r.lang === 'en' && r.key === 'label.' + created,
+    );
+    expect(row?.value).toBe('Which is your favourite fruit?');
+    // `reviewed`, not `translated`: the base text is the source, and both `missing` and `machine`
+    // count as incomplete in the publish gate.
+    expect(row?.state).toBe('reviewed');
+
+    // Editing again reuses the key rather than minting a second one.
+    await patchNode(
+      req('/api/v1/nodes/' + created, {
+        method: 'PATCH',
+        body: { label_text: 'Which fruit do you prefer?' },
+        headers: ifMatch(h, h.ids.draftA),
+      }),
+      params({ id: created }),
+    );
+    expect(h.data.strings.filter((r) => r.key.startsWith('label.' + created))).toHaveLength(1);
+  });
+
+  it('refuses label and label_text together rather than choosing one', async () => {
+    const h = createHarness();
+    asProgrammer(h);
+    h.data.seedLanguage({ versionId: h.ids.draftA, orgId: h.ids.orgA, lang: 'en', isBase: true });
+    const { page } = await skeleton(h);
+    const created = id(
+      await createNode(h, {
+        node_kind: 'question',
+        parent_id: page,
+        ref: 'Q501',
+        question_type: 'text',
+      }),
+    );
+
+    const res = await readJson(
+      await patchNode(
+        req('/api/v1/nodes/' + created, {
+          method: 'PATCH',
+          body: { label: 'q.mine.label', label_text: 'and also this' },
+          headers: ifMatch(h, h.ids.draftA),
+        }),
+        params({ id: created }),
+      ),
+    );
+    // The caller has said two different things about one column; picking either is wrong half the
+    // time. 422 rather than 400 because the body parsed fine and is semantically contradictory —
+    // this codebase's own distinction, and I had guessed 400.
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(res.body)).toContain('mutually exclusive');
+  });
+
   it('fields=full resolves label previews from the base language', async () => {
     const h = createHarness();
     asProgrammer(h);

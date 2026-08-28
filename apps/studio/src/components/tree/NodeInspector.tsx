@@ -126,9 +126,23 @@ export function NodeInspector(props: NodeInspectorProps): React.JSX.Element {
         const next = normalizeNode(wire);
         // The PATCH response is the node ROW: no items on it, so the loaded ones are kept.
         setNode({ ...next, items: next.items.length > 0 ? next.items : before.items });
+        /*
+         * The outline shows the base-language TEXT, not the key.
+         *
+         * `next.label` is the node row's `label_key`, which since the `label_text` change is a key
+         * like `label.qst_01H…` rather than the sentence the author typed. 09 §3.3 defines
+         * `label_preview` as "first 80 chars of the base-language label", and the tree route
+         * resolves it from `content.i18n_strings` — so echoing the key here would put an id in the
+         * outline until the next full tree load quietly replaced it.
+         *
+         * When this write carried prose, that prose IS the new preview; otherwise fall back to the
+         * row's own value, which is right for a `ref`-only or `required`-only edit.
+         */
+        const wrotePreview = typeof body['label_text'] === 'string' ? body['label_text'] : null;
+        const preview = wrotePreview ?? next.label;
         props.onRowPatch(nodeId, {
           ref: next.ref,
-          ...(next.label === null ? {} : { label_preview: next.label }),
+          ...(preview === null ? {} : { label_preview: preview }),
           required: next.required,
         });
       }
@@ -222,7 +236,13 @@ export function NodeInspector(props: NodeInspectorProps): React.JSX.Element {
               const next = draftLabel;
               setDraftLabel(null);
               if (next === null || next === (node.label ?? '')) return;
-              void writeNode({ label: next }, `relabelled ${node.ref ?? node.id}`);
+              // `label_text`, NOT `label`. `label` is the i18n KEY (03 §16 makes every string a
+              // key into the base bundle); sending prose there stored the author's sentence AS the
+              // key and left nothing in the bundle, so every label this pane wrote was a dangling
+              // reference — twenty-one SCH-1008 errors on a four-question survey. `label_text`
+              // has the server mint or reuse a key and write the base-language string in one
+              // transaction.
+              void writeNode({ label_text: next }, `relabelled ${node.ref ?? node.id}`);
             }}
           />
         </label>

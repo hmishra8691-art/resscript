@@ -474,6 +474,46 @@ const i18nKeySchema = z.string().min(1).max(256);
  */
 const configSchema = z.record(z.unknown());
 
+/**
+ * A label as PROSE, which the server turns into a key plus a base-language string.
+ *
+ * The sibling of `i18nKeySchema` and the field a UI should send. `label` means "I am managing the
+ * keys myself, here is one"; `label_text` means "here is what the author typed — mint or reuse a
+ * key and store this in the base language". Both exist because both callers exist: an API consumer
+ * importing a survey with its own key scheme, and a person typing into a textarea.
+ *
+ * It is a separate field rather than a redefinition of `label` because 03 §16 makes keys the
+ * interface and an API consumer's keys must keep working. The studio was sending prose in `label`,
+ * so every label it wrote was a dangling reference — twenty-one `SCH-1008` errors on a
+ * four-question survey, each naming a key that was visibly a sentence.
+ *
+ * Longer than a key on purpose: this is a question stem, which can legitimately be a paragraph.
+ */
+const i18nTextSchema = z.string().min(1).max(8192);
+
+/**
+ * `label` and `label_text` are mutually exclusive, per field.
+ *
+ * Accepting both would mean choosing one silently, and either choice is wrong half the time: the
+ * caller has told us two different things about the same column. Refused with the field named, so
+ * the answer is actionable rather than "invalid body".
+ */
+const NO_KEY_AND_TEXT =
+  'label/instruction/title and their _text form are mutually exclusive: send the KEY when you ' +
+  'manage keys yourself, or the TEXT to have one minted and the base-language string written.';
+
+function keyXorText(value: {
+  readonly label?: unknown; readonly label_text?: unknown;
+  readonly instruction?: unknown; readonly instruction_text?: unknown;
+  readonly title?: unknown; readonly title_text?: unknown;
+}): boolean {
+  return (
+    !(value.label !== undefined && value.label_text !== undefined) &&
+    !(value.instruction !== undefined && value.instruction_text !== undefined) &&
+    !(value.title !== undefined && value.title_text !== undefined)
+  );
+}
+
 export const createNodeSchema = z
   .object({
     node_kind: nodeKindSchema,
@@ -485,11 +525,16 @@ export const createNodeSchema = z
     label: i18nKeySchema.optional(),
     instruction: i18nKeySchema.optional(),
     title: i18nKeySchema.optional(),
+    /** Prose. Mutually exclusive with the key form above — see the refinement below. */
+    label_text: i18nTextSchema.optional(),
+    instruction_text: i18nTextSchema.optional(),
+    title_text: i18nTextSchema.optional(),
     required: z.boolean().optional(),
     config: configSchema.optional(),
   })
   .strict()
-  .refine(onePosition, ONE_POSITION);
+  .refine(onePosition, ONE_POSITION)
+  .refine(keyXorText, NO_KEY_AND_TEXT);
 
 /**
  * A partial node edit.
@@ -507,12 +552,16 @@ export const updateNodeSchema = z
     label: i18nKeySchema.nullable().optional(),
     instruction: i18nKeySchema.nullable().optional(),
     title: i18nKeySchema.nullable().optional(),
+    label_text: i18nTextSchema.optional(),
+    instruction_text: i18nTextSchema.optional(),
+    title_text: i18nTextSchema.optional(),
     required: z.boolean().optional(),
     config: configSchema.optional(),
     settings: z.record(z.unknown()).optional(),
     flags: z.record(z.unknown()).optional(),
   })
-  .strict();
+  .strict()
+  .refine(keyXorText, NO_KEY_AND_TEXT);
 
 export const moveNodeSchema = z
   .object({ parent_id: ulidIdSchema.nullable(), ...siblingPositionFields })
