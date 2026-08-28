@@ -26,13 +26,28 @@ Stated plainly, because the difference matters when something goes wrong at 2am.
   `node dist/server.js` inside it boots, claims, completes, and exits 0 on SIGTERM.
 - `tools/ci/worker-smoke.mjs` passes green against a running worker and exits non-zero, with
   actionable messages, when pointed at nothing.
+- **The image builds and runs.** `docker build -f apps/worker/Dockerfile` succeeded first try on
+  macOS/arm64 at `67db82a`, and the container booted through `worker_boot` → `worker_started` →
+  `health_listening`, answered `/health` with the full `GIT_SHA`, and answered `/ready` with
+  `{"job_store":"ok","consumer":"running","claim":"ok"}`.
+
+  Two details from that run worth keeping. The reported `worker_id` was `worker-1-…`, i.e. **PID
+  1** — which is what confirms the exec-form `CMD` put node directly as PID 1 with no shell to
+  swallow `SIGTERM`, so the graceful drain runs on a rolling deploy. And with `DATABASE_URL`
+  unset the container logged `worker_using_memory_store` with `durable: false` while still
+  answering 200 on both probes, which is the fallback in §"`DATABASE_URL` unset is the dangerous
+  configuration" demonstrating itself: a pod that looks entirely healthy and is losing every job.
 
 **Not verified:**
 
-- **The container image has never been built.** There is no Docker daemon in the environment this
-  was developed in. `Dockerfile` encodes the verified `pnpm deploy` sequence and the workspace
-  manifest list is checked against the repo, but the first `docker build` may still need a fix.
-  Build it before you need it.
+- **The image is arm64 only.** It was built on Apple Silicon without `--platform`. Building for
+  x86 hosts needs `--platform linux/amd64` (or a `buildx` multi-arch build); an arm64 image on an
+  amd64 node fails to start with an exec-format error.
+- **The container has not been run against a real database.** Everything above the image line was
+  verified with a host-run worker against real Postgres 16; the containerised worker has only been
+  run with no `DATABASE_URL`. Run `worker-smoke.mjs` against it once it has one — that is the step
+  that proves the container can reach your queue, which is a network and credentials question the
+  image cannot answer on its own.
 - Nothing has been run on production-shaped infrastructure, so there are no latency numbers and
   ADR-008 stays Provisional.
 
@@ -186,7 +201,7 @@ constraint is the schema:
 
 ## Known gaps
 
-- The image is unbuilt (see above).
+- The image is arm64 only, and has not yet been run with a `DATABASE_URL` (see above).
 - Object storage is not wired; `ARTIFACT_DIR`/`EXPORT_DIR` are local trees on a shared volume.
 - No queue metrics are emitted. This is deliberate — `@resscript/observability`'s metric
   vocabulary is closed and contains no job-queue metric, and `consumer.ts` says inventing one
