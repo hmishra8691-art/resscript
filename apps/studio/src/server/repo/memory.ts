@@ -107,6 +107,8 @@ import type {
   VendorRepo,
   VendorRow,
 } from './types.js';
+// A VALUE import: `DEFAULT_BASE_LANGUAGE` is read at runtime, not just in a type position.
+import { DEFAULT_BASE_LANGUAGE } from './types.js';
 
 /**
  * A constraint the database would have enforced. Carries the constraint or policy name so the
@@ -1588,7 +1590,7 @@ class InMemoryRepos implements Repos {
       const highest = this.data.versions
         .filter((v) => v.survey_id === input.survey_id)
         .reduce((max, v) => Math.max(max, v.version_no), 0);
-      return this.data.insertVersion({
+      const version = this.data.insertVersion({
         orgId: org,
         surveyId: input.survey_id,
         versionNo: highest + 1,
@@ -1596,6 +1598,25 @@ class InMemoryRepos implements Repos {
         ...(input.from_version_id === undefined ? {} : { clonedFrom: input.from_version_id }),
         ...(input.notes === undefined ? {} : { notes: input.notes }),
       });
+
+      // Mirrors the Supabase repo: a version is born with its base language, and a CLONE is not
+      // seeded because `content.clone_version_core` copies the source's languages. See the long
+      // comment on `createVersion` in `supabase.ts` for why this is not a database trigger.
+      //
+      // Kept in step deliberately. This fake is what the API tests run against, so a fake that
+      // did not seed would let a route test pass while the same route produced an unpublishable
+      // version in production — which is the exact failure mode that hid three separate bugs in
+      // `apps/worker` this week.
+      if (input.from_version_id === undefined) {
+        this.data.seedLanguage({
+          versionId: version.id,
+          orgId: org,
+          lang: input.base_language ?? DEFAULT_BASE_LANGUAGE,
+          isBase: true,
+        });
+      }
+
+      return version;
     },
 
     updateVersion: async (

@@ -101,6 +101,8 @@ import type {
   VendorRepo,
   VendorRow,
 } from './types.js';
+// A VALUE import, not a type: `DEFAULT_BASE_LANGUAGE` is read at runtime.
+import { DEFAULT_BASE_LANGUAGE } from './types.js';
 
 export interface SupabaseRepoContext {
   /** A client built by `createSupabaseServerClient()`: cookie-backed, carries the user JWT. */
@@ -661,7 +663,59 @@ class SupabaseRepos implements Repos {
         .select('*')
         .single();
       if (error !== null) raise(error, 'sv_insert');
-      return data as SurveyVersionRow;
+      const version = data as SurveyVersionRow;
+
+      /*
+       * Give the version its base language, because nothing else ever did.
+       *
+       * `addLanguage` below inserts `is_base: false` and explains itself by naming an invariant —
+       * "the base is born with the version" — that no code in this repository implemented. The
+       * result was that every version created through the API had ZERO rows in
+       * `content.languages`, and 03 §16 makes every user-visible string a `{ "key": … }` reference
+       * resolved against the base bundle. With no base language nothing resolves: a four-question
+       * survey failed the static gate with twenty-one `SCH-1008` diagnostics, each naming a key
+       * "not present in the base language bundle (en)" — a bundle that did not exist. No survey
+       * this application created could ever be published.
+       *
+       * Found by deploying `apps/worker`: it drained a backlog of compile jobs that had been
+       * queued for days with nothing to process them, so nothing had ever reported this.
+       *
+       * NOT for a clone. A clone's languages come from `content.clone_version_core`, which
+       * `INSERT … SELECT`s them from the source (0023). Seeding here would collide on
+       * `languages_pkey` when the source's base is also `en`, and would leave TWO base rows and
+       * violate `languages_one_base` when it is anything else.
+       *
+       * ## Why this is not a trigger on app.survey_versions
+       *
+       * It was, first — atomic with the version INSERT, and covering every writer rather than this
+       * one call site, which is what an invariant phrased as "born with the version" deserves. It
+       * cannot work, and the reason is worth recording so nobody tries again.
+       *
+       * `content.clone_version` is called on an ORDINARY EMPTY DRAFT. `cloned_from_version_id` is
+       * metadata written at insert time, not the mechanism: the caller creates a plain draft and
+       * then asks `clone_version` to copy a source into it (`ops.test_seed_content` does exactly
+       * this). So at AFTER INSERT there is no way to tell a fresh version from a version that is
+       * about to be cloned into, and a trigger seeding `en` breaks the clone with a duplicate key.
+       * Confirmed the expensive way: five pgTAP files failed on `languages_pkey`.
+       *
+       * The honest cost of doing it here instead: this is a second round trip, not one
+       * transaction, because `supabase-js` cannot open one. If it fails, the version is left in
+       * exactly the state this fixes — so the error is raised rather than swallowed. And a writer
+       * that is not this method (a support script inserting a version directly) still produces a
+       * version with no base language. Both are worse than a trigger and better than what was
+       * here, which was nothing.
+       */
+      if (input.from_version_id === undefined) {
+        const { error: langError } = await this.content('languages').insert({
+          survey_version_id: version.id,
+          org_id: org,
+          lang: input.base_language ?? DEFAULT_BASE_LANGUAGE,
+          is_base: true,
+        });
+        if (langError !== null) raise(langError, 'languages_insert');
+      }
+
+      return version;
     },
 
     updateVersion: async (

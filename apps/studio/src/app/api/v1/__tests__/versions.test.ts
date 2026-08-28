@@ -168,6 +168,79 @@ describe('POST /api/v1/surveys/:id/versions', () => {
     expect((response.body['error'] as { code: string }).code).toBe('already_exists');
   });
 
+  /*
+   * A version is born with a base language, and a clone is not seeded.
+   *
+   * `content.languages` had no writer that could produce the BASE row: `addLanguage` inserts
+   * `is_base: false` and justifies itself by naming an invariant — "the base is born with the
+   * version" — that nothing implemented. So every version this application created had zero
+   * languages, and 03 §16 resolves every user-visible string against the base bundle, which meant
+   * a four-question survey failed the static gate with twenty-one `SCH-1008` diagnostics naming a
+   * bundle that did not exist. No survey could be published. It surfaced only when `apps/worker`
+   * was deployed and drained a backlog of compile jobs nothing had ever processed.
+   *
+   * Driven through the repo rather than the route because the route needs a survey with no draft,
+   * and every survey is born with one.
+   */
+  it('gives a new version its base language', async () => {
+    const h = createHarness();
+    const repos = h.reposFor({ userId: h.ids.programmerA, activeOrgId: h.ids.orgA });
+
+    // `sv_one_draft` allows exactly one draft per survey, so the fixture's is frozen first. That
+    // is also the real sequence: ADR-002 makes cloning a published version the only way to edit
+    // it, so a new version is never minted beside a live draft.
+    const existing = h.data.versions.find((v) => v.id === h.ids.draftA);
+    if (existing === undefined) throw new Error('fixture draft missing');
+    existing.status = 'production';
+
+    const fresh = await repos.surveys.createVersion({
+      survey_id: h.ids.surveyA,
+      schema_version: 1,
+    });
+
+    const base = h.data.languages.filter((l) => l.survey_version_id === fresh.id && l.is_base);
+    expect(base).toHaveLength(1);
+    expect(base[0]?.lang).toBe('en');
+  });
+
+  it('does NOT seed a clone, whose languages come from content.clone_version_core', async () => {
+    const h = createHarness();
+    const repos = h.reposFor({ userId: h.ids.programmerA, activeOrgId: h.ids.orgA });
+
+    const existing = h.data.versions.find((v) => v.id === h.ids.draftA);
+    if (existing === undefined) throw new Error('fixture draft missing');
+    existing.status = 'production';
+
+    const clone = await repos.surveys.createVersion({
+      survey_id: h.ids.surveyA,
+      schema_version: 1,
+      from_version_id: h.ids.draftA,
+    });
+
+    // 0023 made `clone_version_core` copy `content.languages` with an `INSERT … SELECT`. Seeding
+    // here too would collide on `languages_pkey` when the source's base is also `en`, and would
+    // leave TWO base rows and violate `languages_one_base` when it is anything else.
+    expect(h.data.languages.filter((l) => l.survey_version_id === clone.id)).toHaveLength(0);
+  });
+
+  it('honours an explicit base_language', async () => {
+    const h = createHarness();
+    const repos = h.reposFor({ userId: h.ids.programmerA, activeOrgId: h.ids.orgA });
+    const existing = h.data.versions.find((v) => v.id === h.ids.draftA);
+    if (existing === undefined) throw new Error('fixture draft missing');
+    existing.status = 'production';
+
+    const fresh = await repos.surveys.createVersion({
+      survey_id: h.ids.surveyA,
+      schema_version: 1,
+      base_language: 'ar',
+    });
+
+    expect(
+      h.data.languages.find((l) => l.survey_version_id === fresh.id && l.is_base)?.lang,
+    ).toBe('ar');
+  });
+
   it('lists a survey versions with both K §3 axes', async () => {
     const h = createHarness();
     h.as({ userId: h.ids.reviewerA, activeOrgId: h.ids.orgA });

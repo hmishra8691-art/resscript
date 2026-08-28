@@ -264,11 +264,26 @@ export interface UpdateSurveyInput {
   readonly archived_at?: string | null;
 }
 
+/**
+ * The language a version is born speaking.
+ *
+ * A default and not a decision. A per-org default belongs in `app.organizations.settings` the
+ * first time a customer needs one; hardcoding `en` here is better than the state this replaced,
+ * which was no base language at all and therefore a version that could never compile.
+ */
+export const DEFAULT_BASE_LANGUAGE = 'en';
+
 export interface CreateVersionInput {
   readonly survey_id: string;
   readonly from_version_id?: string;
   readonly notes?: string;
   readonly schema_version: number;
+  /**
+   * BCP-47 code for the base language, defaulting to `DEFAULT_BASE_LANGUAGE`. Ignored when
+   * `from_version_id` is set: a clone inherits its languages from the source version, base
+   * included (`content.clone_version_core`, 0023).
+   */
+  readonly base_language?: string;
 }
 
 export interface UpdateVersionInput {
