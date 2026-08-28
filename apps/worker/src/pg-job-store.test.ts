@@ -106,6 +106,85 @@ describe('the SQL contract', () => {
     );
   });
 
+  /*
+   * Every query's placeholder count must equal the number of values its caller binds.
+   *
+   * This is the test that the two bugs in this file needed and did not have. `SQL.fail`
+   * declared $1..$4 while `PgJobStore.fail` bound five values, so Postgres refused the bind
+   * with "bind message supplies 5 parameters, but prepared statement requires 4" — on the
+   * FAILURE path, meaning every failing job threw while trying to record its own failure, sat
+   * at `running` until the stalled sweeper collected it, and never wrote `error`. It survived
+   * because `recorder` returns whatever the response map says regardless of the values it was
+   * handed: a fake client cannot reject a bind, so no per-method assertion on `calls[0].values`
+   * can ever catch an arity mismatch. Only comparing against the query TEXT can.
+   *
+   * Written as one loop over every method rather than an assertion inside each method's own
+   * test, because the point is coverage of the whole SQL map — a query added later gets checked
+   * by being added to `drive` below, and a query with no driver fails the completeness
+   * assertion at the end.
+   */
+  it('binds exactly as many values as each query has placeholders', async () => {
+    const highestPlaceholder = (text: string): number =>
+      [...text.matchAll(/\$(\d+)/g)].reduce((max, m) => Math.max(max, Number(m[1])), 0);
+
+    const { client, calls } = recorder({
+      enqueue_job: [{ id: 'job_1', created: true }],
+      claim_job: [RAW_ROW],
+      heartbeat_job: [{ alive: true }],
+      complete_job: [{ completed: true }],
+      fail_job: [{ status: 'failed' }],
+      requeue_stalled_jobs: [{ requeued: 0 }],
+      'FROM ops.jobs WHERE id': [RAW_ROW],
+      'SELECT 1 AS ok': [{ ok: 1 }],
+    });
+    const store = new PgJobStore(client);
+
+    // One call per entry in SQL. Arguments are shaped to exercise the widest bind list each
+    // method can produce: `fail` with a retry delay, `enqueue` with every optional field set.
+    const drive: ReadonlyArray<readonly [keyof typeof SQL, () => Promise<unknown>]> = [
+      [
+        'enqueue',
+        () =>
+          store.enqueue({
+            kind: 'noop',
+            payload: {},
+            idempotencyKey: 'k',
+            orgId: 'org_1',
+            projectId: 'prj_1',
+            surveyVersionId: 'ver_1',
+            maxAttempts: 5,
+            delayMs: 10,
+          }),
+      ],
+      ['claim', () => store.claim('w', ['noop'])],
+      ['heartbeat', () => store.heartbeat('job_1', 'w', { step: 1 })],
+      ['complete', () => store.complete('job_1', 'w', { ok: true })],
+      [
+        'fail',
+        () => store.fail('job_1', 'w', { code: 'internal_error', message: 'x' }, true, 1_000),
+      ],
+      ['requeueStalled', () => store.requeueStalled(30_000)],
+      ['get', () => store.get('job_1')],
+      ['ping', () => store.ping()],
+    ];
+
+    for (const [, run] of drive) await run();
+
+    expect(calls).toHaveLength(drive.length);
+    for (const [index, [name]] of drive.entries()) {
+      const call = calls[index];
+      expect(call?.text, `${String(name)} ran the wrong query`).toBe(SQL[name]);
+      expect(
+        call?.values.length,
+        `${String(name)}: binds ${String(call?.values.length)} values but its SQL declares ` +
+          `${String(highestPlaceholder(call?.text ?? ''))} placeholders`,
+      ).toBe(highestPlaceholder(call?.text ?? ''));
+    }
+
+    // A query added to SQL without a driver above would otherwise be silently unchecked.
+    expect(new Set(drive.map(([name]) => name))).toEqual(new Set(Object.keys(SQL)));
+  });
+
   it('passes the kinds as a text[] parameter, not an interpolated IN list', async () => {
     const { client, calls } = recorder({ claim_job: [RAW_ROW] });
     const job = await new PgJobStore(client).claim('worker-1', ['noop', 'compile']);
@@ -121,7 +200,30 @@ describe('the SQL contract', () => {
     expect(job?.id).toBe(RAW_ROW.id);
   });
 
-  it('returns null when claim_job yields no row', async () => {
+  /*
+   * An idle queue, in the shape the database actually sends it.
+   *
+   * `ops.claim_job` RETURNS ops.jobs — one composite, not SETOF — so a claim that found
+   * nothing is a NULL composite, and `SELECT * FROM f()` expands it into ONE row of all-NULL
+   * columns. This test used to assert the empty queue as `claim_job: []`. Zero rows is a
+   * shape the function cannot produce, so the fake and the code were wrong together and the
+   * test stayed green while a running worker logged `unknown ops.jobs.status: null` four
+   * times per poll interval, forever.
+   *
+   * Keep both cases. Zero rows is unreachable through claim_job today, but `rows[0] ===
+   * undefined` is still the right guard for a query that returns no rows at all, and pinning
+   * it here means a future change to SQL.claim (adding `WHERE id IS NOT NULL`, say) does not
+   * silently lose the other branch.
+   */
+  it('returns null for an idle queue: one row whose every column is NULL', async () => {
+    const allNull = Object.fromEntries(
+      Object.keys(RAW_ROW).map((k) => [k, null]),
+    ) as unknown as Record<string, unknown>;
+    const { client } = recorder({ claim_job: [allNull] });
+    expect(await new PgJobStore(client).claim('w', ['noop'])).toBeNull();
+  });
+
+  it('returns null when claim_job yields no row at all', async () => {
     const { client } = recorder({ claim_job: [] });
     expect(await new PgJobStore(client).claim('w', ['noop'])).toBeNull();
   });
@@ -316,6 +418,21 @@ describeIntegration('PgJobStore against a real ops.jobs', () => {
    */
   const uniqueKind = (label: string): string =>
     `itest_${label}_${String(Date.now())}_${String(Math.floor(Math.random() * 1e6))}`;
+
+  /*
+   * The test the fake could not be trusted to give us: a claim against a kind that has no
+   * jobs, run through real Postgres. This is the polling path a deployed worker spends
+   * essentially all of its time on, and it threw on every call until the NULL-composite guard
+   * in PgJobStore.claim landed. `uniqueKind` guarantees the kind is empty.
+   */
+  it('returns null for a kind with no queued jobs', async () => {
+    const { store, close } = await connect();
+    try {
+      expect(await store.claim('itest-worker', [uniqueKind('idle')])).toBeNull();
+    } finally {
+      await close();
+    }
+  });
 
   it('enqueues, claims, heartbeats and completes', async () => {
     const { store, close } = await connect();

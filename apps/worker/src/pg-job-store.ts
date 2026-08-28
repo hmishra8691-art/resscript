@@ -74,11 +74,30 @@ export const SQL = {
   complete:
     'SELECT ops.complete_job(p_id => $1::app.ulid, p_worker => $2::text, ' +
     'p_result => $3::jsonb) AS completed',
-  // 0005 returns 'queued' | 'failed' | 'not_owner'. Backoff is computed in SQL from
-  // attempts, so the worker no longer passes a retry delay: one place owns the schedule.
+  // 0005 returns 'queued' | 'failed' | 'not_owner'.
+  //
+  // FIVE parameters, not four. The comment that used to sit here said "backoff is computed in
+  // SQL from attempts, so the worker no longer passes a retry delay: one place owns the
+  // schedule" — and it was wrong about the schema it was describing. 0005's body is
+  // `WHEN COALESCE(p_retry_after_ms, 0) > 0 THEN make_interval(...) ELSE least(power(2,
+  // attempts) * interval '1 second', interval '10 minutes')`: the caller MAY override and SQL
+  // owns the default. The stale comment came with a stale query string carrying only $1..$4,
+  // while PgJobStore.fail below has always bound five values.
+  //
+  // The consequence was not a wrong delay, it was no failure record at all. Postgres rejected
+  // the bind outright ("bind message supplies 5 parameters, but prepared statement requires
+  // 4"), so EVERY failing job threw inside the failure path: the row stayed `running` with a
+  // stale heartbeat until the stalled sweeper found it, `error` was never written, and the
+  // consumer's job.compile span closed with status "ok" for a job that had failed. A deployed
+  // worker would have reported healthy while silently converting every failure into a stall.
+  //
+  // Nothing in the unit tests could see it: they assert against a recording client that
+  // accepts any number of values for any query text. See the arity test in pg-job-store.test.ts,
+  // which now checks every entry in SQL against the values its caller binds.
   fail:
     'SELECT ops.fail_job(p_id => $1::app.ulid, p_worker => $2::text, ' +
-    'p_error => $3::jsonb, p_retry => $4::boolean) AS status',
+    'p_error => $3::jsonb, p_retry => $4::boolean, ' +
+    'p_retry_after_ms => $5::int) AS status',
   requeueStalled:
     'SELECT ops.requeue_stalled_jobs(' +
     'p_stalled_after => make_interval(secs => $1::double precision)) AS requeued',
@@ -211,7 +230,25 @@ export class PgJobStore implements JobStore {
     // Postgres array literal, so this is one round trip and not a generated IN-list.
     const { rows } = await this.sql.query<RawJobRow>(SQL.claim, [[...kinds], workerId]);
     const row = rows[0];
-    return row === undefined ? null : mapJobRow(row);
+    if (row === undefined) return null;
+
+    // An empty queue does NOT come back as zero rows. `ops.claim_job` is declared
+    // `RETURNS ops.jobs` — a single composite, not SETOF — and returns a NULL composite when
+    // nothing was claimable. `SELECT * FROM f()` expands that composite into columns, so
+    // Postgres hands back exactly ONE row with every column NULL. 0005's body says so in as
+    // many words: "all-NULL composite when the queue is empty; callers check .id IS NULL".
+    // This caller did not check, so mapJobRow — correctly strict about a status outside the
+    // CHECK constraint — threw `unknown ops.jobs.status: null` on every poll of an idle
+    // queue: four slots x 5Hz of error logs, forever, while /ready still said ready.
+    //
+    // The unit test for this case passed throughout, because it faked the empty queue as
+    // `claim_job: []`. Zero rows is a shape this function cannot produce. The fake was wrong
+    // in precisely the way the code was wrong, which is the second time this exact file has
+    // been bitten by a recording client agreeing with the bug (see the bind-order comment
+    // above). The regression test now returns the all-NULL row the database actually sends.
+    if (row['id'] === null || row['id'] === undefined) return null;
+
+    return mapJobRow(row);
   }
 
   async heartbeat(id: string, workerId: string, progress?: JsonObject): Promise<boolean> {
