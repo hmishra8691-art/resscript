@@ -63,7 +63,12 @@ const HEADINGS: { readonly [K in CompileSeverity]: string } = {
 };
 
 const CONSEQUENCE: { readonly [K in CompileSeverity]: string } = {
-  error: 'Publish cannot proceed until every one of these is fixed. No artifact is written.',
+  // NOT "publish cannot proceed": these are the last compile's errors, and publishing is exactly
+  // how they get re-checked. Saying otherwise, with the button disabled to match, made a failed
+  // version unpublishable forever — see `publishable` in PublishDialog.
+  error:
+    'From the last compile. Publishing runs the gate again — if they are fixed it will succeed, ' +
+    'and no artifact is written while any remain.',
   warning:
     'Publish can proceed once each of these is acknowledged. The acknowledgement and its note ' +
     'are recorded against the version and audited.',

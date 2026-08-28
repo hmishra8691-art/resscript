@@ -126,8 +126,38 @@ export function PublishDialog(props: PublishDialogProps): React.JSX.Element {
 
   const capability = publishCapability(role, target);
   const transitionLegal = isLegalTransition(status, target);
+  /*
+   * `blocked` is NOT part of this, and that is the fix for a deadlock.
+   *
+   * `blocked` is `hasCompileErrors(diagnostics)`, and `diagnostics` is what the LAST compile
+   * stored — it survives every subsequent edit untouched. Gating the button on it meant: errors
+   * from a previous compile disable Publish; the only thing that clears those errors is a new
+   * compile; the only way to run a compile is Publish. A version that once failed the gate could
+   * never be re-published from this dialog, no matter how thoroughly its content was fixed.
+   *
+   * Observed on a real survey. Its labels were repaired, every reference verified resolvable in the
+   * database, and the pane went on showing the errors from a compile 40 minutes earlier with the
+   * button greyed out. I told the user three times to press it.
+   *
+   * The compiler is the gate and it runs ON publish; whether the CURRENT content compiles is
+   * unknowable until it does. Stored errors describe a past state, so they inform and must not
+   * disable — a publish that fails again simply re-reports accurately, which is the correct
+   * outcome and costs one job.
+   *
+   * `outstanding` still gates — but only when the warnings are actually SHOWN. There is a second
+   * deadlock underneath the first: while errors stand this dialog deliberately does not render the
+   * warning section (the next compile may report a different set, and an acknowledgement is
+   * recorded against the warning it was given for), and an unacknowledged warning was gating
+   * anyway. So the author was blocked by something the UI refused to show them.
+   *
+   * Suppressed and gating cannot both be right. Since the reason for suppressing is that the
+   * warning set is PROVISIONAL while errors stand, the same reasoning says it must not gate:
+   * acknowledging a warning that may not survive the next compile is not a precondition worth
+   * enforcing. When the errors are gone the warnings appear and gate normally, which is where
+   * acknowledgement means something.
+   */
   const publishable =
-    !blocked && outstanding.length === 0 && capability.allowed && transitionLegal && !pending;
+    (blocked || outstanding.length === 0) && capability.allowed && transitionLegal && !pending;
 
   const submit = (): void => {
     const signed = warnings
@@ -361,10 +391,12 @@ function publishReason(input: ReasonInput): string {
   if (!input.transitionLegal) {
     return `cannot transition from ${input.status} to ${input.target}`;
   }
-  if (input.blocked) {
-    return `${String(input.errorCount)} error(s) must be fixed before this version can be published`;
-  }
-  if (input.outstanding > 0) {
+  // Deliberately no `blocked` branch: stored errors no longer disable the button, so naming them
+  // as the reason it is disabled would be false. They are rendered in the error list above, where
+  // they belong.
+  // Only while the warnings are visible. Naming an unacknowledged warning as the blocking reason
+  // while the section is suppressed tells the author to do something the UI will not let them do.
+  if (!input.blocked && input.outstanding > 0) {
     return `${String(input.outstanding)} warning(s) still to acknowledge`;
   }
   if (input.pending) return 'queueing…';

@@ -37,7 +37,9 @@ describe('DiagnosticList', () => {
     expect(within(section).getByTestId('diagnostics-error-count')).toHaveTextContent('1');
     // The heading and the sentence carry the meaning — not a colour, not an icon.
     expect(section).toHaveTextContent('Errors');
-    expect(section).toHaveTextContent('Publish cannot proceed');
+    // Reworded: publishing is how these get re-checked, so the copy no longer says the
+    // opposite. See DiagnosticList's `error` consequence.
+    expect(section).toHaveTextContent('From the last compile');
     expect(screen.queryByTestId('diagnostics-warning')).toBeNull();
   });
 

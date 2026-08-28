@@ -89,16 +89,31 @@ function renderDialog(overrides: Partial<PublishDialogProps> = {}): {
 }
 
 describe('PublishDialog', () => {
-  it('disables publish and shows no warning section while an error stands', () => {
+  /*
+   * This test used to assert `toBeDisabled()`, which encoded a deadlock as a requirement.
+   *
+   * `diagnostics` is what the LAST compile stored and it survives every subsequent edit. Disabling
+   * the button on it meant: a version that once failed the gate could never be re-published from
+   * this dialog, because the errors could only be cleared by a compile and a compile could only be
+   * started by the button those errors disabled. Seen on a real survey — content fully repaired,
+   * every reference verified in the database, pane still showing a 40-minute-old failure with the
+   * button greyed out.
+   *
+   * So: ENABLED while a stored error stands. The compiler is the gate and it runs on publish; a
+   * publish that fails again re-reports accurately, which is correct and costs one job.
+   *
+   * The warning suppression is unchanged and is a different thing — the next compile may report a
+   * different set, and an acknowledgement is recorded against the warning it was given for.
+   */
+  it('ALLOWS publish while a stored error stands, and still hides the warning section', () => {
     renderDialog({ diagnostics: [forwardRefError, conditionalWarning] });
 
-    expect(screen.getByTestId('publish-submit')).toBeDisabled();
+    expect(screen.getByTestId('publish-submit')).not.toBeDisabled();
     expect(screen.getByTestId('diagnostics-error-count')).toHaveTextContent('1');
-    // The warning exists in the input and is deliberately not rendered: the next compile may report
-    // a different set, and an acknowledgement is recorded against the warning it was given for.
     expect(screen.queryByTestId('diagnostics-warning')).toBeNull();
     expect(screen.getByTestId('publish-warnings-suppressed')).toBeDefined();
-    expect(screen.getByTestId('publish-blocked-reason')).toHaveTextContent('1 error(s) must be fixed');
+    // And no reason claiming the button is blocked, because it is not.
+    expect(screen.getByTestId('publish-blocked-reason')).not.toHaveTextContent('must be fixed');
   });
 
   it('renders each error with its code, the gate message and the objects it names', () => {
