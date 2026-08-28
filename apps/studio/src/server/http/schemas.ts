@@ -272,6 +272,61 @@ export const replaceRedirectsSchema = z
   .strict();
 
 /* -------------------------------------------------------------------------- */
+/* Vendors (API §2.16, migration 0024)                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One vendor on the wire.
+ *
+ * `security` is nullable rather than optional-with-a-partial-shape, because 0024's
+ * `vendors_security_all_or_none` CHECK makes half-configured signing unstorable and a schema that
+ * allowed `{ hash_param }` alone would accept a body the database refuses. Signed or unsigned,
+ * never half — mirrored here so the 422 arrives before the write.
+ *
+ * `secret_ref` is bounded at 31 characters at the TOP end on purpose: 0024 refuses a value matching
+ * `^[A-Za-z0-9+/=_-]{32,}$` because that is what a pasted HMAC key looks like, and a length cap is a
+ * cheaper, clearer way to say the same thing on the wire. A legitimate reference is a path like
+ * `vendor/panel_a/hmac`, well under it; a 32-character opaque blob is a secret. Both layers refuse
+ * it, and the wire's message can say why in a 422 rather than a constraint name.
+ */
+const vendorInboundParamSchema = z
+  .object({
+    param: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/),
+    variable_ref: z.string().min(1).max(64),
+    required: z.boolean(),
+  })
+  .strict();
+
+const vendorRowSchema = z
+  .object({
+    id: z.string().regex(/^vnd_[0-7][0-9A-HJKMNP-TV-Z]{25}$/),
+    ref: z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,63}$/),
+    name: z.string().min(1).max(200),
+    entry_url_template: z.string().max(2048).nullable(),
+    max_completes: z.number().int().positive().nullable(),
+    quota_plan_overrides: z.array(z.string().max(64)).max(64),
+    inbound_params: z.array(vendorInboundParamSchema).max(64),
+    security: z
+      .object({
+        hash_param: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/),
+        algorithm: z.enum(['sha256', 'sha1', 'md5']),
+        // See the header: a reference is short and path-shaped; 32+ opaque characters is a key.
+        secret_ref: z.string().min(1).max(200),
+        signed_params: z.array(z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/)).min(1).max(64),
+        max_skew_s: z.number().int().positive().max(2_592_000).optional(),
+        timestamp_param: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/).optional(),
+        nonce_param: z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/).optional(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+
+export const replaceVendorsSchema = z
+  .object({ vendors: z.array(vendorRowSchema).max(64) })
+  .strict();
+
+/* -------------------------------------------------------------------------- */
 /* The ResScript DSL endpoints (API §5)                                       */
 /* -------------------------------------------------------------------------- */
 

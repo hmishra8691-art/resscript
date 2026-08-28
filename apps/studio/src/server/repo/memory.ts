@@ -104,6 +104,8 @@ import type {
   UpdateVersionInput,
   UpsertStringInput,
   VersionRegistryRows,
+  VendorRepo,
+  VendorRow,
 } from './types.js';
 
 /**
@@ -128,6 +130,12 @@ export interface Actor {
 }
 
 /** One row of `content.redirects`: the wire shape plus the columns the wire omits. */
+/** The wire row plus the two columns the wire omits, same shape as MemoryRedirectRow. */
+export interface MemoryVendorRow extends VendorRow {
+  readonly survey_version_id: string;
+  readonly org_id: string;
+}
+
 export interface MemoryRedirectRow extends RedirectRow {
   readonly survey_version_id: string;
   readonly org_id: string;
@@ -321,6 +329,7 @@ export class MemoryDataset {
    * is only testable against a store that holds rows rather than a reassembled map.
    */
   readonly redirects: MemoryRedirectRow[] = [];
+  readonly vendors: MemoryVendorRow[] = [];
   /**
    * `content.logic_rules` (0007 §4.4), one row per rule with the two dependency-closure arrays
    * the GIN indexes serve. Held as full rows — unlike the registry above, the rules routes ARE
@@ -3294,6 +3303,104 @@ class InMemoryRepos implements Repos {
         this.data.redirects.push({ ...row, survey_version_id: versionId, org_id: org });
       }
       return this.redirects.listRedirects(versionId);
+    },
+  };
+
+  /* --- vendors (0024) ------------------------------------------------------ */
+
+  readonly vendors: VendorRepo = {
+    listVendors: async (versionId: string): Promise<readonly VendorRow[]> => {
+      // Visibility through the VERSION, as `vendors_select`'s `app.can_see_version()` does. Note
+      // the read floor is PROGRAMMER here and reviewer for every other content table — 0024's
+      // reason: a list of secret_refs is a map of the secret store, and a review link is shared
+      // outside the programming team.
+      const version = await this.surveys.getVersion(versionId);
+      if (version === null || !this.hasRole('programmer')) return [];
+      return this.data.vendors
+        .filter((v) => v.survey_version_id === versionId)
+        .sort((a, b) => a.ref.localeCompare(b.ref))
+        .map(({ survey_version_id: _v, org_id: _o, ...row }) => row);
+    },
+
+    replaceVendors: async (
+      versionId: string,
+      rows: readonly VendorRow[],
+    ): Promise<readonly VendorRow[]> => {
+      const version = await this.surveys.getVersion(versionId);
+      // One outcome for "no such version", "not yours" and "not programmer", as everywhere else —
+      // distinguishing them is an existence oracle across tenants.
+      if (version === null || !this.hasRole('programmer')) {
+        throw new StoreConstraintError('vendors_insert', 'no rows inserted');
+      }
+      if (version.status !== 'draft') {
+        throw new StoreConstraintError('vendors_draft_only', 'version is not a draft');
+      }
+      const org = version.org_id;
+      const refs = new Set<string>();
+      const declared = new Set(
+        this.data.variables.filter((v) => v.survey_version_id === versionId).map((v) => v.name),
+      );
+
+      for (const row of rows) {
+        // 0024's CHECKs, reproduced BY NAME so a failing test names what a failing INSERT would.
+        if (row.name.trim() === '') {
+          throw new StoreConstraintError('vendors_name_nonempty', 'empty vendor name');
+        }
+        if (refs.has(row.ref)) {
+          throw new StoreConstraintError('vendors_ref_key', `duplicate vendor ref ${row.ref}`);
+        }
+        refs.add(row.ref);
+        if (row.security !== null) {
+          // `vendors_signed_params_present`: a signature over nothing verifies everything.
+          if (row.security.signed_params.length === 0) {
+            throw new StoreConstraintError(
+              'vendors_signed_params_present',
+              'a signed vendor must name its signed params',
+            );
+          }
+          // `vendors_secret_ref_is_a_reference`: the same heuristic the compiler's assertNoSecrets
+          // uses, moved to the write path because every other layer that forbids a secret VALUE
+          // sits downstream of a paste into this console.
+          if (/^[A-Za-z0-9+/=_-]{32,}$/.test(row.security.secret_ref)) {
+            throw new StoreConstraintError(
+              'vendors_secret_ref_is_a_reference',
+              'secret_ref looks like a secret value, not a reference',
+            );
+          }
+          if (row.security.secret_ref.trim() === '') {
+            throw new StoreConstraintError('vendors_secret_ref_nonempty', 'empty secret_ref');
+          }
+        }
+        if (row.max_completes !== null && row.max_completes <= 0) {
+          throw new StoreConstraintError('vendors_max_completes_positive', 'max_completes must be > 0');
+        }
+        const params = new Set<string>();
+        for (const p of row.inbound_params) {
+          if (!/^[A-Za-z0-9_.-]{1,64}$/.test(p.param)) {
+            throw new StoreConstraintError('vendor_params_param_shape', `bad param name ${p.param}`);
+          }
+          if (params.has(p.param)) {
+            throw new StoreConstraintError('vendor_params_pkey', `duplicate param ${p.param}`);
+          }
+          params.add(p.param);
+          // 0024's composite FK to content.variables. Reproduced here because the FK is the whole
+          // reason the params are a table rather than a jsonb column.
+          if (!declared.has(p.variable_ref)) {
+            throw new StoreConstraintError(
+              'vendor_params_variable_fk',
+              `inbound parameter ${p.param} targets undeclared variable ${p.variable_ref}`,
+            );
+          }
+        }
+      }
+
+      for (let i = this.data.vendors.length - 1; i >= 0; i -= 1) {
+        if (this.data.vendors[i]?.survey_version_id === versionId) this.data.vendors.splice(i, 1);
+      }
+      for (const row of rows) {
+        this.data.vendors.push({ ...row, survey_version_id: versionId, org_id: org });
+      }
+      return this.vendors.listVendors(versionId);
     },
   };
 

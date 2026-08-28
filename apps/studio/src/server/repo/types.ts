@@ -568,6 +568,63 @@ export interface RedirectRow {
   readonly url_template: string;
 }
 
+/**
+ * One vendor, as the wire and the worker both see it.
+ *
+ * Field-for-field `apps/worker`'s `AuthoringVendorRow` — the same rule `RedirectRow` follows, and
+ * for the same reason: a row written here is a row the worker's `vendorsOf` reassembles into
+ * `Survey.vendors` verbatim, so a divergence between the two shapes is a survey that publishes
+ * differently from how it was authored.
+ *
+ * `variable_ref` and not `variable_id`: 0024 STORES the id (a foreign key can hold one and cannot
+ * hold a name, because content.variables' name uniqueness is a partial expression index) while the
+ * document and this wire deal in refs, per schema §9. The repo resolves between them.
+ */
+export interface VendorInboundParamRow {
+  readonly param: string;
+  readonly variable_ref: string;
+  readonly required: boolean;
+}
+
+export interface VendorRow {
+  readonly id: string;
+  readonly ref: string;
+  readonly name: string;
+  readonly entry_url_template: string | null;
+  readonly max_completes: number | null;
+  readonly quota_plan_overrides: readonly string[];
+  readonly inbound_params: readonly VendorInboundParamRow[];
+  /**
+   * Present only for a SIGNED vendor. `secret_ref` is a POINTER into the secrets store and never
+   * the secret — 0024 refuses a secret-shaped value at write time, because every other layer that
+   * forbids one (the schema type, the compiler's assertNoSecrets, the artifact type) sits
+   * downstream of a paste into this console.
+   */
+  readonly security: {
+    readonly hash_param: string;
+    readonly algorithm: 'sha256' | 'sha1' | 'md5';
+    readonly secret_ref: string;
+    readonly signed_params: readonly string[];
+    readonly max_skew_s?: number;
+    readonly timestamp_param?: string;
+    readonly nonce_param?: string;
+  } | null;
+}
+
+export interface VendorRepo {
+  /** Every vendor of one version, in 0024's sort order. Empty when none are configured. */
+  listVendors(versionId: string): Promise<readonly VendorRow[]>;
+  /**
+   * Whole-set replace, like `replaceRedirects`.
+   *
+   * A vendor set is small and authored as a unit, and a per-row API would need the client to track
+   * ids it did not mint. The same bounded weakness applies: delete-then-insert is two statements
+   * rather than one transaction, so a crash between them leaves the version with NO vendors — which
+   * publishes fine (a survey with no panels is a valid survey) rather than half-merged.
+   */
+  replaceVendors(versionId: string, rows: readonly VendorRow[]): Promise<readonly VendorRow[]>;
+}
+
 export interface RedirectRepo {
   /** Every redirect row of one version, in 0010's key order. Empty when none are configured. */
   listRedirects(versionId: string): Promise<readonly RedirectRow[]>;
@@ -1298,6 +1355,7 @@ export interface Repos {
   readonly registry: RegistryRepo;
   readonly rules: RuleRepo;
   readonly redirects: RedirectRepo;
+  readonly vendors: VendorRepo;
   readonly i18n: I18nRepo;
   readonly exports: ExportRepo;
   readonly fieldStats: FieldStatsRepo;

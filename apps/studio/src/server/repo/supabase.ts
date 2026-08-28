@@ -97,6 +97,9 @@ import type {
   UpdateVersionInput,
   UpsertStringInput,
   VersionRegistryRows,
+  VendorInboundParamRow,
+  VendorRepo,
+  VendorRow,
 } from './types.js';
 
 export interface SupabaseRepoContext {
@@ -1860,6 +1863,215 @@ class SupabaseRepos implements Repos {
         throw new StoreConstraintError('redirects_insert', 'no rows inserted');
       }
       return this.redirects.listRedirects(versionId);
+    },
+  };
+
+  /**
+   * `content.vendors` + `content.vendor_inbound_params` (0024) — API §2.16's vendor console.
+   *
+   * Reads and writes run under the tables' own policies, which for these are PROGRAMMER-floor on
+   * BOTH sides — the one content table pair whose read bar sits above the review bar. 0024 states
+   * why: a vendor row is a commercial relationship plus a pointer into the secrets store, and a
+   * list of `secret_ref`s is a map of the secret store, while a review link is shared outside the
+   * programming team. Nothing here re-tests that in TypeScript, for the reason `redirects` gives:
+   * a filter written here is a filter that can be forgotten, and the policy is the guarantee.
+   *
+   * `replaceVendors` is delete-then-insert, the same bounded weakness `replaceRedirects` records.
+   * The failure mode is milder here: a crash between the two leaves the version with no vendors,
+   * and a survey with no panels publishes fine.
+   *
+   * The inbound params are written by VARIABLE ID, resolved from the ref against
+   * `content.variables`. 0024 stores the id because a foreign key can hold one and cannot hold a
+   * name — content.variables' name uniqueness is a partial expression index — and the resolution
+   * lives here rather than in the route so the wire stays ref-shaped per schema §9.
+   */
+  readonly vendors: VendorRepo = {
+    listVendors: async (versionId: string): Promise<readonly VendorRow[]> => {
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('vendors')
+        .select(
+          'id, ref, name, entry_url_template, max_completes, quota_plan_overrides, ' +
+            'hash_param, algorithm, secret_ref, signed_params, max_skew_s, timestamp_param, ' +
+            'nonce_param',
+        )
+        .eq('survey_version_id', versionId)
+        // 0024's own sort order, the same ORDER BY the worker's publish read uses — so what the
+        // author sees listed is ordered as what the artifact is assembled from.
+        .order('sort_key', { ascending: true })
+        .order('ref', { ascending: true });
+      if (error !== null) raise(error, 'vendors_select');
+      const vendors = (data ?? []) as unknown as Record<string, unknown>[];
+      if (vendors.length === 0) return [];
+
+      // The params for every vendor of this version in ONE read, joined to variables for the ref.
+      // Per-vendor reads would be N round trips for a set that is authored as a unit.
+      const { data: paramData, error: paramError } = await this.ctx.client
+        .schema(CONTENT)
+        .from('vendor_inbound_params')
+        .select('vendor_id, param, required, sort_key, variables(name)')
+        .eq('survey_version_id', versionId)
+        .order('sort_key', { ascending: true })
+        .order('param', { ascending: true });
+      if (paramError !== null) raise(paramError, 'vendor_inbound_params_select');
+
+      const byVendor = new Map<string, VendorInboundParamRow[]>();
+      // Through `unknown` because the embedded `variables(name)` join makes Supabase's inferred row
+      // type a union with its error shape, which does not overlap a plain record.
+      for (const raw of (paramData ?? []) as unknown as Record<string, unknown>[]) {
+        const vendorId = String(raw['vendor_id']);
+        const joined = raw['variables'] as { name?: unknown } | null;
+        const list = byVendor.get(vendorId) ?? [];
+        list.push({
+          param: String(raw['param']),
+          variable_ref: joined?.name === undefined ? '' : String(joined.name),
+          required: raw['required'] === true,
+        });
+        byVendor.set(vendorId, list);
+      }
+
+      return vendors.map((row) => {
+        const secretRef = row['secret_ref'];
+        const signed = row['signed_params'];
+        return {
+          id: String(row['id']),
+          ref: String(row['ref']),
+          name: String(row['name']),
+          entry_url_template:
+            row['entry_url_template'] === null ? null : String(row['entry_url_template']),
+          max_completes: row['max_completes'] === null ? null : Number(row['max_completes']),
+          quota_plan_overrides: Array.isArray(row['quota_plan_overrides'])
+            ? (row['quota_plan_overrides'] as unknown[]).map(String)
+            : [],
+          inbound_params: byVendor.get(String(row['id'])) ?? [],
+          security:
+            typeof secretRef === 'string' && secretRef !== ''
+              ? {
+                  hash_param: String(row['hash_param']),
+                  algorithm:
+                    String(row['algorithm']) === 'sha1'
+                      ? ('sha1' as const)
+                      : String(row['algorithm']) === 'md5'
+                        ? ('md5' as const)
+                        : ('sha256' as const),
+                  secret_ref: secretRef,
+                  signed_params: Array.isArray(signed) ? (signed as unknown[]).map(String) : [],
+                  ...(row['max_skew_s'] === null ? {} : { max_skew_s: Number(row['max_skew_s']) }),
+                  ...(row['timestamp_param'] === null
+                    ? {}
+                    : { timestamp_param: String(row['timestamp_param']) }),
+                  ...(row['nonce_param'] === null
+                    ? {}
+                    : { nonce_param: String(row['nonce_param']) }),
+                }
+              : null,
+        };
+      });
+    },
+
+    replaceVendors: async (
+      versionId: string,
+      rows: readonly VendorRow[],
+    ): Promise<readonly VendorRow[]> => {
+      const org = this.ctx.activeOrgId;
+      if (org === null) throw new StoreConstraintError('vendors_insert', 'no active org');
+
+      // Params first: they reference the vendors, and 0024's composite FK is ON DELETE CASCADE from
+      // the vendor — so deleting vendors would take them anyway. Explicit so the order does not
+      // depend on a cascade nobody reading this file can see.
+      const { error: paramDelErr } = await this.ctx.client
+        .schema(CONTENT)
+        .from('vendor_inbound_params')
+        .delete()
+        .eq('survey_version_id', versionId);
+      if (paramDelErr !== null) raise(paramDelErr, 'vendor_inbound_params_delete');
+      const { error: delErr } = await this.ctx.client
+        .schema(CONTENT)
+        .from('vendors')
+        .delete()
+        .eq('survey_version_id', versionId);
+      if (delErr !== null) raise(delErr, 'vendors_delete');
+      if (rows.length === 0) return [];
+
+      const { data, error } = await this.ctx.client
+        .schema(CONTENT)
+        .from('vendors')
+        .insert(
+          rows.map((row) => ({
+            survey_version_id: versionId,
+            id: row.id,
+            // From the CLAIM, and `vendors_insert`'s WITH CHECK re-tests it against
+            // `app.current_org()`, so a wrong value here is rejected by the database.
+            org_id: org,
+            ref: row.ref,
+            name: row.name,
+            entry_url_template: row.entry_url_template,
+            max_completes: row.max_completes,
+            quota_plan_overrides: [...row.quota_plan_overrides],
+            hash_param: row.security?.hash_param ?? null,
+            algorithm: row.security?.algorithm ?? null,
+            secret_ref: row.security?.secret_ref ?? null,
+            signed_params: row.security ? [...row.security.signed_params] : [],
+            max_skew_s: row.security?.max_skew_s ?? null,
+            timestamp_param: row.security?.timestamp_param ?? null,
+            nonce_param: row.security?.nonce_param ?? null,
+          })),
+        )
+        .select('id');
+      if (error !== null) raise(error, 'vendors_insert');
+      if (((data ?? []) as unknown[]).length === 0) {
+        // Zero rows: the policy declined (not yours, not programmer, or not a draft). Deliberately
+        // indistinguishable from a missing version, as everywhere else.
+        throw new StoreConstraintError('vendors_insert', 'no rows inserted');
+      }
+
+      // Now the params, with each ref resolved to a variable id. A ref that resolves to nothing is
+      // reported rather than dropped: it is the shape of a vendor config that outlived a variable
+      // rename, and 0024's foreign key would refuse it anyway — reporting it here names the ref.
+      const wanted = [...new Set(rows.flatMap((r) => r.inbound_params.map((p) => p.variable_ref)))];
+      if (wanted.length > 0) {
+        const { data: varData, error: varErr } = await this.ctx.client
+          .schema(CONTENT)
+          .from('variables')
+          .select('id, name')
+          .eq('survey_version_id', versionId)
+          .in('name', wanted);
+        if (varErr !== null) raise(varErr, 'variables_select');
+        const idByName = new Map(
+          ((varData ?? []) as Record<string, unknown>[]).map((v) => [
+            String(v['name']),
+            String(v['id']),
+          ]),
+        );
+        const missing = wanted.filter((name) => !idByName.has(name));
+        if (missing.length > 0) {
+          throw new StoreConstraintError(
+            'vendor_params_variable_fk',
+            `inbound parameters target variables that do not exist: ${missing.join(', ')}`,
+          );
+        }
+        const paramRows = rows.flatMap((r, vi) =>
+          r.inbound_params.map((p, pi) => ({
+            survey_version_id: versionId,
+            vendor_id: r.id,
+            param: p.param,
+            variable_id: idByName.get(p.variable_ref) as string,
+            required: p.required,
+            // Dense, from the authored order, so a list reads back as it was written.
+            sort_key: `${String(vi).padStart(4, '0')}${String(pi).padStart(4, '0')}`,
+            org_id: org,
+          })),
+        );
+        if (paramRows.length > 0) {
+          const { error: paramErr } = await this.ctx.client
+            .schema(CONTENT)
+            .from('vendor_inbound_params')
+            .insert(paramRows);
+          if (paramErr !== null) raise(paramErr, 'vendor_inbound_params_insert');
+        }
+      }
+
+      return this.vendors.listVendors(versionId);
     },
   };
 
