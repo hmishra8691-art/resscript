@@ -1,0 +1,52 @@
+# Build context exclusions.
+#
+# The context is the repository root (see apps/worker/Dockerfile's header), so without this file
+# every `node_modules` in the workspace — fourteen of them, including the pnpm virtual store —
+# gets uploaded to the daemon on every build. That is the difference between a context of a few
+# MB and one of several hundred, on every iteration.
+#
+# `node_modules` is the important one for a second reason: pnpm's are trees of symlinks pointing
+# at `.pnpm`, and copying them into an image produces links that resolve on the build host and
+# dangle in the container. The install inside the image is what must create them, which is why
+# the Dockerfile runs `pnpm install --frozen-lockfile` from the lockfile rather than shipping the
+# host's tree.
+
+node_modules
+**/node_modules
+
+# Build output. Rebuilt inside the image; copying it in risks shipping a `dist` from a different
+# commit than the `src` beside it, which is the kind of mismatch that produces a bug nobody can
+# reproduce locally.
+dist
+**/dist
+.next
+**/.next
+*.tsbuildinfo
+**/*.tsbuildinfo
+
+# Turbo's local cache.
+.turbo
+**/.turbo
+
+# VCS and CI. `GIT_SHA` is passed as a build arg precisely so the image does not need `.git`.
+.git
+.github
+.gitignore
+
+# Delivery patches — these are large, are already gitignored, and have no business in an image.
+*.mbox
+*.patch
+
+# Local environment and editor state.
+.env
+.env.*
+!.env.example
+.vscode
+.idea
+*.swp
+.DS_Store
+
+# Test and docs output that no image needs.
+coverage
+**/coverage
+*.log
