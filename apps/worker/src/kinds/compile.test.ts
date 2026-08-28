@@ -1457,6 +1457,73 @@ describeIntegration('the publish transaction against a real database', () => {
     });
   });
 
+  /*
+   * A soft-deleted question must not drag its variables into the document.
+   *
+   * The two have deliberately different lifetimes: `POST /nodes/{id}/undelete` keeps a deleted
+   * question's emitted variables on purpose, "so an undelete does not have to recreate columns with
+   * new ids". But `PUBLISH_SQL.nodes` fetches with `deleted_at IS NULL` while `PUBLISH_SQL.variables`
+   * filtered only the VARIABLE's own `deleted_at` — so the question was absent from the assembled
+   * document and its variable was present, and the compiler correctly refused with `SCH-1004`:
+   * "Variable … is sourced from qst_…, which is not a question in this survey."
+   *
+   * Deleting one question therefore made a survey unpublishable, with a diagnostic that reads like
+   * a corrupted reference rather than like "you deleted that question this afternoon". Found on a
+   * real survey whose publish had just been unblocked by the i18n repair and failed on this instead.
+   *
+   * Driven through the real query rather than a fake, because the filtering IS the query — an
+   * assembleSurvey-level test would pass against either version.
+   */
+  it('excludes variables whose source question was soft-deleted (SCH-1004)', async () => {
+    await withRollback(async (session, ids) => {
+      const orgId = String(ids['org_a']);
+      const draftId = String(ids['ver_a_content_draft']);
+      await installFixture(session, draftId, orgId);
+
+      const store = new PgPublishStore(savepointSessions(session));
+      const identity = { orgId, userId: String(ids['user_a']) };
+
+      const questionId = (
+        await session.query<{ id: string }>(
+          `SELECT v.source_question_id AS id FROM content.variables v
+            WHERE v.survey_version_id = $1::app.ulid AND v.source_question_id IS NOT NULL
+            LIMIT 1`,
+          [draftId],
+        )
+      ).rows[0]?.id;
+      if (questionId === undefined) throw new Error('fixture has no question-sourced variable');
+
+      const before = await store.loadAuthoringRows(identity, draftId);
+      const sourced = (before?.variables ?? []).filter(
+        (v) => v.source_question_id === questionId,
+      );
+      expect(sourced.length).toBeGreaterThan(0);
+
+      // Exactly what the studio's DELETE does: soft, leaving the variables in place.
+      await session.query(
+        'UPDATE content.nodes SET deleted_at = now() WHERE survey_version_id = $1::app.ulid AND id = $2::app.ulid',
+        [draftId, questionId],
+      );
+
+      const after = await store.loadAuthoringRows(identity, draftId);
+      expect(
+        (after?.variables ?? []).filter((v) => v.source_question_id === questionId),
+      ).toHaveLength(0);
+
+      // The rows are STILL THERE — the undelete path depends on that, and this test would happily
+      // pass against a fix that hard-deleted them, which would be the wrong fix.
+      const stillStored = (
+        await session.query<{ n: string }>(
+          `SELECT count(*)::text AS n FROM content.variables
+            WHERE survey_version_id = $1::app.ulid AND source_question_id = $2::app.ulid
+              AND deleted_at IS NULL`,
+          [draftId, questionId],
+        )
+      ).rows[0];
+      expect(Number(stillStored?.n)).toBe(sourced.length);
+    });
+  });
+
   it('THE DRY COMPILE: diagnostics and an artifact, and the version does not move', async () => {
     // H §2.4's own words. The claim under test is the one an author relies on when they press
     // "Check without publishing": every stage of the gate ran (so the diagnostics are the real

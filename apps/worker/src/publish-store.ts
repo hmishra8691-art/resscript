@@ -252,11 +252,43 @@ export const PUBLISH_SQL = {
     'SELECT id, question_id, row_item_id, column_item_id, question_type, config, use_columns ' +
     'FROM content.question_cells WHERE survey_version_id = $1::app.ulid ORDER BY id',
 
+  /*
+   * A variable whose SOURCE is deleted is not part of the document, even though its own row lives on.
+   *
+   * This filtered `deleted_at` on the variable and not on the question it is sourced from, and the
+   * two are deliberately different lifetimes. `POST /nodes/{id}/undelete` says why in as many
+   * words: "a soft-deleted question keeps its emitted variables so an undelete does not have to
+   * recreate columns with new ids" — the row surviving is the feature, because a restored question
+   * must come back with the same export columns.
+   *
+   * But `nodes` is fetched with `deleted_at IS NULL`, so the question is absent from the assembled
+   * document while its variable is present, and the compiler correctly reports `SCH-1004`:
+   * "Variable QCSum is sourced from qst_01M136…, which is not a question in this survey." Deleting
+   * one question therefore made a survey unpublishable, with a diagnostic that reads like a
+   * corrupted reference rather than like "you deleted that question this afternoon".
+   *
+   * Found on a real survey: a question soft-deleted at 15:27 left four variables behind, and the
+   * publish that had just been unblocked by the i18n repair failed on this instead.
+   *
+   * Both source columns are checked. `source_item_id` has the same shape — an option can be
+   * soft-deleted while the variable it emitted survives — and it would produce the same dangling
+   * reference through a different field.
+   */
   variables:
-    'SELECT id, name, kind::text AS kind, vtype::text AS vtype, source_question_id, ' +
-    'source_item_id, source_part, enum_domain, expression, storage, export_include, ' +
-    'export_column, export_label_key, pii, persist, sort_key FROM content.variables ' +
-    'WHERE survey_version_id = $1::app.ulid AND deleted_at IS NULL ORDER BY sort_key, id',
+    'SELECT v.id, v.name, v.kind::text AS kind, v.vtype::text AS vtype, v.source_question_id, ' +
+    'v.source_item_id, v.source_part, v.enum_domain, v.expression, v.storage, v.export_include, ' +
+    'v.export_column, v.export_label_key, v.pii, v.persist, v.sort_key ' +
+    '  FROM content.variables v ' +
+    ' WHERE v.survey_version_id = $1::app.ulid AND v.deleted_at IS NULL ' +
+    '   AND (v.source_question_id IS NULL OR EXISTS (' +
+    '         SELECT 1 FROM content.nodes n ' +
+    '          WHERE n.survey_version_id = v.survey_version_id ' +
+    '            AND n.id = v.source_question_id AND n.deleted_at IS NULL)) ' +
+    '   AND (v.source_item_id IS NULL OR EXISTS (' +
+    '         SELECT 1 FROM content.question_items i ' +
+    '          WHERE i.survey_version_id = v.survey_version_id ' +
+    '            AND i.id = v.source_item_id AND i.deleted_at IS NULL)) ' +
+    ' ORDER BY v.sort_key, v.id',
 
   languages:
     'SELECT lang, is_base, rtl, on_missing, block_publish_if_incomplete ' +
