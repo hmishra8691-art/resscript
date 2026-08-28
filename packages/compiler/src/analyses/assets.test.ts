@@ -348,6 +348,11 @@ describe('script hashes and CSP', () => {
     expect(directives['img-src']).toEqual(["'self'", 'data:', 'https:']);
     expect(directives['connect-src']).toEqual(["'self'"]);
     expect(directives['frame-ancestors']).toEqual(["'none'"]);
+    // `form-action` has NO `default-src` fallback, so its absence from this map did not inherit
+    // `'none'` — it left form submission unrestricted for anyone emitting the map as-is. It was
+    // missing here while `apps/runtime`'s hard-coded literal carried it, so the map was only safe
+    // for as long as nobody used it. See `cspDirectives`.
+    expect(directives['form-action']).toEqual(["'self'"]);
   });
 
   it('produces a policy with no script sources when the survey has no scripts', () => {

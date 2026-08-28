@@ -621,6 +621,16 @@ export function cspDirectives(hashes: {
     'style-src': ["'self'", "'unsafe-inline'"],
     'img-src': ["'self'", 'data:', 'https:'],
     'connect-src': ["'self'"],
+    // `form-action` does NOT fall back to `default-src` — it is one of the directives with no
+    // fallback at all — so omitting it here does not inherit `'none'`, it leaves form submission
+    // entirely unrestricted. This map was missing it while `apps/runtime`'s hard-coded literal
+    // had it, so the moment the runtime started emitting this map instead (which is the point of
+    // computing it) a survey page would have silently lost its form-action restriction. That is
+    // the whole hazard of two policies where one is dead: the live one accumulates the fixes.
+    //
+    // A survey is a sequence of self-posting forms, so `'self'` is both what it needs and the
+    // narrowest thing that works.
+    'form-action': ["'self'"],
     'frame-ancestors': ["'none'"],
   };
 }

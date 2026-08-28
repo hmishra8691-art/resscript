@@ -163,6 +163,75 @@ const SECURITY_HEADERS: Readonly<Record<string, string>> = {
   'cache-control': 'no-store',
 };
 
+/**
+ * The policy for a page served WITHOUT an artifact in scope.
+ *
+ * Terminal pages, redirect interstitials and error pages are rendered by the runtime itself and
+ * contain no author content, so there is no manifest to read and no script hash to permit. Named
+ * rather than repeated inline so the two policies in this file are visibly the same base, and so
+ * the difference between them is exactly the artifact-derived part.
+ */
+const BASE_CSP_DIRECTIVES: Readonly<Record<string, readonly string[]>> = {
+  'default-src': ["'none'"],
+  'style-src': ["'unsafe-inline'"],
+  'script-src': ["'self'"],
+  'form-action': ["'self'"],
+  'frame-ancestors': ["'none'"],
+};
+
+/**
+ * Serialize a CSP directive map, applying runtime-owned overrides.
+ *
+ * ## Why this exists
+ *
+ * `packages/compiler` computed `manifest.csp_directives` — including a `'sha256-…'` source per
+ * custom script — and this file emitted a hard-coded string literal that read neither it nor
+ * `manifest.script_hashes`. So ADR-005's hash-pinning was computed, hashed into the artifact id,
+ * and thrown away at the moment it would have done something: `script-src 'self'` permits any
+ * same-origin script and pins nothing. It is the twelfth instance in this codebase of a computed
+ * value with no consumer, and the one with the worst consequence, since P2-11's entire premise is
+ * that a custom script is sandboxed and integrity-pinned.
+ *
+ * ## The split, and why it is not "just emit the manifest"
+ *
+ * The manifest owns what the ARTIFACT implies: which script hashes may execute, where images may
+ * come from, where XHR may go. The runtime owns what the TRANSPORT implies, and there is exactly
+ * one such directive that differs per response — `frame-ancestors`. A survey page is never a
+ * legitimate frame target; a preview page exists to be framed by one origin. The compiler cannot
+ * know which of the two it is compiling for, and encoding "or the studio, if this happens to be a
+ * preview" into the artifact would put a studio origin inside content-addressed bytes.
+ *
+ * So: the manifest is the base, `overrides` replace whole directives, and a directive present in
+ * neither is absent from the header rather than defaulted — `default-src 'none'` is what catches
+ * anything unenumerated, which is the reason it is first in the compiler's map too.
+ */
+function serializeCsp(
+  directives: Readonly<Record<string, readonly string[]>>,
+  overrides: Readonly<Record<string, readonly string[]>> = {},
+): string {
+  const merged: Record<string, readonly string[]> = { ...directives, ...overrides };
+  return Object.entries(merged)
+    .filter(([, sources]) => sources.length > 0)
+    .map(([directive, sources]) => `${directive} ${sources.join(' ')}`)
+    .join('; ');
+}
+
+/**
+ * The artifact's own policy, or the base one when the manifest carries none.
+ *
+ * An older artifact compiled before `csp_directives` existed has no such field, and an artifact
+ * with an empty map is indistinguishable from that in JSON. Falling back to `BASE_CSP_DIRECTIVES`
+ * keeps such a page served under the policy this file used to hard-code — strictly better than
+ * serving it with no CSP at all, which is what a naive read of a missing field would produce.
+ */
+function cspFor(manifest: Pick<ArtifactManifest, 'csp_directives'>): Readonly<
+  Record<string, readonly string[]>
+> {
+  const declared = manifest.csp_directives;
+  if (declared === undefined || Object.keys(declared).length === 0) return BASE_CSP_DIRECTIVES;
+  return declared;
+}
+
 function json(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, {
@@ -179,13 +248,21 @@ function json(res: ServerResponse, status: number, body: unknown): void {
  * exactly one origin, the studio's. `sandbox="allow-scripts allow-forms"` on the studio side
  * (security §3.2) is the other half; this header is the half the runtime controls.
  */
-function htmlFramed(res: ServerResponse, status: number, body: string, studioOrigin: string): void {
+function htmlFramed(
+  res: ServerResponse,
+  status: number,
+  body: string,
+  studioOrigin: string,
+  directives: Readonly<Record<string, readonly string[]>> = BASE_CSP_DIRECTIVES,
+): void {
   const headers: Record<string, string | number> = {
     ...SECURITY_HEADERS,
     'content-type': 'text/html; charset=utf-8',
     'content-length': Buffer.byteLength(body),
-    'content-security-policy':
-      `default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'; frame-ancestors ${studioOrigin}`,
+    // `frame-ancestors` is the ONE directive the artifact cannot decide: the compiler does not
+    // know whether it is compiling a page that will be framed by the studio. Everything else —
+    // the script hashes above all — comes from the manifest.
+    'content-security-policy': serializeCsp(directives, { 'frame-ancestors': [studioOrigin] }),
   };
   delete (headers as Record<string, unknown>)['x-frame-options']; // CSP's frame-ancestors is the policy here
   res.writeHead(status, headers);
@@ -272,14 +349,25 @@ function wantsHtml(req: IncomingMessage): boolean {
   return (req.headers.accept ?? '').includes('text/html');
 }
 
-function html(res: ServerResponse, status: number, body: string): void {
+/**
+ * ADR-005: no inline script except by hash, no external origins.
+ *
+ * `directives` is the artifact's `csp_directives` when a page was compiled from one, so a custom
+ * script executes because its sha256 is in the header and any other script does not. Omitted for
+ * the pages the runtime renders itself (terminal, redirect interstitial, errors), which contain no
+ * author content and get `BASE_CSP_DIRECTIVES`.
+ */
+function html(
+  res: ServerResponse,
+  status: number,
+  body: string,
+  directives: Readonly<Record<string, readonly string[]>> = BASE_CSP_DIRECTIVES,
+): void {
   res.writeHead(status, {
     ...SECURITY_HEADERS,
     'content-type': 'text/html; charset=utf-8',
     'content-length': Buffer.byteLength(body),
-    // ADR-005: no inline script except the enhancement bundle by src; no external origins.
-    'content-security-policy':
-      "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'; frame-ancestors 'none'",
+    'content-security-policy': serializeCsp(directives),
   });
   res.end(body);
 }
@@ -1515,7 +1603,7 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
       themeCssUrl: `/theme/${out.session.artifact_hash}.css`,
       authorCssUrl: `/author/${out.session.artifact_hash}.css`,
       ...(pageTemplate === null ? {} : { pageTemplate }),
-    }));
+    }), cspFor(head.manifest));
     return;
   }
   json(res, 200, {
@@ -1616,7 +1704,7 @@ async function handlePageRender(
       themeCssUrl: `/theme/${stamped.artifact_hash}.css`,
       authorCssUrl: `/author/${stamped.artifact_hash}.css`,
       ...(pageTemplate === null ? {} : { pageTemplate }),
-    }));
+    }), cspFor(pinned.head.manifest));
     return;
   }
   json(res, 200, pageBody(rendered, stamped, ctx.requestId, debug));
@@ -1773,7 +1861,7 @@ async function handleSubmit(res: ServerResponse, ctx: Ctx, req: IncomingMessage)
           prefill: body.values as Record<string, unknown>,
           variableOf: variableOfFactory(logic),
           clientScriptUrl: '/client.js',
-        }));
+        }), cspFor(head.manifest));
         return;
       }
       json(res, 200, {
@@ -2262,7 +2350,7 @@ async function handlePreviewEntry(res: ServerResponse, ctx: Ctx, hash: string): 
       ...(ctx.deps.studioOrigin
         ? { preview: { studioOrigin: ctx.deps.studioOrigin, artifactHash: hash } }
         : {}),
-    }), studioOrigin);
+    }), studioOrigin, cspFor(head.manifest));
     return;
   }
   json(res, 200, pageBody(out.page, out.session, ctx.requestId, out.debug));

@@ -2084,6 +2084,72 @@ describe('the preview surface', () => {
   const previewCall = (d: RuntimeDeps, path: string, opts: Record<string, unknown> = {}) =>
     call(d, { host: 'prv-abc123.run.local', path, ...opts } as never);
 
+  /*
+   * ADR-005's hash-pinning, asserted on the header a browser actually receives.
+   *
+   * `packages/compiler` computed `manifest.csp_directives` — a `'sha256-…'` source per custom
+   * script — and hashed it into the artifact id, and this file emitted a hard-coded literal that
+   * read neither it nor `manifest.script_hashes`. `script-src 'self'` permits every same-origin
+   * script and pins nothing, so P2-11's premise (a custom script is sandboxed AND
+   * integrity-pinned) held only in the half of the system that computed the hash.
+   *
+   * The roadmap's exit criterion is "custom JS is … hash-pinned in the CSP", and the test that
+   * would have caught its absence is the negative one: a script whose hash is NOT in the manifest
+   * must not appear in the policy. Asserted both ways, because `toContain` on the permitted hash
+   * alone would pass against a policy of `script-src *`.
+   */
+  it('pins script hashes from the manifest, and permits nothing else', async () => {
+    const permitted = 'Zm9ydHktdHdvLWJ5dGVzLW9mLXBlcm1pdHRlZC1zY3JpcHQ=';
+    const artifact = linearArtifact();
+    (artifact.head.manifest as { csp_directives?: unknown }).csp_directives = {
+      'default-src': ["'none'"],
+      'script-src': ["'self'", `'sha256-${permitted}'`],
+      'style-src': ["'self'", "'unsafe-inline'"],
+      'img-src': ["'self'", 'data:', 'https:'],
+      'connect-src': ["'self'"],
+      'form-action': ["'self'"],
+      'frame-ancestors': ["'none'"],
+    };
+    const d = previewDeps({ artifacts: loaderFor({ [HASH]: artifact }) });
+
+    const r = await previewCall(d, `/preview/${HASH}?pt=${encodeURIComponent(pt())}`, {
+      headers: { accept: 'text/html' },
+    });
+    const csp = r.headers['content-security-policy'] as string;
+
+    expect(csp).toContain(`'sha256-${permitted}'`);
+    // A hash the manifest does not declare is absent. This is the assertion the criterion is
+    // about: an artifact that ships one script must not license a second.
+    expect(csp).not.toContain('sha256-c29tZS1vdGhlci1zY3JpcHQtZW50aXJlbHk=');
+    // And the policy is not permissive by another route.
+    expect(csp).not.toContain('script-src *');
+    expect(csp).not.toContain("'unsafe-eval'");
+    expect(csp).toContain("default-src 'none'");
+    // `form-action` survived the switch from the literal to the manifest. It has no `default-src`
+    // fallback, so losing it would silently unrestrict form submission rather than deny it.
+    expect(csp).toContain("form-action 'self'");
+    // The one directive the runtime still owns, because the artifact cannot know it.
+    expect(csp).toContain('frame-ancestors https://studio.local');
+    expect(csp).not.toContain("frame-ancestors 'none'");
+  });
+
+  it('falls back to the base policy for an artifact carrying no csp_directives', async () => {
+    // An artifact compiled before the field existed, or one whose map is empty — which is
+    // indistinguishable in JSON. Serving it with no CSP at all would be the naive reading of a
+    // missing field; it gets exactly the policy this file used to hard-code.
+    const d = previewDeps();
+    const r = await previewCall(d, `/preview/${HASH}?pt=${encodeURIComponent(pt())}`, {
+      headers: { accept: 'text/html' },
+    });
+    const csp = r.headers['content-security-policy'] as string;
+
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("script-src 'self'");
+    expect(csp).toContain("form-action 'self'");
+    expect(csp).toContain('frame-ancestors https://studio.local');
+    expect(csp).not.toContain('sha256-');
+  });
+
   it('renders an artifact BY HASH with a valid signed token — is_test, framed for the studio', async () => {
     const d = previewDeps();
     const r = await previewCall(d, `/preview/${HASH}?pt=${encodeURIComponent(pt())}`, {
