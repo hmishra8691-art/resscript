@@ -110,6 +110,15 @@ export interface ArtifactLoader {
   /** Author-supplied CSS (`author.css`), or null when the survey has none. */
   authorCss(hash: string): Promise<string | null>;
   /**
+   * One author HTML template's source, by ASSET ID, or null when the artifact carries no such
+   * template.
+   *
+   * By id because `PageSettings.html_template_ref` holds an `AssetId` — the page's own field is the
+   * key, so nothing has to map a ref. Cached like scripts: an artifact's bytes never change, so a
+   * null is as cacheable as a hit.
+   */
+  htmlTemplate(hash: string, assetId: string): Promise<string | null>;
+  /**
    * One language's string bundle (`i18n/<language>.json`), or null when the artifact carries
    * no such language. Read once per session render language, not folded into `head()` — a
    * multi-language artifact would otherwise pay for every language on every entry.
@@ -386,6 +395,18 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
       const source = await fetchFile(hash, 'theme.css');
       // Shares the `scripts` cache, which holds verbatim text keyed by full path. A separate LRU
       // for one file per artifact would halve the useful size of both.
+      scripts.set(key, source);
+      return source;
+    },
+
+    async htmlTemplate(hash: string, assetId: string): Promise<string | null> {
+      // The id reaches a URL path; a traversal-shaped id must die here, not at the CDN. Same guard
+      // and same reason as `script`.
+      if (!/^[A-Za-z0-9_-]+$/.test(assetId)) return null;
+      const key = `${hash}/templates/${assetId}`;
+      const cached = scripts.get(key);
+      if (cached !== undefined) return cached;
+      const source = await fetchFile(hash, `templates/${assetId}.html`);
       scripts.set(key, source);
       return source;
     },

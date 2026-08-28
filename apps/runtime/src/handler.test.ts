@@ -165,6 +165,8 @@ const INTERPRET_MANIFEST = {
 interface FakeArtifact {
   readonly redirects?: Redirects;
   readonly scripts?: Record<string, string>;
+  /** Author HTML templates, by asset id — what PageSettings.html_template_ref holds. */
+  readonly templates?: Record<string, string>;
   readonly i18n?: Record<string, Record<string, string>>;
   head: ArtifactHead;
   pages: Record<string, Record<string, unknown>>;
@@ -292,6 +294,9 @@ function loaderFor(artifacts: Record<string, FakeArtifact>): ArtifactLoader {
     },
     async authorCss(hash: string) {
       return artifacts[hash] === undefined ? null : '/* MAIN */\nbody{color:#111}';
+    },
+    async htmlTemplate(hash: string, assetId: string) {
+      return artifacts[hash]?.templates?.[assetId] ?? null;
     },
     async i18n(hash: string, language: string) {
       return artifacts[hash]?.i18n?.[language] ?? null;
@@ -979,6 +984,128 @@ describe('no-JavaScript flow — the P1-09 acceptance line', () => {
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
     } as never);
   }
+
+  it('renders the AUTHOR page shell around the form (P2-12)', async () => {
+    // The end of the last dead-ended chain P2-12's audit found. `PageSettings.html_template_ref`
+    // was declared, its id resolved by validateStructural, its source scanned by CMP-0500 — and no
+    // emitter put it in the artifact and no renderer read it, so an author who selected a page
+    // template got the default shell with no indication otherwise.
+    const TEMPLATE_ID = 'ast_0SHE11000000000000000000000'.slice(0, 30);
+    const art = linearArtifact();
+    const d = deps({
+      artifacts: loaderFor({
+        [HASH]: {
+          ...art,
+          templates: { [TEMPLATE_ID]: '<section class="brandwrap">{{questions}}</section>' },
+          // `pages` is keyed BY LANGUAGE first, then by page id — so the settings go on the inner
+          // level. Spreading the outer level put `settings` on the language map, where nothing
+          // reads it.
+          pages: Object.fromEntries(
+            Object.entries(art.pages).map(([lang, byId]) => [
+              lang,
+              Object.fromEntries(
+                Object.entries(byId as Record<string, unknown>).map(([id, p]) => [
+                  id,
+                  {
+                    ...(p as Record<string, unknown>),
+                    settings: { html_template_ref: TEMPLATE_ID },
+                  },
+                ]),
+              ),
+            ]),
+          ),
+        },
+      }),
+    });
+    const r = await browse(d, `/s/${TOKEN}`);
+
+    expect(r.status).toBe(200);
+    expect(r.raw).toContain('<section class="brandwrap">');
+    // The form is INSIDE the author's shell, which is what the slot means.
+    const wrapAt = r.raw.indexOf('<section class="brandwrap">');
+    const formAt = r.raw.indexOf('<form method="post"');
+    expect(wrapAt).toBeGreaterThan(-1);
+    expect(formAt).toBeGreaterThan(wrapAt);
+    // And the slot itself is gone — a respondent must never read their own template syntax.
+    expect(r.raw).not.toContain('{{questions}}');
+  });
+
+  it('keeps the document head OURS, whatever the template says', async () => {
+    // A page template overrides the page SHELL (schema §11), not the head. Letting it replace the
+    // document would let a template drop `robots: noindex` and put a live survey in a search index,
+    // which is not a styling decision.
+    const TEMPLATE_ID = 'ast_0SHE12000000000000000000000'.slice(0, 30);
+    const art = linearArtifact();
+    const d = deps({
+      artifacts: loaderFor({
+        [HASH]: {
+          ...art,
+          templates: { [TEMPLATE_ID]: '<div>{{questions}}</div>' },
+          // `pages` is keyed BY LANGUAGE first, then by page id — so the settings go on the inner
+          // level. Spreading the outer level put `settings` on the language map, where nothing
+          // reads it.
+          pages: Object.fromEntries(
+            Object.entries(art.pages).map(([lang, byId]) => [
+              lang,
+              Object.fromEntries(
+                Object.entries(byId as Record<string, unknown>).map(([id, p]) => [
+                  id,
+                  {
+                    ...(p as Record<string, unknown>),
+                    settings: { html_template_ref: TEMPLATE_ID },
+                  },
+                ]),
+              ),
+            ]),
+          ),
+        },
+      }),
+    });
+    const r = await browse(d, `/s/${TOKEN}`);
+
+    expect(r.raw).toContain('name="robots" content="noindex"');
+    expect(r.raw).toContain('<meta charset="utf-8">');
+    // Still exactly one document.
+    expect(r.raw.match(/<!doctype html>/gi)?.length).toBe(1);
+  });
+
+  it('falls back to the default shell when the template is missing', async () => {
+    // The publish path guarantees the file exists (CMP-0502 refuses a dangling id, the emitter
+    // writes every template), so reaching this means a hand-edited artifact or an unreachable
+    // storage tier — and a respondent seeing an unstyled but WORKING survey beats an error page.
+    const art = linearArtifact();
+    const d = deps({
+      artifacts: loaderFor({
+        [HASH]: {
+          ...art,
+          // No `templates` entry at all.
+          pages: Object.fromEntries(
+            Object.entries(art.pages).map(([lang, byId]) => [
+              lang,
+              Object.fromEntries(
+                Object.entries(byId as Record<string, unknown>).map(([id, p]) => [
+                  id,
+                  { ...(p as Record<string, unknown>), settings: { html_template_ref: 'ast_0GONE' } },
+                ]),
+              ),
+            ]),
+          ),
+        },
+      }),
+    });
+    const r = await browse(d, `/s/${TOKEN}`);
+
+    expect(r.status).toBe(200);
+    expect(r.raw).toContain('<form method="post"');
+    expect(r.raw).toContain('<main>');
+  });
+
+  it('renders the default shell for a page with no template', async () => {
+    const d = deps();
+    const r = await browse(d, `/s/${TOKEN}`);
+    expect(r.raw).toContain('<main>');
+    expect(r.raw).toContain('<form method="post"');
+  });
 
   it('links the content-addressed stylesheet, so the theme actually reaches the browser', async () => {
     // The end of the chain P2-12 built. Before it, `themeCss` was a compiler input nothing supplied,

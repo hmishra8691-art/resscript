@@ -61,6 +61,18 @@ export interface HtmlPageInput {
    */
   readonly authorCssUrl?: string;
   /**
+   * The author's page-shell HTML, already fetched by the caller.
+   *
+   * A resolved STRING, not a ref or a fetcher: this function is synchronous and pure, which is what
+   * lets the whole render be unit-tested and replayed. `handler.ts` resolves
+   * `page.settings.html_template_ref` through the artifact loader before calling.
+   *
+   * The template has already passed `CMP-0500`'s allowlist at compile time, so it carries no
+   * script, no event handlers and no disallowed URL schemes. `CMP-0504` has already refused one
+   * without a `{{questions}}` slot, so the substitution below cannot silently drop the form.
+   */
+  readonly pageTemplate?: string;
+  /**
    * Where the form posts. Defaults to the survey origin's `/s/<token>`; the preview surface
    * (P1-11) passes `/preview/<hash>?pt=…`-shaped bases because a preview session has no
    * survey token to build the default from.
@@ -121,6 +133,39 @@ ${control}
 }
 
 /**
+ * The questions slot a page template must contain.
+ *
+ * Duplicated from `compiler/src/analyses/templates.ts` rather than imported: `apps/runtime` does
+ * not depend on `@resscript/compiler` and must not start — the runtime loading the compiler would
+ * put the whole publish pipeline in the respondent's request path. The token is asserted equal in
+ * both places by a test, which is the mechanism that keeps two literals in step where an import
+ * would.
+ */
+const QUESTIONS_SLOT = '{{questions}}';
+
+/**
+ * Put the form into the author's shell.
+ *
+ * EVERY occurrence, not the first. A template with two slots is an authoring mistake, and
+ * substituting once would leave a literal `{{questions}}` visible on the page — a respondent
+ * reading their own survey's template syntax is worse than a duplicated form, and `CMP-0504`
+ * cannot tell one slot from two without deciding that two is illegal, which it is not obviously.
+ *
+ * `replaceAll` with a STRING needle, never a RegExp: the form's HTML contains `$` in
+ * nothing today and could tomorrow, and `$&` in a regex replacement is a substitution nobody
+ * intends. A string needle takes no pattern.
+ */
+function applyPageTemplate(template: string, form: string): string {
+  if (!template.includes(QUESTIONS_SLOT)) {
+    // CMP-0504 refuses this at publish, so reaching it means a hand-edited artifact. The form wins:
+    // a respondent who cannot answer is a lost interview, and a template that renders without its
+    // shell is merely ugly.
+    return form;
+  }
+  return template.split(QUESTIONS_SLOT).join(form);
+}
+
+/**
  * The stylesheet element, or the legacy inline block.
  *
  * The linked theme is the normal path and the inline block is a fallback for an artifact compiled
@@ -166,6 +211,21 @@ export function renderHtmlPage(input: HtmlPageInput): string {
     `${basePath}/submit?${baseQuery ? `${baseQuery}&` : ''}session=${input.sessionId}&html=1`,
   );
 
+  const form = `<form method="post" action="${action}">
+${page.questions.map(q => inputFor(q, input)).join('\n')}
+<input type="hidden" name="__page_id" value="${esc(page.page_id)}">
+<button type="submit">Next</button>
+</form>`;
+
+  // The author's shell, or ours. The template is substituted INSIDE `<main>` rather than replacing
+  // the document: a page template overrides the page shell (schema §11), not the head, the charset,
+  // the viewport or `robots: noindex`. Letting it replace the document would let a template drop
+  // `noindex` and put a live survey in a search index — which is not a styling decision.
+  const body =
+    input.pageTemplate === undefined
+      ? `<main>\n${form}\n</main>`
+      : `<main>\n${applyPageTemplate(input.pageTemplate, form)}\n</main>`;
+
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -176,13 +236,7 @@ export function renderHtmlPage(input: HtmlPageInput): string {
 ${themeLink(input)}
 </head>
 <body>
-<main>
-<form method="post" action="${action}">
-${page.questions.map(q => inputFor(q, input)).join('\n')}
-<input type="hidden" name="__page_id" value="${esc(page.page_id)}">
-<button type="submit">Next</button>
-</form>
-</main>
+${body}
 ${
   input.clientScriptUrl
     ? `<script src="${esc(input.clientScriptUrl)}" defer data-session="${esc(

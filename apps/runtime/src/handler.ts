@@ -477,6 +477,44 @@ function evaluateAndRender(
 const DEFAULT_TTL_PROVIDER: TtlProvider = createTtlProvider();
 
 /**
+ * The author's page-shell HTML for this page, or null.
+ *
+ * Resolved HERE rather than inside `renderHtmlPage` because that function is synchronous and pure,
+ * which is what makes the render unit-testable and replayable. The ref lives in
+ * `CompiledPage.settings`, which the compiler passes through as opaque JSON — so this is also the
+ * first code anywhere to read `page.settings`, the last of the three chains P2-12's audit found
+ * dead-ended (declared, validated, sanitized, and consumed by nothing).
+ *
+ * A MISSING template renders the default shell rather than failing. The publish path guarantees the
+ * file exists — `CMP-0502` refuses a dangling asset id and the emitter writes every template — so
+ * reaching null means a hand-edited artifact or an unreachable storage tier, and a respondent
+ * seeing an unstyled but working survey beats one seeing an error page.
+ */
+async function templateFor(
+  ctx: Ctx,
+  session: { readonly artifact_hash: string; readonly language: string },
+  pageId: string,
+): Promise<string | null> {
+  try {
+    // Re-read the COMPILED page for its settings. `RenderedPage` does not carry them — it is the
+    // rendered result, not the authored shape — and the loader's page LRU has just served this
+    // exact key to the render, so this costs a map lookup rather than a fetch. Threading the ref
+    // through `evaluateAndRender`'s return instead would touch four call sites to move a field the
+    // loader already holds.
+    const compiled = await ctx.deps.artifacts.page(session.artifact_hash, session.language, pageId);
+    const settings = (compiled as { settings?: unknown } | null)?.settings;
+    if (settings === null || settings === undefined || typeof settings !== 'object') return null;
+    const ref = (settings as { html_template_ref?: unknown }).html_template_ref;
+    if (typeof ref !== 'string' || ref === '') return null;
+    return await ctx.deps.artifacts.htmlTemplate(session.artifact_hash, ref);
+  } catch {
+    // Same reasoning as the null case: the shell is presentation, and losing it must not lose the
+    // interview.
+    return null;
+  }
+}
+
+/**
  * Stamp a render digest onto the visit the machine just created.
  *
  * The machine emits `{c:'render'}` without knowing what the render produced; only this side can
@@ -1379,6 +1417,7 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     return;
   }
   if (ctx.wantsHtml) {
+    const pageTemplate = await templateFor(ctx, out.session, out.page.page_id);
     html(res, 200, renderHtmlPage({
       page: out.page,
       sessionId: out.session.session_id,
@@ -1388,6 +1427,7 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
       clientScriptUrl: '/client.js',
       themeCssUrl: `/theme/${out.session.artifact_hash}.css`,
       authorCssUrl: `/author/${out.session.artifact_hash}.css`,
+      ...(pageTemplate === null ? {} : { pageTemplate }),
     }));
     return;
   }
@@ -1477,6 +1517,7 @@ async function handlePageRender(
         .flatMap(v => v.wrote)
         .map(v => [v, (stamped.vars as Record<string, unknown>)[v]]),
     );
+    const pageTemplate = await templateFor(ctx, stamped, rendered.page_id);
     html(res, 200, renderHtmlPage({
       page: rendered,
       sessionId: stamped.session_id,
@@ -1487,6 +1528,7 @@ async function handlePageRender(
       clientScriptUrl: '/client.js',
       themeCssUrl: `/theme/${stamped.artifact_hash}.css`,
       authorCssUrl: `/author/${stamped.artifact_hash}.css`,
+      ...(pageTemplate === null ? {} : { pageTemplate }),
     }));
     return;
   }
@@ -2116,6 +2158,10 @@ async function handlePreviewEntry(res: ServerResponse, ctx: Ctx, hash: string): 
   }
   if (ctx.wantsHtml) {
     const studioOrigin = ctx.deps.studioOrigin ?? "'none'";
+    // The preview surface gets the author's shell too. A preview that rendered the default shell
+    // would show the programmer a page their respondents will not see, which is the one thing a
+    // preview must not do.
+    const pageTemplate = await templateFor(ctx, out.session, out.page.page_id);
     htmlFramed(res, 200, renderHtmlPage({
       page: out.page,
       sessionId: out.session.session_id,
@@ -2125,6 +2171,7 @@ async function handlePreviewEntry(res: ServerResponse, ctx: Ctx, hash: string): 
       clientScriptUrl: '/client.js',
       themeCssUrl: `/theme/${out.session.artifact_hash}.css`,
       authorCssUrl: `/author/${out.session.artifact_hash}.css`,
+      ...(pageTemplate === null ? {} : { pageTemplate }),
       ...(ctx.deps.studioOrigin
         ? { preview: { studioOrigin: ctx.deps.studioOrigin, artifactHash: hash } }
         : {}),

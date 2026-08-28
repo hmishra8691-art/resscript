@@ -145,6 +145,7 @@ import { buildRules, synthesizedMaskRuleId } from './rules.js';
 import { analyzeAssets } from './analyses/assets.js';
 import { analyzeCss } from './analyses/css.js';
 import { analyzeLoops } from './analyses/loops.js';
+import { analyzeTemplates } from './analyses/templates.js';
 import { compileTheme } from './emit/theme.js';
 import { analyzeEntitlements } from './analyses/entitlements.js';
 import { analyzeForwardReferences, buildVariableSites } from './analyses/forward-ref.js';
@@ -271,6 +272,10 @@ export function compileSurvey(input: CompileInput): CompileResult {
     // nothing, while derive.ts reasoned FROM its existence to justify keeping only the innermost
     // loop — so a nested loop compiled clean and silently emitted a fraction of its columns.
     ...analyzeLoops({ survey }),
+    // CMP-0504. Structure only — that a page shell has a slot for the form. CMP-0500 owns whether
+    // the markup is SAFE and this pass deliberately does not re-scan it: two scanners disagreeing
+    // about one string is how a bypass gets a second opinion.
+    ...analyzeTemplates({ survey }),
     ...analyzeEntitlements({ survey, entitlements: input.entitlements, plugins: resolution }),
   );
 
@@ -295,6 +300,13 @@ export function compileSurvey(input: CompileInput): CompileResult {
     .sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0))
     .map((sheet) => `/* ${sheet.ref} */\n${sheet.source}`)
     .join('\n\n');
+
+  // Author HTML templates, keyed by asset id — see BundleParts.htmlTemplates on why id and not ref.
+  // Emitted at all is P2-12's last chain: these were declared, resolved and sanitized, and no
+  // emitter put them in the artifact, so a page template silently did nothing.
+  const htmlTemplates = Object.fromEntries(
+    (survey.assets?.html_templates ?? []).map((t) => [String(t.id), t.source]),
+  );
 
   const artifactGraph = buildArtifactGraph(graph, survey);
   const pages = buildPages({ survey, graph, logic, plugins: resolution });
@@ -332,6 +344,7 @@ export function compileSurvey(input: CompileInput): CompileResult {
     // this commit's predecessor — and emitted by nothing, so an author's stylesheet was stored,
     // checked, and then silently dropped.
     ...(authorCss === '' ? {} : { authorCss }),
+    ...(Object.keys(htmlTemplates).length === 0 ? {} : { htmlTemplates }),
   });
 
   return {

@@ -126,6 +126,15 @@ export interface BundleParts {
    * Only emitted for a survey that HAS author CSS, so nothing changes in an artifact without it.
    */
   readonly authorCss?: string | null;
+  /**
+   * Author HTML templates, keyed by ASSET ID.
+   *
+   * By id and not by ref, unlike `scripts`. `PageSettings.html_template_ref` holds an `AssetId`, so
+   * keying by id makes the page's own field the lookup key and needs no id→ref table. `scripts` is
+   * keyed by ref and its content references are ids, which is a mapping nothing currently performs
+   * — not fixed here, but not copied either.
+   */
+  readonly htmlTemplates?: { readonly [assetId: string]: string };
   readonly scripts?: { readonly [ref: string]: string };
 }
 
@@ -269,6 +278,14 @@ export function buildBundle(parts: BundleParts): ArtifactBundle {
   // Author CSS, second in the cascade. `CMP-0503` has already refused anything that can execute,
   // fetch or exfiltrate, and refused selectors on the reserved `rs-` prefix — so this cannot
   // restyle the accessibility contract even though it loads after the theme that defines it.
+  const templates = parts.htmlTemplates;
+  if (templates !== undefined) {
+    // Sorted, because the file list is hashed and an object's key order is insertion order.
+    for (const assetId of Object.keys(templates).sort()) {
+      files.push(textFile(`templates/${assetId}.html`, templates[assetId] ?? ''));
+    }
+  }
+
   const authorCss = parts.authorCss;
   if (authorCss !== undefined && authorCss !== null && authorCss !== '') {
     files.push(textFile('author.css', authorCss));
