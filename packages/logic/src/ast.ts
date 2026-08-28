@@ -382,8 +382,25 @@ export function mapChildren(e: Expr, f: (child: Expr) => Expr): Expr {
         cases: e.cases.map((arm) => ({ when: f(arm.when), then: f(arm.then) })),
         else: f(e.else),
       };
-    default:
-      return { ...e, args: e.args.map(f) } as Expr;
+    default: {
+      // Every remaining variant of `Expr` carries `args`, so this is an invariant assertion and
+      // not input validation: reaching it means an untyped object got past `checkExpr`, which is
+      // supposed to normalise exactly that (see its `argsOf` and its LGC-T002 branch).
+      //
+      // It exists because the bare `e.args.map(f)` that used to be here failed as "TypeError:
+      // Cannot read properties of undefined (reading 'map')" ten frames deep in a worker job,
+      // which says nothing about which node was wrong or where it came from. Naming the op and
+      // dumping the node turned that into a one-line diagnosis. The cost is one Array.isArray
+      // per interior node per pass; the alternative cost was an afternoon.
+      const args = (e as { readonly args?: unknown }).args;
+      if (!Array.isArray(args)) {
+        throw new TypeError(
+          `mapChildren: node with op ${JSON.stringify(String(e.op))} has no args array — ` +
+            `an unchecked expression reached a rewrite pass: ${JSON.stringify(e)}`,
+        );
+      }
+      return { ...e, args: (args as readonly Expr[]).map(f) } as Expr;
+    }
   }
 }
 

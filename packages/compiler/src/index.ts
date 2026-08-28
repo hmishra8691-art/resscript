@@ -52,6 +52,7 @@ export {
   CMP_DIAGNOSTIC_CODES,
   CMP_SEVERITY,
   acknowledgementKey,
+  acknowledgementKeyIsPortable,
   cmpDiagnostic,
   compileErrors,
   compileWarnings,

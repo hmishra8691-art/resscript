@@ -143,7 +143,30 @@ function withArgs(node: Expr, args: readonly Expr[], t: Type): Expr {
 function infer(e: Expr, cx: Cx): Ann {
   if (!isAstKind(e.op)) {
     report(cx, 'LGC-T002', e, `Unknown AST node kind ${JSON.stringify(String(e.op))}.`);
-    return { node: withType(e, T_NEVER), t: T_NEVER };
+    // Return a well-formed POISON LEAF, not the offending node.
+    //
+    // Every other branch of this function reconstructs its node through `withArgs`/`withType`,
+    // and `argsOf` above normalises a missing `args` to `[]` — so the checker's contract is
+    // that whatever comes out of it is safe for a later pass to walk, whether or not it
+    // typechecked. This branch was the one place that broke that contract: it handed the raw
+    // node straight back, and a node with an unrecognised `op` is by definition a node whose
+    // shape nothing downstream knows.
+    //
+    // What that cost: `content.variables.expression` holding `{"var":"AGE"}` (no `op`) made
+    // `compileLogic` report LGC-T002 correctly and then run `optimizeExpr` over the same
+    // malformed tree, where `mapChildren`'s `default` branch read `.args` off undefined. The
+    // author's real problem — a malformed expression — was already diagnosed and was then
+    // thrown away by a TypeError, which `apps/worker` classified as `internal_error` and
+    // RETRYABLE: three attempts, three identical crashes, and a job whose recorded error said
+    // "Cannot read properties of undefined (reading 'map')". Nobody could act on that.
+    //
+    // `lit null` is the right poison: it is a leaf (no children to walk), it is valid at every
+    // position an expression can appear, and `T_NEVER` keeps it from cascading a second round
+    // of type errors. The compile still fails — `compileFailed` reads `hasErrors`, and T002 is
+    // an error — so this only changes HOW it fails, from a crash to the diagnostic.
+    // `n` is carried over rather than reissued: the node id is how a later diagnostic or a
+    // source map refers back to this position, and the LGC-T002 just reported points at it.
+    return { node: { n: e.n, op: 'lit', v: { k: 'null' }, t: T_NEVER }, t: T_NEVER };
   }
   switch (e.op) {
     case 'lit': {

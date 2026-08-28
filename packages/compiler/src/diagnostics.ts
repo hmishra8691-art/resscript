@@ -236,16 +236,55 @@ export function compileWarnings(
  * an acknowledgement that survives an unrelated edit is an acknowledgement the author never
  * gave. Code plus path plus the sorted detail is stable under reformatting and unstable under
  * anything that changes what the warning is about, which is exactly the wanted behaviour.
+ *
+ * ## Why the separators are U+001F/U+001E and specifically NOT U+0000
+ *
+ * A control character is the right separator here, and for a reason worth keeping: every
+ * component is either an ASCII diagnostic code, a JSON pointer, or `JSON.stringify` output, and
+ * `JSON.stringify` escapes control characters as `\uXXXX`. So no component can contain one,
+ * which makes the split unambiguous — two different warnings can never collide on one key.
+ *
+ * This function used to use U+0000 and U+0001, and U+0000 is the ONE codepoint that choice may
+ * not use. Postgres rejects `\u0000` in `jsonb` outright ("unsupported Unicode escape sequence:
+ * \u0000 cannot be converted to text", SQLSTATE 22P05) because jsonb is stored as `text` and
+ * Postgres text cannot hold a NUL. Both directions of the acknowledgement round trip go through
+ * jsonb:
+ *
+ *  - the worker writes the `blocked` compile result, keys included, to `ops.jobs.result`; and
+ *  - the studio sends the keys back in `ops.jobs.payload`, which `app.publish_version` then
+ *    stores via `p_acknowledged_warnings jsonb`.
+ *
+ * So a survey with even one warning — `CMP-0102` on a question that emits no variables, say —
+ * could neither report its warnings nor ever have them acknowledged. It was worse than a failed
+ * write: `Consumer` did not guard the success path, so the 22P05 escaped `store.complete` and
+ * KILLED THE WORKER PROCESS, leaving the job `running` for the stalled sweeper to requeue into
+ * the identical crash. One ordinary survey took down the whole fleet, repeatedly.
+ *
+ * U+001F (unit separator) and U+001E (record separator) are what these characters are actually
+ * for, are escaped by `JSON.stringify` exactly as U+0000 was, and are storable — U+0000 is the
+ * only codepoint jsonb forbids. `acknowledgementKeyIsPortable` below is the guard.
  */
 export function acknowledgementKey(d: CompileDiagnostic): string {
   const detail = d.detail === undefined ? '' : stableDetail(d.detail);
-  return `${d.code} ${d.path} ${detail}`;
+  return `${d.code}${d.path}${detail}`;
 }
 
 function stableDetail(detail: { readonly [key: string]: JsonValue }): string {
   const keys = Object.keys(detail).sort();
   const parts = keys.map((k) => `${k}=${JSON.stringify(detail[k] ?? null)}`);
-  return parts.join('');
+  return parts.join('');
+}
+
+/**
+ * Can this key survive a round trip through Postgres `jsonb`?
+ *
+ * The one thing that must never again be true of an acknowledgement key. Exported so the
+ * property can be asserted directly rather than restated as a regex at each call site, and
+ * checked as a positive predicate rather than as "does not contain the character we happened to
+ * think of": any future separator change is covered by the same assertion.
+ */
+export function acknowledgementKeyIsPortable(key: string): boolean {
+  return !key.includes('\u0000');
 }
 
 /** Re-exported so callers do not need a second import for the schema half of the gate. */

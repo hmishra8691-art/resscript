@@ -51,7 +51,11 @@ import { applyVariableRegistry } from '@resscript/schema';
 import { asVariableId, astBuilder, type Expr } from '@resscript/logic';
 
 import { deterministicIds } from '../../schema/src/__fixtures__/mini.js';
-import { acknowledgementKey, type CompileDiagnostic } from './diagnostics.js';
+import {
+  acknowledgementKey,
+  acknowledgementKeyIsPortable,
+  type CompileDiagnostic,
+} from './diagnostics.js';
 import { buildSurvey, type FixtureSpec } from './emit/__fixtures__/artifact.js';
 import { largeSurvey } from './__fixtures__/large-survey.js';
 import { compileSurvey } from './pipeline.js';
@@ -851,7 +855,28 @@ describe('a warning blocks publish until the author accepts it, and not after', 
     const warning = first.unacknowledged[0];
     if (warning === undefined) throw new Error('expected a warning');
 
-    const second = compile(survey, { acknowledgedWarnings: [acknowledgementKey(warning)] });
+    const key = acknowledgementKey(warning);
+
+    /*
+     * The key has to survive the transport it is actually carried on, and this test used to
+     * prove only that it survives being handed back to a function in the same process.
+     *
+     * Both legs of the real round trip are Postgres `jsonb`: the worker writes the key into
+     * `ops.jobs.result` when a compile is blocked, and the studio sends it back in
+     * `ops.jobs.payload` for `app.publish_version`'s `p_acknowledged_warnings`. jsonb is stored
+     * as `text`, and Postgres text cannot hold a NUL, so ` ` is rejected with 22P05 —
+     * meaning the in-memory round trip below passed while the deployed path could not report a
+     * warning OR accept an acknowledgement, and killed the worker process trying.
+     *
+     * `JSON.parse(JSON.stringify(...))` is the cheap half of the proof (the key must survive
+     * JSON at all); `acknowledgementKeyIsPortable` is the half that names the actual constraint.
+     * Neither needs a database, which is the point — the property is checkable here, where the
+     * key is minted.
+     */
+    expect(acknowledgementKeyIsPortable(key)).toBe(true);
+    expect(JSON.parse(JSON.stringify({ k: key })) as { k: string }).toEqual({ k: key });
+
+    const second = compile(survey, { acknowledgedWarnings: [key] });
     expect(second.ok).toBe(true);
     if (!second.ok) throw new Error('expected a bundle');
     expect(second.unacknowledged).toEqual([]);
