@@ -411,8 +411,14 @@ SELECT is(
                         pg_temp.tid('ver_a_clone_target')::app.ulid),
   -- "redirects": 2 arrived with 0010, which created content.redirects and had to extend this
   -- function for it — the omission this map exists to catch, caught one migration later.
-  '{"nodes": 4, "redirects": 2, "languages": 2, "variables": 4, "logic_rules": 5, '
-  '"i18n_strings": 2, "question_cells": 1, "question_items": 61}'::jsonb,
+  -- The six quota/asset/theme keys arrived with 0023, which found they had been missing since
+  -- 0016 — a forgotten table produces a missing key, and a missing key is what this equality is
+  -- for. It did not fire for three migrations because the failure was omission rather than
+  -- mis-clone; 0023's ops.content_tables_not_cloned() covers that half from the catalog.
+  '{"nodes": 4, "redirects": 2, "languages": 2, "variables": 4, "code_assets": 0, '
+  '"logic_rules": 5, "quota_cells": 0, "quota_plans": 0, "i18n_strings": 2, '
+  '"quota_buckets": 0, "version_theme": 0, "question_cells": 1, "question_items": 61, '
+  '"quota_dimensions": 0}'::jsonb,
   'content.clone_version() reports logic_rules alongside every other content table: five '
   'rules in, five rules out. The count map is the mechanical protection against a future '
   'content table being left out of the enumerated list');

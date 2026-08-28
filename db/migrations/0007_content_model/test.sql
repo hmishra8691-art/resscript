@@ -966,8 +966,15 @@ SELECT pg_temp.act_as(pg_temp.tid('user_a')::uuid, pg_temp.tid('org_a'));
 SELECT is(
   content.clone_version(pg_temp.tid('ver_b_content_frozen')::app.ulid,
                         pg_temp.tid('ver_a_clone_target')::app.ulid),
-  '{"nodes": 0, "redirects": 0, "languages": 0, "variables": 0, "logic_rules": 0, '
-  '"i18n_strings": 0, "question_cells": 0, "question_items": 0}'::jsonb,
+  -- Every version-scoped content table, all zero. The six quota/asset/theme keys arrived with
+  -- 0023, which found that 0016, 0019 and 0021 had each added a content table without a
+  -- clone_version branch — so the publish-then-clone workflow ADR-002 requires was silently
+  -- discarding quotas, code assets and the theme pin. This map is what caught it, exactly as the
+  -- comment on the next assertion has claimed since 0010.
+  '{"nodes": 0, "redirects": 0, "languages": 0, "variables": 0, "code_assets": 0, '
+  '"logic_rules": 0, "quota_cells": 0, "quota_plans": 0, "i18n_strings": 0, '
+  '"quota_buckets": 0, "version_theme": 0, "question_cells": 0, "question_items": 0, '
+  '"quota_dimensions": 0}'::jsonb,
   'cloning ANOTHER TENANT''S version copies exactly zero rows from every content table');
 SELECT is_empty($$
   SELECT 1 FROM content.nodes
@@ -986,8 +993,16 @@ SELECT is(
   -- "redirects": 2 was added when 0010 created content.redirects and extended both
   -- clone_version and ops.test_seed_content — which is this map doing exactly the job the
   -- comment above claims for it, one migration later.
-  '{"nodes": 4, "redirects": 2, "languages": 2, "variables": 4, "logic_rules": 0, '
-  '"i18n_strings": 2, "question_cells": 1, "question_items": 61}'::jsonb,
+  --
+  -- The six zero-valued quota/asset/theme keys arrived with 0023. Their ABSENCE was the bug: a
+  -- missing key is what a forgotten table looks like, and this assertion is the only place it was
+  -- ever going to be visible. It stayed invisible for three migrations because nobody added a
+  -- branch — the map catches a MIS-cloned table immediately and a FORGOTTEN one never, which is
+  -- why 0023 also adds ops.content_tables_not_cloned() to close that half.
+  '{"nodes": 4, "redirects": 2, "languages": 2, "variables": 4, "code_assets": 0, '
+  '"logic_rules": 0, "quota_cells": 0, "quota_plans": 0, "i18n_strings": 2, '
+  '"quota_buckets": 0, "version_theme": 0, "question_cells": 1, "question_items": 61, '
+  '"quota_dimensions": 0}'::jsonb,
   'cloning a FROZEN version into a fresh draft copies every content table in one '
   'INSERT ... SELECT each, as `authoring`: the source is read through a policy that permits '
   'reading a frozen version and the target through the draft-only write policies');
