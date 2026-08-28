@@ -13,3 +13,10 @@ coverage/
 
 # Redis persistence artifact from local dev servers
 dump.rdb
+
+# Delivery artefacts. `git format-patch` output for handing work to a human — not source,
+# and each one contains the full text of every commit before it, so committing them puts
+# recursive copies of the history into the history. Ignored after a `git add -A` swept five
+# of them into P2-06..P2-12 and the repo grew megabytes of its own patches.
+*.mbox
+*.patch
