@@ -577,6 +577,22 @@ export async function interpret(
             disposition: evaluated.termination.disposition,
           });
         }
+        // A mask whose `when_empty` is `terminate`, surfaced the same way and for the same reason:
+        // finalizing releases a reservation and appends an event, which the machine and P1-10's
+        // write path own, so this records the fact rather than acting on it.
+        //
+        // Recorded at ALL is the P2-02 fix. `renderPage` has always set `rendered.terminate` and
+        // its comment said "the caller owns the disposition" — and no caller read it, so an author
+        // who wrote `when_empty: 'terminate'` got a skipped question, silently, with nothing in the
+        // event log to say why. Two halves were missing and each hid the other: the fallback never
+        // reached the renderer (evaluate-page.ts) and the renderer's answer was never read (here).
+        if (rendered.terminate) {
+          events.push({
+            kind: 'mask.terminate',
+            question_id: rendered.terminate.question_id,
+            detail: rendered.terminate.axis ?? '',
+          });
+        }
         break;
       }
 

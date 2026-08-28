@@ -144,6 +144,7 @@ import { buildTypeEnvFor } from './registry.js';
 import { buildRules, synthesizedMaskRuleId } from './rules.js';
 import { analyzeAssets } from './analyses/assets.js';
 import { analyzeCss } from './analyses/css.js';
+import { analyzeLoops } from './analyses/loops.js';
 import { compileTheme } from './emit/theme.js';
 import { analyzeEntitlements } from './analyses/entitlements.js';
 import { analyzeForwardReferences, buildVariableSites } from './analyses/forward-ref.js';
@@ -266,6 +267,10 @@ export function compileSurvey(input: CompileInput): CompileResult {
     // module's header says so explicitly and declined to guess at them. Until P2-12 nothing checked
     // author CSS at all, which made a stylesheet the one author-supplied surface with no gate.
     ...analyzeCss({ survey }),
+    // CMP-0100 and the loop-spec checks. CMP-0100 has been DECLARED since P1-08 and emitted by
+    // nothing, while derive.ts reasoned FROM its existence to justify keeping only the innermost
+    // loop — so a nested loop compiled clean and silently emitted a fraction of its columns.
+    ...analyzeLoops({ survey }),
     ...analyzeEntitlements({ survey, entitlements: input.entitlements, plugins: resolution }),
   );
 

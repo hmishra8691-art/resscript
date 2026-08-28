@@ -67,7 +67,28 @@ export interface PageVerdict {
   readonly termination:
     | { readonly rule_id: string; readonly disposition: string; readonly custom_key?: string }
     | undefined;
+  /**
+   * Which axes a mask emptied, and what the author said to do about it.
+   *
+   * Typed loosely here for the reason the header gives about not importing `packages/logic` — the
+   * shape this module needs is `{ question_id, axis, when_empty }` and `maskFallbackOf` below is
+   * where that narrowing happens once.
+   */
   readonly maskFallbacks: readonly unknown[];
+}
+
+/**
+ * The part of `packages/logic`'s `MaskFallback` this module needs, restated rather than imported.
+ *
+ * The header explains why this module does not import `packages/logic`. Restating three fields is
+ * the cost of that, and it is a structural mirror: if the engine renamed `when_empty` this would
+ * fail to compile at the cast below rather than silently reading `undefined`.
+ */
+interface MaskFallback {
+  readonly question_id: string;
+  readonly axis: string;
+  readonly when_empty: 'skip_question' | 'show_all' | 'terminate';
+  readonly restored: boolean;
 }
 
 /**
@@ -141,7 +162,19 @@ export interface EvaluatedPage {
    */
   readonly renderHooks: Pick<
     RenderCtx,
-    'isQuestionVisible' | 'itemsFor' | 'optionState' | 'groupFor' | 'orders'
+    | 'isQuestionVisible'
+    | 'itemsFor'
+    | 'optionState'
+    | 'groupFor'
+    | 'orders'
+    // Added in P2-02. Its absence was a live defect rather than a missing feature: the renderer
+    // defaults a missing fallback to `skip_question` ("not showing a question is recoverable,
+    // showing an unanswerable one is a dead end"), which is the right default and the wrong answer
+    // for an author who wrote `when_empty: 'terminate'`. The engine had computed the fallback all
+    // along and recorded it on the verdict; nothing carried it the last few inches to the renderer,
+    // so `terminate` silently behaved as `skip_question`. render.test.ts did not catch it because
+    // it INJECTS the hook production never supplied.
+    | 'emptyFallbackFor'
   >;
   /** For the machine's `PureCtx`. Page-level rather than question-level visibility. */
   readonly isPageVisible: (pageId: string) => boolean;
@@ -260,12 +293,37 @@ export function evaluatePage(input: EvaluatePageInput): EvaluatedPage {
       }
     : undefined;
 
+  /**
+   * `(question_id, axis) -> when_empty`, from the verdict's mask fallbacks.
+   *
+   * Indexed once rather than scanned per call: a page with a dozen masked matrices would otherwise
+   * be quadratic in the number of masks for no reason.
+   *
+   * `restored` entries are DELIBERATELY INCLUDED and resolve to `show_all`. The engine has already
+   * restored the base list in that case, so the renderer's own list is non-empty and it never
+   * consults this hook — but returning the authored value rather than `undefined` keeps the two
+   * layers stating the same fact, so a future renderer change cannot turn a restored `show_all`
+   * into the `skip_question` default.
+   */
+  const fallbackIndex = new Map<string, MaskFallback['when_empty']>();
+  // Guarded rather than trusted: `evaluate` is INJECTED (see the header on why this module does not
+  // import packages/logic), so the verdict is whatever the caller's engine returns. A test double or
+  // an older engine without this field must not crash the render — and it was a test double that
+  // found this, which is the argument for the guard rather than against it.
+  for (const raw of verdict.maskFallbacks ?? []) {
+    const f = raw as MaskFallback;
+    fallbackIndex.set(`${String(f.question_id)}.${String(f.axis)}`, f.when_empty);
+  }
+  const emptyFallbackFor = (question_id: string, axis: string): MaskFallback['when_empty'] | undefined =>
+    fallbackIndex.get(`${question_id}.${axis}`);
+
   return {
     renderHooks: {
       isQuestionVisible: (question_id: string) => verdict.visible(question_id),
       itemsFor,
       optionState,
       orders,
+      emptyFallbackFor,
       ...(input.groupFor ? { groupFor: input.groupFor } : {}),
     },
     isPageVisible: (pageId: string) => verdict.visible(pageId),

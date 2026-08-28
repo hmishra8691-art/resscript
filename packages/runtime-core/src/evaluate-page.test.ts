@@ -473,3 +473,127 @@ describe('composition', () => {
     expect(JSON.stringify(p)).toBe(before);
   });
 });
+
+
+/* ---------------------------------------------------------------- *
+ * The mask fallback reaches the renderer (P2-02)
+ * ---------------------------------------------------------------- */
+
+describe('emptyFallbackFor carries the authored mask fallback', () => {
+  // THE DEFECT THIS CLOSES. `render.ts` defaults a missing fallback to `skip_question` — the right
+  // default, since "not showing a question is recoverable, showing an unanswerable one is a dead
+  // end". But `emptyFallbackFor` was never supplied by anything in production, so an author who
+  // wrote `when_empty: 'terminate'` got a skipped question instead, silently.
+  //
+  // The engine had computed the fallback all along and put it on the verdict; the last few inches
+  // were missing. `render.test.ts` did not catch it because it INJECTS the hook — which is why the
+  // assertion here is specifically that `evaluatePage` PRODUCES it.
+
+  const withFallback = (when_empty: string) =>
+    verdict({
+      maskFallbacks: [
+        { question_id: 'qst_1', axis: 'options', rule_id: 'rul_1', when_empty, restored: false },
+      ],
+    } as never);
+
+  it('is present in renderHooks at all', () => {
+    // The narrowest statement of the bug: the hook simply was not there.
+    const { result } = run();
+    expect(result.renderHooks.emptyFallbackFor).toBeTypeOf('function');
+  });
+
+  it('returns the authored value for the masked axis', () => {
+    const { result } = run({ v: withFallback('terminate') });
+    expect(result.renderHooks.emptyFallbackFor?.('qst_1', 'options')).toBe('terminate');
+  });
+
+  it('returns undefined for an axis no mask emptied, so the safe default applies', () => {
+    const { result } = run({ v: withFallback('terminate') });
+    expect(result.renderHooks.emptyFallbackFor?.('qst_1', 'rows')).toBeUndefined();
+    expect(result.renderHooks.emptyFallbackFor?.('qst_2', 'options')).toBeUndefined();
+  });
+
+  it('carries all three authored values, not just terminate', () => {
+    for (const w of ['skip_question', 'show_all', 'terminate']) {
+      const { result } = run({ v: withFallback(w) });
+      expect(result.renderHooks.emptyFallbackFor?.('qst_1', 'options')).toBe(w);
+    }
+  });
+
+  it('keeps a RESTORED show_all rather than reporting undefined', () => {
+    // The engine already restored the base list, so the renderer never consults the hook in this
+    // case. Reporting the authored value anyway keeps both layers stating the same fact, so a
+    // future renderer change cannot turn a restored show_all into the skip_question default.
+    const { result } = run({
+      v: verdict({
+        maskFallbacks: [
+          {
+            question_id: 'qst_1',
+            axis: 'options',
+            rule_id: 'rul_1',
+            when_empty: 'show_all',
+            restored: true,
+          },
+        ],
+      } as never),
+    });
+    expect(result.renderHooks.emptyFallbackFor?.('qst_1', 'options')).toBe('show_all');
+  });
+
+  it('survives a verdict with no maskFallbacks field at all', () => {
+    // `evaluate` is injected, so the verdict is whatever the caller's engine returns. A test double
+    // or an older engine must not crash the render — and it was a test double that found this.
+    const { result } = run({ v: { ...verdict(), maskFallbacks: undefined } as never });
+    expect(result.renderHooks.emptyFallbackFor?.('qst_1', 'options')).toBeUndefined();
+  });
+
+  it('and the renderer then actually terminates, end to end', () => {
+    // The whole chain in one assertion: an empty mask + an authored `terminate` produces
+    // `rendered.terminate`, which apps/runtime now records as a `mask.terminate` event.
+    const { result } = run({
+      withItemsCell: true,
+      v: verdict({
+        items: (() => []) as never,
+        maskFallbacks: [
+          {
+            question_id: 'qst_1',
+            axis: 'options',
+            rule_id: 'rul_1',
+            when_empty: 'terminate',
+            restored: false,
+          },
+        ],
+      } as never),
+    });
+    const rendered = renderPage(page(), SEED, { vars: {}, ...result.renderHooks });
+
+    expect(rendered.terminate).toEqual({ question_id: 'qst_1', axis: 'options' });
+    // The question is ALSO recorded as `masked_empty`, and that is right rather than a leftover of
+    // the old behaviour: it genuinely was not shown, and `masked_empty` is the accurate reason for
+    // an analyst reading the visit. `terminate` is a separate statement about the SESSION. I
+    // expected an empty `skipped` here and was wrong — the two fields answer different questions.
+    expect(rendered.skipped).toEqual([{ question_id: 'qst_1', reason: 'masked_empty' }]);
+  });
+
+  it('still skips when the author asked for skip_question', () => {
+    const { result } = run({
+      withItemsCell: true,
+      v: verdict({
+        items: (() => []) as never,
+        maskFallbacks: [
+          {
+            question_id: 'qst_1',
+            axis: 'options',
+            rule_id: 'rul_1',
+            when_empty: 'skip_question',
+            restored: false,
+          },
+        ],
+      } as never),
+    });
+    const rendered = renderPage(page(), SEED, { vars: {}, ...result.renderHooks });
+
+    expect(rendered.terminate).toBeUndefined();
+    expect(rendered.skipped).toEqual([{ question_id: 'qst_1', reason: 'masked_empty' }]);
+  });
+});

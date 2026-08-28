@@ -46,6 +46,10 @@ export const CMP_DIAGNOSTIC_CODES = {
   'CMP-0006': 'a skip rule targets content no flow node lays out, so the skip has nothing to write',
 
   'CMP-0100': 'nested loops are not supported at this schema version',
+  'CMP-0104': 'a loop is configured to iterate zero times',
+  'CMP-0105': 'a loop allows an unusually large number of iterations',
+  'CMP-0106': 'a loop variable-naming template omits {iteration}',
+  'CMP-0107': 'a loop lists duplicate item refs or codes',
   'CMP-0101': 'a loop reads a variable that cannot enumerate iterations',
   'CMP-0102': 'a question emits no variables and is not a content-only type',
   'CMP-0103': 'a derived variable has neither an expression nor a synthesizable structure',
@@ -96,6 +100,14 @@ export const CMP_SEVERITY: { readonly [K in CmpCode]: CompileSeverity } = {
   'CMP-0006': 'error',
 
   'CMP-0100': 'error',
+  // Zero iterations and duplicate items are ERRORS: neither survey has behaviour anybody can
+  // state. A large iteration count and a naming template without {iteration} are WARNINGS: both
+  // have perfectly definite behaviour that is probably not what was meant, which is the line this
+  // codebase draws everywhere else.
+  'CMP-0104': 'error',
+  'CMP-0105': 'warning',
+  'CMP-0106': 'warning',
+  'CMP-0107': 'error',
   'CMP-0101': 'error',
   'CMP-0102': 'warning',
   'CMP-0103': 'error',
