@@ -19,6 +19,8 @@
 import { afterAll, describe, expect, it } from 'vitest';
 
 import {
+  ALLOC_KEY_PREFIX,
+  createAllocator,
   createRotationCounter,
   drainRotationCountersOnce,
   readRotationCounter,
@@ -323,3 +325,124 @@ describe.skipIf(!HAVE_REDIS || DB_URL === undefined)(
     }, 30_000);
   },
 );
+
+
+/* ---------------------------------------------------------------- *
+ * Least-filled allocation (E §8.5)
+ * ---------------------------------------------------------------- */
+
+describe.skipIf(!HAVE_REDIS)('createAllocator', () => {
+  /**
+   * E §8.5: "least-filled cell wins. That is not randomization; it is allocation, and it requires
+   * shared state." The properties that make it allocation rather than a shuffle:
+   *
+   *  * it converges — repeated assignment keeps arms within one of each other;
+   *  * it is ATOMIC, so two concurrent respondents cannot both take the same minimum;
+   *  * ties go to the lowest index, because at the start of fieldwork every arm is at zero and ties
+   *    are the common case rather than an edge one.
+   */
+  const alloc = createAllocator(REDIS_URL);
+  afterAll(async () => {
+    await alloc.close();
+  });
+
+  it('picks the lowest index when everything is empty', async () => {
+    // Ties are the COMMON case at the start of a wave, not an edge one — so a deterministic
+    // tie-break makes the first respondents fill arms in authored order, and every decision after
+    // that genuinely least-filled.
+    const node = `fn_${VER}_ties`;
+    const r = await alloc.assignLeastFilled(node, ['blk_a', 'blk_b', 'blk_c'], 1);
+    expect(r).toEqual(['blk_a']);
+  });
+
+  it('moves to the next arm as the first fills', async () => {
+    const node = `fn_${VER}_walk`;
+    const seen: string[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const r = await alloc.assignLeastFilled(node, ['blk_a', 'blk_b', 'blk_c'], 1);
+      seen.push((r ?? [])[0] ?? '');
+    }
+    // Round-robins, because after each increment the next arm is the least filled.
+    expect(seen).toEqual(['blk_a', 'blk_b', 'blk_c', 'blk_a', 'blk_b', 'blk_c']);
+  });
+
+  it('returns the n least-filled, LEAST FIRST, for a subset randomizer', async () => {
+    const node = `fn_${VER}_subset`;
+    // Push blk_a ahead so the ordering is observable rather than a tie.
+    await alloc.assignLeastFilled(node, ['blk_a'], 1);
+    await alloc.assignLeastFilled(node, ['blk_a'], 1);
+    const r = await alloc.assignLeastFilled(node, ['blk_a', 'blk_b', 'blk_c'], 2);
+    expect(r).toEqual(['blk_b', 'blk_c']);
+  });
+
+  it('stays within ONE of even over 300 assignments', async () => {
+    // The whole point of the feature. A seeded shuffle would be even only in expectation.
+    const node = `fn_${VER}_even`;
+    const arms = ['blk_a', 'blk_b', 'blk_c', 'blk_d'];
+    const counts = new Map(arms.map(a => [a, 0]));
+    for (let i = 0; i < 300; i += 1) {
+      const r = await alloc.assignLeastFilled(node, arms, 1);
+      const chosen = (r ?? [])[0] ?? '';
+      counts.set(chosen, (counts.get(chosen) ?? 0) + 1);
+    }
+    const values = [...counts.values()];
+    expect(Math.max(...values) - Math.min(...values)).toBeLessThanOrEqual(1);
+  });
+
+  it('is ATOMIC — 200 concurrent assignments still land within one of even', async () => {
+    // Read-then-increment from the client would let two respondents read the same minimum and both
+    // take it, and the more traffic the worse the imbalance. Redis's single-threaded execution is
+    // what makes one Lua round trip the fix.
+    const node = `fn_${VER}_race`;
+    const arms = ['blk_a', 'blk_b', 'blk_c', 'blk_d'];
+    const results = await Promise.all(
+      Array.from({ length: 200 }, () => alloc.assignLeastFilled(node, arms, 1)),
+    );
+    const counts = new Map(arms.map(a => [a, 0]));
+    for (const r of results) {
+      const chosen = (r ?? [])[0] ?? '';
+      counts.set(chosen, (counts.get(chosen) ?? 0) + 1);
+    }
+    const values = [...counts.values()];
+    expect(results.filter(r => r !== null)).toHaveLength(200);
+    expect(Math.max(...values) - Math.min(...values)).toBeLessThanOrEqual(1);
+  });
+
+  it('keeps arms separate per flow node', async () => {
+    const counts = await alloc.assignLeastFilled(`fn_${VER}_n1`, ['blk_a', 'blk_b'], 1);
+    expect(counts).toEqual(['blk_a']);
+    // A different node starts fresh — two randomizers must not share a fill state.
+    expect(await alloc.assignLeastFilled(`fn_${VER}_n2`, ['blk_a', 'blk_b'], 1)).toEqual(['blk_a']);
+  });
+
+  it('uses the documented key prefix', async () => {
+    const { Redis } = await import('ioredis');
+    const raw = new Redis(REDIS_URL, { maxRetriesPerRequest: 1 });
+    try {
+      const node = `fn_${VER}_prefix`;
+      await alloc.assignLeastFilled(node, ['blk_a'], 1);
+      expect(await raw.hget(`${ALLOC_KEY_PREFIX}:${node}:blk_a`, 'assigned')).toBe('1');
+    } finally {
+      await raw.quit().catch(() => undefined);
+    }
+  });
+
+  it('returns an empty list for no targets, rather than null', async () => {
+    // Null means "unreachable" and drives the degraded fallback; an empty target list is a
+    // configuration with nothing to allocate and must not read as an outage.
+    expect(await alloc.assignLeastFilled(`fn_${VER}_none`, [], 1)).toEqual([]);
+  });
+});
+
+describe('allocation when Redis is unreachable', () => {
+  it('returns NULL, which drives E §8.5 seeded fallback', async () => {
+    // "Falls back to the seeded PRNG, logs a randomizer.degraded event, and accepts uneven
+    // distribution. This is the right fallback: approximate balance beats stalling fieldwork."
+    const dead = createAllocator('redis://127.0.0.1:1');
+    try {
+      expect(await dead.assignLeastFilled('fn_x', ['blk_a', 'blk_b'], 1)).toBeNull();
+    } finally {
+      await dead.close();
+    }
+  }, 15_000);
+});

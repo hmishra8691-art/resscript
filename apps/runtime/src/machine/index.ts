@@ -47,13 +47,19 @@ export function makeCtx(opts: {
   random: (salt: string) => number;
   evalCondition: (condition: unknown) => boolean | null;
   isPageVisible?: (page_id: string) => boolean;
+  /** E §8.5's least-filled allocation, already resolved. See `PureCtx.randomizerAssignment`. */
+  randomizerAssignment?: (flow_node_id: string) => readonly string[] | undefined;
 }): PureCtx {
-  return opts.isPageVisible
-    ? {
-        now_ms: opts.now_ms,
-        random: opts.random,
-        evalCondition: opts.evalCondition,
-        isPageVisible: opts.isPageVisible,
-      }
-    : { now_ms: opts.now_ms, random: opts.random, evalCondition: opts.evalCondition };
+  // Built by spreading the optional members conditionally rather than by an if/else per
+  // combination: this used to be a two-arm ternary on `isPageVisible` alone, and adding a second
+  // optional field would have made it four arms and a third would make it eight.
+  // `exactOptionalPropertyTypes` is why an unconditional `isPageVisible: opts.isPageVisible` will
+  // not do — `undefined` is not assignable to an optional function.
+  return {
+    now_ms: opts.now_ms,
+    random: opts.random,
+    evalCondition: opts.evalCondition,
+    ...(opts.isPageVisible ? { isPageVisible: opts.isPageVisible } : {}),
+    ...(opts.randomizerAssignment ? { randomizerAssignment: opts.randomizerAssignment } : {}),
+  };
 }

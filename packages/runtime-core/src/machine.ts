@@ -199,6 +199,22 @@ export interface PureCtx {
   evalCondition: (condition: unknown) => boolean | null;
   /** Page-level visibility after rule evaluation. Defaults to visible when absent. */
   isPageVisible?: (page_id: string) => boolean;
+  /**
+   * The least-filled arms a `randomizer` with `even_distribution` was allocated, in order
+   * (E §8.5, roadmap P2-03).
+   *
+   * A LOOKUP over an already-resolved map, like `random` — never a fetch. Allocation needs to know
+   * how full every arm currently is, which is shared state no pure reducer can read, so
+   * `apps/runtime` resolves it before `step` and persists it on the session. Persisting is not
+   * optional: E §8.5 calls the assignment "the only place the runtime stores a random decision
+   * rather than deriving it", because it depends on global fill state at the moment of assignment
+   * and "without that, the session is not replayable and the data is not analyzable".
+   *
+   * Absent, or returning undefined, means no allocation was available — the seeded permutation is
+   * used and `randomizerPages` reports it, which is E §8.5's prescribed fallback: "approximate
+   * balance beats stalling fieldwork".
+   */
+  randomizerAssignment?: (flow_node_id: string) => readonly string[] | undefined;
 }
 
 /* ------------------------------------------------------------------ *
@@ -285,6 +301,26 @@ export function randomizerPages(
 
   if (node.mode === 'fixed_order' || groups.length < 2) {
     return owned;
+  }
+
+  // ---- even_distribution: least-filled allocation (E §8.5) -----------------
+  //
+  // Not randomization — allocation. The arms come back least-filled first, so honouring the order
+  // AND the subset limit is the same operation as for the seeded path below.
+  if (node.even_distribution === true) {
+    const assigned = ctx.randomizerAssignment?.(node.id);
+    if (assigned !== undefined && assigned.length > 0) {
+      // Only the arms actually allocated, in the order allocated. An arm the allocator did not
+      // choose contributes no pages, which is what makes `subset` + `even_distribution` mean "the n
+      // least-filled" rather than "n at random from the least-filled".
+      const chosen = assigned.filter(group => pagesByGroup.has(group));
+      if (chosen.length > 0) return chosen.flatMap(group => pagesByGroup.get(group) ?? []);
+    }
+    // Falls through to the seeded permutation below. E §8.5 prescribes exactly this and calls it
+    // right: "approximate balance beats stalling fieldwork, and the reconciliation job can report
+    // the actual achieved distribution so a researcher knows what they got." The caller is what
+    // emits `randomizer.degraded` — the machine has no event channel and inventing one for this
+    // would be a second way for a pure reducer to talk to the world.
   }
 
   // One draw per group, then sort by it: a Fisher-Yates would need a stream of draws, and

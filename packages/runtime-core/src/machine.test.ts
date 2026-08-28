@@ -1003,3 +1003,144 @@ describe('a randomizer renders the pages it owns', () => {
     expect(walkAll(art, ctx({ random: () => 0.5 }))).toHaveLength(2);
   });
 });
+
+
+/* ------------------------------------------------------------------ *
+ * even_distribution: least-filled allocation (E §8.5, P2-03)
+ * ------------------------------------------------------------------ */
+
+describe('a randomizer with even_distribution', () => {
+  /**
+   * E §8.5: "least-filled cell wins. That is not randomization; it is allocation, and it requires
+   * shared state." The machine cannot read that state — it is a pure reducer — so the allocation
+   * arrives already resolved and PERSISTED, which E §8.5 requires because the assignment "depends
+   * on global fill state at the moment of assignment ... without that, the session is not
+   * replayable and the data is not analyzable."
+   */
+  function evenSurvey(extra: Record<string, unknown> = {}) {
+    return artifact(
+      [
+        { id: 'fn_start', type: 'start', next: 'fn_rand' },
+        {
+          id: 'fn_rand',
+          type: 'randomizer',
+          targets: ['blk_a', 'blk_b', 'blk_c'],
+          mode: 'shuffle',
+          even_distribution: true,
+          next: 'fn_end',
+          ...extra,
+        } as never,
+        { id: 'fn_end', type: 'end', disposition: 'COMPLETE' },
+      ],
+      [
+        { id: 'pg_a1', entry: 'fn_rand', group: 'blk_a' },
+        { id: 'pg_b1', entry: 'fn_rand', group: 'blk_b' },
+        { id: 'pg_c1', entry: 'fn_rand', group: 'blk_c' },
+      ],
+    );
+  }
+
+  function walkAll(art: MachineArtifact, c: PureCtx): string[] {
+    let s = session();
+    const seen: string[] = [];
+    let out = step(s, { i: 'enter' }, art, c);
+    s = out.next;
+    for (const cmd of out.cmds) if (cmd.c === 'render') seen.push(cmd.page_id);
+    for (let guard = 0; guard < 20; guard += 1) {
+      if (s.current_page_id === null) break;
+      out = step(s, { i: 'submitted', page_id: s.current_page_id }, art, c);
+      s = out.next;
+      let rendered = false;
+      for (const cmd of out.cmds) {
+        if (cmd.c === 'render') {
+          seen.push(cmd.page_id);
+          rendered = true;
+        }
+      }
+      if (!rendered) break;
+    }
+    return seen;
+  }
+
+  it('follows the ALLOCATED order, not the seeded one', () => {
+    // The arms come back least-filled first, so honouring the order is the feature.
+    const c = ctx({
+      random: () => 0.5,
+      randomizerAssignment: () => ['blk_c', 'blk_a', 'blk_b'],
+    });
+    expect(walkAll(evenSurvey(), c)).toEqual(['pg_c1', 'pg_a1', 'pg_b1']);
+  });
+
+  it('renders ONLY the allocated arms for a subset randomizer', () => {
+    // What makes `subset` + `even_distribution` mean "the n least-filled" rather than "n at random
+    // from among them". An arm the allocator did not choose contributes no pages.
+    const c = ctx({ random: () => 0.5, randomizerAssignment: () => ['blk_b', 'blk_c'] });
+    expect(walkAll(evenSurvey({ mode: 'subset', n: 2 }), c)).toEqual(['pg_b1', 'pg_c1']);
+  });
+
+  it('falls back to the seeded permutation when no allocation is available', () => {
+    // E §8.5 prescribes exactly this: "falls back to the seeded PRNG, logs a randomizer.degraded
+    // event, and accepts uneven distribution. This is the right fallback: approximate balance beats
+    // stalling fieldwork." Rendering nothing would be strictly worse than rendering an unevenly
+    // ordered survey.
+    const c = ctx({ random: () => 0.5 }); // no randomizerAssignment at all
+    const seen = walkAll(evenSurvey(), c);
+    expect(seen).toHaveLength(3);
+    expect([...seen].sort()).toEqual(['pg_a1', 'pg_b1', 'pg_c1']);
+  });
+
+  it('falls back when the hook returns undefined for THIS node', () => {
+    // A session that entered while the allocator was down carries a map with no entry for the node.
+    const c = ctx({ random: () => 0.5, randomizerAssignment: () => undefined });
+    expect(walkAll(evenSurvey(), c)).toHaveLength(3);
+  });
+
+  it('ignores an allocated arm that lays out no pages', () => {
+    // A stale assignment persisted against an older artifact, or an arm whose pages are all
+    // invisible. Falls through to the seeded order rather than rendering an empty randomizer.
+    const c = ctx({ random: () => 0.5, randomizerAssignment: () => ['blk_gone'] });
+    expect(walkAll(evenSurvey(), c)).toHaveLength(3);
+  });
+
+  it('is UNAFFECTED by the seed when an allocation exists', () => {
+    // The allocation is the source of order here. If the seed still moved it, the "even" guarantee
+    // would be gone.
+    const assignment = () => ['blk_b', 'blk_a', 'blk_c'];
+    const a = walkAll(evenSurvey(), ctx({ random: () => 0.01, randomizerAssignment: assignment }));
+    const b = walkAll(evenSurvey(), ctx({ random: () => 0.99, randomizerAssignment: assignment }));
+    expect(a).toEqual(b);
+    expect(a).toEqual(['pg_b1', 'pg_a1', 'pg_c1']);
+  });
+
+  it('does not consult the allocation for a randomizer WITHOUT even_distribution', () => {
+    // A plain `shuffle` is seed-derived and must stay that way; consulting an allocation would make
+    // two different features one.
+    const called: string[] = [];
+    const c = ctx({
+      random: () => 0.5,
+      randomizerAssignment: (id: string) => {
+        called.push(id);
+        return ['blk_c'];
+      },
+    });
+    const plain = artifact(
+      [
+        { id: 'fn_start', type: 'start', next: 'fn_rand' },
+        {
+          id: 'fn_rand',
+          type: 'randomizer',
+          targets: ['blk_a', 'blk_b'],
+          mode: 'shuffle',
+          next: 'fn_end',
+        } as never,
+        { id: 'fn_end', type: 'end', disposition: 'COMPLETE' },
+      ],
+      [
+        { id: 'pg_a1', entry: 'fn_rand', group: 'blk_a' },
+        { id: 'pg_b1', entry: 'fn_rand', group: 'blk_b' },
+      ],
+    );
+    expect(walkAll(plain, c)).toHaveLength(2);
+    expect(called).toEqual([]);
+  });
+});

@@ -27,7 +27,7 @@ import { createPgWriter, createRedisSessionStore } from './session/durable.js';
 import { Pool } from 'pg';
 
 import { createQuotaClient } from './quota/index.js';
-import { createRotationCounter } from './rotation.js';
+import { createAllocator, createRotationCounter } from './rotation.js';
 import { createTtlProvider, pgLoiLoader, type TtlProvider } from './quota/ttl.js';
 import { createPgTokenResolver, createStaticTokenResolver, type ResolvedToken } from './token.js';
 
@@ -127,6 +127,9 @@ export function buildDeps(): RuntimeDeps {
     // splitting is a URL, not a refactor. Absent without Redis, which makes `rotate` report
     // `needs_counter` rather than silently seeding an order.
     ...(redisUrl ? { rotation: createRotationCounter(redisUrl) } : {}),
+    // E §8.5's least-filled allocation for `even_distribution` randomizers. Same Redis, same
+    // reasoning as the two above.
+    ...(redisUrl ? { allocator: createAllocator(redisUrl) } : {}),
     ...(ttl ? { ttl } : {}),
     now: () => Date.now(),
     newId: generateULID,

@@ -368,6 +368,8 @@ export async function handleSubmitCore(
     random: () => 0, // flow-level draws are counter-backed (E §8.5); nothing seeded remains here
     evalCondition: after.evalCondition ?? (() => null),
     isPageVisible: after.isPageVisible,
+    // Same source and same reason as the entry path: the assignment lives on the session.
+    randomizerAssignment: (nodeId: string) => session.randomizer_assignments[nodeId],
   });
   const input: Input = { i: 'submitted', page_id: body.page_id };
   const { next, cmds } = step(session, input, deps.head as unknown as MachineArtifact, machineCtx);

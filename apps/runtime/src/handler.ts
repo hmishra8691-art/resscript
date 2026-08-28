@@ -46,7 +46,7 @@ import { rebuildSession, type RuntimeWriter } from './session/durable.js';
 import { gateDecision, type QuotaClient } from './quota/index.js';
 import { planFor, resolveCells } from './quota/cells.js';
 import { createTtlProvider, type TtlProvider } from './quota/ttl.js';
-import type { RotationCounter } from './rotation.js';
+import type { Allocator, RotationCounter } from './rotation.js';
 import { bindInboundParams } from './vendor/inbound.js';
 import { vendorFromParams, verifyEntry } from './vendor/verify.js';
 import { handleSubmitCore, type SubmitBody } from './submit.js';
@@ -102,6 +102,12 @@ export interface RuntimeDeps {
    * degradation rather than a seeded shuffle wearing a rotation's name.
    */
   readonly rotation?: RotationCounter;
+  /**
+   * The least-filled allocator for `even_distribution` randomizers (E §8.5). Absent = no
+   * allocation, so those nodes use the seeded permutation and a `randomizer.degraded` event is
+   * recorded — which E §8.5 prescribes rather than treating as a failure.
+   */
+  readonly allocator?: Allocator;
   /** Injected so a replayed request produces identical timestamps (ADR-006). */
   readonly now: () => number;
   /** ULID generator. */
@@ -488,6 +494,45 @@ function evaluateAndRender(
 const DEFAULT_TTL_PROVIDER: TtlProvider = createTtlProvider();
 
 /**
+ * Allocations for every `even_distribution` randomizer in the graph (E §8.5).
+ *
+ * Returns `{}` when there are none, and OMITS a node whose allocation failed rather than inventing
+ * one — a fabricated arm would be an allocation that no counter agrees with, which is worse than the
+ * seeded fallback E §8.5 prescribes.
+ */
+async function resolveAllocations(
+  ctx: Ctx,
+  head: { readonly graph?: { readonly nodes?: readonly unknown[] } },
+): Promise<Record<string, readonly string[]>> {
+  const allocator = ctx.deps.allocator;
+  const nodes = head.graph?.nodes ?? [];
+  const out: Record<string, readonly string[]> = {};
+  if (allocator === undefined) return out;
+
+  for (const raw of nodes) {
+    const node = raw as {
+      id?: string;
+      type?: string;
+      targets?: readonly string[];
+      mode?: string;
+      n?: number | null;
+      even_distribution?: boolean;
+    };
+    if (node.type !== 'randomizer' || node.even_distribution !== true) continue;
+    const targets = node.targets ?? [];
+    if (targets.length === 0 || node.id === undefined) continue;
+    // `subset` takes n arms; every other mode takes all of them in least-filled order, which is
+    // what makes "even distribution" a statement about ORDER as well as selection.
+    const n = node.mode === 'subset' && typeof node.n === 'number' && node.n > 0
+      ? Math.min(node.n, targets.length)
+      : targets.length;
+    const chosen = await allocator.assignLeastFilled(node.id, targets, n);
+    if (chosen !== null && chosen.length > 0) out[node.id] = chosen;
+  }
+  return out;
+}
+
+/**
  * The author's page-shell HTML for this page, or null.
  *
  * Resolved HERE rather than inside `renderHtmlPage` because that function is synchronous and pure,
@@ -578,6 +623,12 @@ export interface RenderDeps {
    * degradation rather than a seeded shuffle wearing a rotation's name.
    */
   readonly rotation?: RotationCounter;
+  /**
+   * The least-filled allocator for `even_distribution` randomizers (E §8.5). Absent = no
+   * allocation, so those nodes use the seeded permutation and a `randomizer.degraded` event is
+   * recorded — which E §8.5 prescribes rather than treating as a failure.
+   */
+  readonly allocator?: Allocator;
   /**
    * Everything a `quota_gate` needs to reach a verdict and let the machine continue.
    *
@@ -1065,6 +1116,10 @@ function machineCtx(session: SessionState, now: number) {
   return makeCtx({
     now_ms: now,
     random: salt => randomAt(deriveKey(session.random_seed, salt), 0),
+    // From the SESSION, never re-resolved: the allocation was made once at entry and persisted,
+    // because it depends on global fill state and a replay that re-ran the allocator would
+    // reconstruct a different survey (E §8.5).
+    randomizerAssignment: (nodeId: string) => session.randomizer_assignments[nodeId],
     // UNKNOWN at entry, deliberately: a branch condition is evaluated against a page verdict, and
     // at entry no page has been evaluated yet — there is nothing for `SHOWN(Q5)` to read. The
     // machine answers UNKNOWN by taking the else arm, which is the safe direction. Threading a
@@ -1366,6 +1421,10 @@ async function handleEntry(res: ServerResponse, ctx: Ctx): Promise<void> {
     rotation_index: ctx.deps.rotation
       ? await ctx.deps.rotation.next(resolved.survey_version_id)
       : null,
+    // Allocations for every `even_distribution` randomizer, resolved ONCE at entry. Resolved here
+    // rather than when the machine reaches the node, because `step` is a pure reducer with no way
+    // to await — and there are few such nodes, so doing them together costs one round trip.
+    randomizer_assignments: await resolveAllocations(ctx, head),
     vars: { ...base.vars, ...inbound.vars },
     started_at: now,
     last_activity_at: now,

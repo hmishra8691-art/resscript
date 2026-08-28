@@ -165,3 +165,128 @@ export async function drainRotationCountersOnce(
   if (rows.length === 0) return 0;
   return target.flush(rows);
 }
+
+/* -------------------------------------------------------------------------- */
+/* Least-filled allocation (E §8.5)                                           */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `even_distribution: true` on a randomizer flow node.
+ *
+ * E §8.5 is blunt about what this is: "least-filled cell wins. That is not randomization; it is
+ * allocation, and it requires shared state." So it cannot be a function of the ticket either — a
+ * ticket says which respondent you are, and allocation needs to know how full every arm currently
+ * is, which no per-respondent number can encode.
+ *
+ * ## Why one Lua round trip
+ *
+ * Read-then-increment from the client would let two respondents read the same minimum and both
+ * increment it, which is exactly the imbalance the feature exists to prevent — and the more traffic,
+ * the worse it gets. Redis's single-threaded execution makes the script atomic, which is the same
+ * property the quota reserve depends on.
+ *
+ * ## Ties go to the lowest index, deliberately
+ *
+ * E §8.5's script says "ties: lowest index, deterministic". At the start of fieldwork every arm is
+ * at zero, so ties are the common case rather than an edge one — and a random tie-break would make
+ * the first n respondents' assignment unreproducible for no gain, while a deterministic one makes
+ * the first respondents fill arms in authored order and every subsequent decision genuinely
+ * least-filled.
+ */
+const ASSIGN_LEAST_FILLED = `
+local n = tonumber(ARGV[1])
+local scored = {}
+for i = 1, #KEYS do
+  local c = tonumber(redis.call('HGET', KEYS[i], 'assigned') or 0)
+  -- The index rides along so the sort below can break ties by it rather than by Lua's
+  -- unspecified ordering for equal keys.
+  scored[#scored + 1] = { c, i, KEYS[i] }
+end
+table.sort(scored, function(a, b)
+  if a[1] == b[1] then return a[2] < b[2] end
+  return a[1] < b[1]
+end)
+local chosen = {}
+for i = 1, math.min(n, #scored) do
+  local key = scored[i][3]
+  redis.call('HINCRBY', key, 'assigned', 1)
+  chosen[#chosen + 1] = key
+end
+return chosen
+`;
+
+export interface Allocator {
+  /**
+   * The `n` least-filled arms, least first, each incremented — or null when Redis is unreachable.
+   *
+   * Null rather than a throw or a guess: E §8.5 prescribes the fallback ("falls back to the seeded
+   * PRNG, logs a `randomizer.degraded` event, and accepts uneven distribution") and calls it the
+   * right one, because "approximate balance beats stalling fieldwork".
+   */
+  assignLeastFilled(
+    nodeId: string,
+    targets: readonly string[],
+    n: number,
+  ): Promise<readonly string[] | null>;
+  close(): Promise<void>;
+}
+
+/** `alloc:{flow_node_id}:{target_id}` — one hash per arm, holding `assigned`. */
+export const ALLOC_KEY_PREFIX = 'alloc';
+
+export function createAllocator(redisUrl: string): Allocator {
+  let client: RedisClient | null = null;
+  let sha: string | null = null;
+  const redis = () =>
+    (client ??= new RedisClient(redisUrl, {
+      maxRetriesPerRequest: 1,
+      connectTimeout: 1_000,
+      retryStrategy: (times) => (times > 2 ? null : 200),
+    }));
+
+  return {
+    async assignLeastFilled(
+      nodeId: string,
+      targets: readonly string[],
+      n: number,
+    ): Promise<readonly string[] | null> {
+      if (targets.length === 0 || n < 1) return [];
+      const keys = targets.map((t) => `${ALLOC_KEY_PREFIX}:${nodeId}:${t}`);
+      try {
+        const r = redis();
+        // EVALSHA with a load-on-NOSCRIPT fallback, the same shape `createQuotaClient`'s `run`
+        // helper uses: a Redis restart clears the script cache, and re-sending the source on every
+        // call would ship the script's bytes on the respondent's critical path.
+        sha ??= await r.script('LOAD', ASSIGN_LEAST_FILLED) as string;
+        let raw: unknown;
+        try {
+          raw = await r.evalsha(sha, keys.length, ...keys, String(n));
+        } catch (err: unknown) {
+          if (!String(err).includes('NOSCRIPT')) throw err;
+          sha = (await r.script('LOAD', ASSIGN_LEAST_FILLED)) as string;
+          raw = await r.evalsha(sha, keys.length, ...keys, String(n));
+        }
+        if (!Array.isArray(raw)) return null;
+        // Back from key to target id. Mapped rather than returned as keys, so the caller — and the
+        // `design` variable it persists — deals in the author's ids and not in a Redis keyspace
+        // detail that could change.
+        const byKey = new Map(keys.map((k, i) => [k, targets[i] as string]));
+        const out: string[] = [];
+        for (const k of raw) {
+          const target = byKey.get(String(k));
+          if (target !== undefined) out.push(target);
+        }
+        return out;
+      } catch {
+        return null;
+      }
+    },
+
+    async close(): Promise<void> {
+      if (client) {
+        await client.quit().catch(() => undefined);
+        client = null;
+      }
+    },
+  };
+}

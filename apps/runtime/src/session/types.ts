@@ -49,6 +49,18 @@ export interface SessionState {
    * see `rotation.ts` on why one ticket per session beats one per axis.
    */
   rotation_index: number | null;
+  /**
+   * Which arms each `even_distribution` randomizer allocated, by flow-node id (E §8.5, P2-03).
+   *
+   * PERSISTED for the reason E §8.5 gives: the assignment "depends on global fill state at the
+   * moment of assignment", so it is "the only place the runtime stores a random decision rather
+   * than deriving it. Without that, the session is not replayable and the data is not analyzable."
+   * A replay that re-ran the allocator would get a different arm and reconstruct a different survey.
+   *
+   * `{}` means there were no such nodes; a node MISSING from a non-empty map means the allocator
+   * was unreachable when this session entered, and the machine falls back to the seeded permutation.
+   */
+  randomizer_assignments: Record<string, readonly string[]>;
   vars: Record<VariableId, Value | null>; // variable_id -> Value
   var_provenance: Record<VariableId, Provenance>; // who set each var
 

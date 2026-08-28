@@ -101,6 +101,8 @@ export function createSession(params: {
     vendor_ref: null,
     // Resolved by the entry handler from the rotation counter, once per session (P2-03).
     rotation_index: null,
+    // Resolved by the entry handler from the allocator, once per session (P2-03, E §8.5).
+    randomizer_assignments: {},
     entry_params: {},
     language: params.language,
     device: { class: 'desktop', ua_class: 'unknown' }, // parsed from User-Agent later
