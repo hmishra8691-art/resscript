@@ -288,6 +288,14 @@ export function compileSurvey(input: CompileInput): CompileResult {
     surveyVersionId: input.surveyVersionId,
     plugins: resolution,
   });
+  // Sorted by ref, and each sheet labelled, so a browser's dev tools name the file an author has to
+  // open. Concatenation rather than one file per sheet: they always load together and always in
+  // this order, so N requests would buy nothing.
+  const authorCss = [...(survey.assets?.css ?? [])]
+    .sort((a, b) => (a.ref < b.ref ? -1 : a.ref > b.ref ? 1 : 0))
+    .map((sheet) => `/* ${sheet.ref} */\n${sheet.source}`)
+    .join('\n\n');
+
   const artifactGraph = buildArtifactGraph(graph, survey);
   const pages = buildPages({ survey, graph, logic, plugins: resolution });
   const artifactLogic = buildArtifactLogic({ survey, logic });
@@ -318,6 +326,12 @@ export function compileSurvey(input: CompileInput): CompileResult {
       input.themeCss === undefined || input.themeCss === null
         ? compileTheme({ layers: input.themeTokens ?? [] }).css
         : input.themeCss,
+    // Author stylesheets, concatenated in REF order so the cascade does not depend on the order
+    // rows came back from the database. Reaching the artifact at all is P2-12's second half: these
+    // were declared in the schema, resolved by `validateStructural`, scanned by the sanitizer since
+    // this commit's predecessor — and emitted by nothing, so an author's stylesheet was stored,
+    // checked, and then silently dropped.
+    ...(authorCss === '' ? {} : { authorCss }),
   });
 
   return {

@@ -437,5 +437,13 @@ export interface CompiledArtifact {
   readonly designs?: { readonly [designRef: string]: JsonObject };
   readonly i18n: { readonly [languageCode: string]: StringBundle };
   readonly theme_css?: string | null;
+  /**
+   * Author-supplied stylesheets, concatenated in ref order. Absent when the survey has none.
+   *
+   * Separate from `theme_css` on purpose: the two have different provenance and different trust,
+   * the served `<link>` order states the cascade explicitly, and the theme's own rules — the
+   * `.rs-target` touch-target contract in particular — stay identifiable as ours.
+   */
+  readonly author_css?: string | null;
   readonly scripts?: { readonly [ref: string]: string };
 }

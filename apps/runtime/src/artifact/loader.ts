@@ -107,6 +107,8 @@ export interface ArtifactLoader {
    * through this process on every entry to save the browser one request it makes once.
    */
   themeCss(hash: string): Promise<string | null>;
+  /** Author-supplied CSS (`author.css`), or null when the survey has none. */
+  authorCss(hash: string): Promise<string | null>;
   /**
    * One language's string bundle (`i18n/<language>.json`), or null when the artifact carries
    * no such language. Read once per session render language, not folded into `head()` — a
@@ -384,6 +386,15 @@ export function createLoader(opts: LoaderOptions): ArtifactLoader {
       const source = await fetchFile(hash, 'theme.css');
       // Shares the `scripts` cache, which holds verbatim text keyed by full path. A separate LRU
       // for one file per artifact would halve the useful size of both.
+      scripts.set(key, source);
+      return source;
+    },
+
+    async authorCss(hash: string): Promise<string | null> {
+      const key = `${hash}/author.css`;
+      const cached = scripts.get(key);
+      if (cached !== undefined) return cached;
+      const source = await fetchFile(hash, 'author.css');
       scripts.set(key, source);
       return source;
     },

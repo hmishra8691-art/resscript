@@ -1276,3 +1276,100 @@ describe('page_group connects the compiler to the machine randomizer', () => {
     expect(result.bundle.artifact.graph.page_group).toBeUndefined();
   });
 });
+
+
+/* -------------------------------------------------------------------------- */
+/* Author CSS reaches the artifact, and only if it passes (P2-12)             */
+/* -------------------------------------------------------------------------- */
+
+describe('author stylesheets', () => {
+  function withCss(sheets: { ref: string; source: string }[]) {
+    const ids = deterministicIds(5150);
+    const asked = ask(ids, 'Q1');
+    const blockId = ids.next('block');
+    const start = ids.next('flow_node');
+    const seq = ids.next('flow_node');
+    const end = ids.next('flow_node');
+    const base = makeSurvey(ids, {
+      content: [{ id: blockId, type: 'block', ref: 'B1', children: [page(ids, 'P1', [asked.node])] }],
+      languages: bundleOf(LABELS),
+      variables: [asked.variable],
+      nodes: [
+        { id: start, type: 'start', next: seq },
+        { id: seq, type: 'sequence', target_id: blockId, next: end },
+        { id: end, type: 'end', disposition: 'COMPLETE' },
+      ] as never,
+    });
+    return {
+      ...base,
+      assets: {
+        css: sheets.map((sheet, i) => ({
+          id: `ast_0C${String(i)}${'0'.repeat(23)}`,
+          ref: sheet.ref,
+          source: sheet.source,
+          scope: 'survey',
+        })),
+      },
+    } as unknown as Survey;
+  }
+
+  it('emits author.css as its OWN file, not appended to theme.css', () => {
+    // Separate on purpose: the two have different provenance and different trust, the served <link>
+    // order states the cascade explicitly, and the theme's own rules — the .rs-target contract —
+    // stay identifiable as ours.
+    const result = compile(withCss([{ ref: 'MAIN', source: 'body{color:#111}' }]));
+    if (!result.ok) throw new Error(`compile failed: ${JSON.stringify(codes(result))}`);
+
+    const paths = result.bundle.files.map((f) => f.path);
+    expect(paths).toContain('author.css');
+    expect(paths).toContain('theme.css');
+    const theme = result.bundle.files.find((f) => f.path === 'theme.css');
+    expect(theme?.bytes).not.toContain('#111');
+  });
+
+  it('concatenates sheets in REF order, labelled', () => {
+    // Ref order and not row order, so the cascade does not depend on how the database returned them.
+    // Labelled so a browser's dev tools name the file an author has to open.
+    const result = compile(
+      withCss([
+        { ref: 'ZED', source: '.z{color:red}' },
+        { ref: 'ALPHA', source: '.a{color:blue}' },
+      ]),
+    );
+    if (!result.ok) throw new Error('compile failed');
+
+    const css = result.bundle.files.find((f) => f.path === 'author.css')?.bytes ?? '';
+    expect(css.indexOf('/* ALPHA */')).toBeLessThan(css.indexOf('/* ZED */'));
+  });
+
+  it('emits NO author.css for a survey with none', () => {
+    const result = compile(withCss([]));
+    if (!result.ok) throw new Error('compile failed');
+    expect(result.bundle.files.map((f) => f.path)).not.toContain('author.css');
+  });
+
+  it('REFUSES to publish CSS the sanitizer rejects, so nothing unsafe is emitted', () => {
+    // The gate that makes emitting author CSS safe at all. A remote url() is an HTTP request, and
+    // with attribute selectors it reads values out of the page one character at a time — so this is
+    // a publish error rather than a file that ships.
+    const result = compile(withCss([{ ref: 'EVIL', source: 'a{background:url(//evil.example/)}' }]));
+    expect(result.ok).toBe(false);
+    expect(codes(result)).toContain('CMP-0503');
+  });
+
+  it('refuses a stylesheet that targets the reserved rs- prefix', () => {
+    // Author CSS loads AFTER the theme, so this rule is what stops it shrinking the 44px touch
+    // target the theme defines. The cascade lets an author override colours; it does not let them
+    // override the accessibility floor.
+    const result = compile(withCss([{ ref: 'SHRINK', source: '.rs-target{min-height:1px}' }]));
+    expect(result.ok).toBe(false);
+    expect(codes(result)).toContain('CMP-0503');
+  });
+
+  it('changes the artifact hash when author CSS changes', () => {
+    const a = compile(withCss([{ ref: 'M', source: 'body{color:#111}' }]));
+    const b = compile(withCss([{ ref: 'M', source: 'body{color:#222}' }]));
+    if (!a.ok || !b.ok) throw new Error('compile failed');
+    expect(a.bundle.hash).not.toBe(b.bundle.hash);
+  });
+});

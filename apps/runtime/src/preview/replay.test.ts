@@ -275,6 +275,7 @@ function loader(over: Record<string, ArtifactHead> = {}): ArtifactLoader {
     },
     async redirects() { return null; },
     async themeCss() { return null; },
+    async authorCss() { return null; },
     async script() { return null; },
     async i18n() { return null; },
     async page(hash: string, _language: string, pageId: string) {

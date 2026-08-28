@@ -114,6 +114,18 @@ export interface BundleParts {
   readonly vendors?: readonly Vendor[] | null;
   readonly designs?: { readonly [designRef: string]: JsonObject };
   readonly themeCss?: string | null;
+  /**
+   * Author-supplied stylesheets, concatenated in ref order, or absent.
+   *
+   * A SEPARATE file from `theme.css` rather than appended to it, and the separation is the point:
+   * a compiled theme and an author's CSS have different provenance and different trust. Keeping
+   * them apart means the served `<link>` order states the cascade explicitly (theme first, author
+   * second), an incident review can diff either without the other, and the theme's own rules — the
+   * `.rs-target` touch-target contract in particular — remain identifiable as ours.
+   *
+   * Only emitted for a survey that HAS author CSS, so nothing changes in an artifact without it.
+   */
+  readonly authorCss?: string | null;
   readonly scripts?: { readonly [ref: string]: string };
 }
 
@@ -254,6 +266,14 @@ export function buildBundle(parts: BundleParts): ArtifactBundle {
   const themeCss = parts.themeCss;
   if (themeCss !== undefined && themeCss !== null) files.push(textFile('theme.css', themeCss));
 
+  // Author CSS, second in the cascade. `CMP-0503` has already refused anything that can execute,
+  // fetch or exfiltrate, and refused selectors on the reserved `rs-` prefix — so this cannot
+  // restyle the accessibility contract even though it loads after the theme that defines it.
+  const authorCss = parts.authorCss;
+  if (authorCss !== undefined && authorCss !== null && authorCss !== '') {
+    files.push(textFile('author.css', authorCss));
+  }
+
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
   const hash = treeHash(files);
@@ -273,6 +293,9 @@ export function buildBundle(parts: BundleParts): ArtifactBundle {
     ...(designs === undefined ? {} : { designs }),
     i18n: parts.i18n,
     ...(themeCss === undefined || themeCss === null ? {} : { theme_css: themeCss }),
+    ...(authorCss === undefined || authorCss === null || authorCss === ''
+      ? {}
+      : { author_css: authorCss }),
     ...(scripts === undefined ? {} : { scripts }),
   };
 

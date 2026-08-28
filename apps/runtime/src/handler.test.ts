@@ -290,6 +290,9 @@ function loaderFor(artifacts: Record<string, FakeArtifact>): ArtifactLoader {
     async themeCss(hash: string) {
       return artifacts[hash] === undefined ? null : ':root{--rs-color-bg:#fff}.rs-target{min-height:44px}';
     },
+    async authorCss(hash: string) {
+      return artifacts[hash] === undefined ? null : '/* MAIN */\nbody{color:#111}';
+    },
     async i18n(hash: string, language: string) {
       return artifacts[hash]?.i18n?.[language] ?? null;
     },
@@ -1005,14 +1008,44 @@ describe('no-JavaScript flow — the P1-09 acceptance line', () => {
     expect(r.headers['x-content-type-options']).toBe('nosniff');
   });
 
+  it('links the author stylesheet AFTER the theme, which is the cascade an author expects', async () => {
+    // Author CSS reaching the browser at all is P2-12's second half: these stylesheets were
+    // declared in the schema, resolved by validateStructural, scanned by CMP-0503 — and emitted by
+    // nothing, so an author's CSS was stored, checked, and silently dropped.
+    //
+    // Second in the order is safe because CMP-0503 refuses selectors on the reserved `rs-` prefix,
+    // so author CSS cannot restyle the touch-target contract the theme defines however late it
+    // loads. Author rules override platform defaults; they cannot override the accessibility floor.
+    const d = deps();
+    const r = await browse(d, `/s/${TOKEN}`);
+
+    const themeAt = r.raw.indexOf(`/theme/${HASH}.css`);
+    const authorAt = r.raw.indexOf(`/author/${HASH}.css`);
+    expect(themeAt).toBeGreaterThan(-1);
+    expect(authorAt).toBeGreaterThan(themeAt);
+  });
+
+  it('serves the author stylesheet on its own content-addressed route', async () => {
+    const d = deps();
+    const r = await browse(d, `/author/${HASH}.css`);
+
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toContain('text/css');
+    expect(r.raw).toContain('MAIN');
+    expect(r.headers['cache-control']).toContain('immutable');
+    expect(r.headers['x-content-type-options']).toBe('nosniff');
+  });
+
   it('404s a theme path that names no artifact, rather than reflecting the fetch', async () => {
     // Read through the loader, so a well-formed 64-hex path cannot be used to probe arbitrary keys
     // in the artifact store.
     const d = deps();
     // Not `'f'.repeat(64)` — that is HASH in this file, so the first version of this test asked for
     // the artifact that DOES exist and asserted it was missing.
-    const r = await browse(d, `/theme/${'a'.repeat(64)}.css`);
-    expect(r.status).toBe(404);
+    for (const kind of ['theme', 'author']) {
+      const r = await browse(d, `/${kind}/${'a'.repeat(64)}.css`);
+      expect(r.status).toBe(404);
+    }
   });
 
   it('does not answer a malformed theme path at all', async () => {

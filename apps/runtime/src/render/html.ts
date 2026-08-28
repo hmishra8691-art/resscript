@@ -52,6 +52,15 @@ export interface HtmlPageInput {
    */
   readonly themeCssUrl?: string;
   /**
+   * The author stylesheet's content-addressed URL, when the survey has one.
+   *
+   * Linked AFTER the theme, which is the cascade an author expects — their rules override the
+   * platform's defaults. Safe to put second because `CMP-0503` refuses selectors on the reserved
+   * `rs-` prefix, so author CSS cannot restyle the touch-target contract the theme defines however
+   * late it loads.
+   */
+  readonly authorCssUrl?: string;
+  /**
    * Where the form posts. Defaults to the survey origin's `/s/<token>`; the preview surface
    * (P1-11) passes `/preview/<hash>?pt=…`-shaped bases because a preview session has no
    * survey token to build the default from.
@@ -126,7 +135,13 @@ ${control}
  */
 function themeLink(input: HtmlPageInput): string {
   if (input.themeCssUrl !== undefined) {
-    return `<link rel="stylesheet" href="${esc(input.themeCssUrl)}">`;
+    const theme = `<link rel="stylesheet" href="${esc(input.themeCssUrl)}">`;
+    // Author CSS second — see `authorCssUrl`. A 404 for a survey with no author stylesheet costs
+    // one request and renders identically, which is a better trade than threading "does this
+    // artifact have author CSS" through every render path.
+    return input.authorCssUrl === undefined
+      ? theme
+      : `${theme}\n<link rel="stylesheet" href="${esc(input.authorCssUrl)}">`;
   }
   return `<style>
   /* Fallback for an artifact compiled before the theme compiler existed (P2-12). Deliberately does
