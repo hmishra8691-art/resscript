@@ -31,7 +31,8 @@
  * notices until fieldwork ends.
  */
 
-import { Redis } from 'ioredis';
+import type { Redis } from 'ioredis';
+import { Redis as RedisClient } from 'ioredis';
 
 /** `rot:{survey_version_id}` — one counter per fielding version. */
 export const ROTATION_KEY_PREFIX = 'rot';
@@ -50,7 +51,7 @@ export interface RotationCounter {
 export function createRotationCounter(redisUrl: string): RotationCounter {
   let client: Redis | null = null;
   const redis = () =>
-    (client ??= new Redis(redisUrl, {
+    (client ??= new RedisClient(redisUrl, {
       // The same bounded policy `createQuotaClient` uses, and for the same reason its comment
       // gives: this is on the respondent's critical path, so failing fast is part of the CONTRACT
       // rather than tuning. A hung rotation is a hung respondent.
@@ -101,4 +102,66 @@ export async function readRotationCounter(
   // Checked before use: `Number(null)` is 0 and `Number('abc')` is NaN, and a NaN written into
   // `issued` would fail the column's CHECK — later, in the drain, far from here.
   return Number.isFinite(n) ? n : null;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Write-behind                                                               */
+/* -------------------------------------------------------------------------- */
+
+/** What the drain needs from Postgres — one RPC, so the SQL stays in 0025. */
+export interface RotationFlushTarget {
+  flush(rows: readonly { v: string; k: string; i: number }[]): Promise<number>;
+}
+
+/**
+ * Push the live Redis counters into `runtime.rotation_counters`.
+ *
+ * ## Why this exists at all
+ *
+ * Without it 0025's table has no writer, and a table nobody writes is a migration that looks like a
+ * feature — the exact failure this phase found three times over (`theme_id → nothing`,
+ * `html_template_ref → nothing`, `content.code_assets → nothing`). The table's whole purpose is
+ * that a Redis flush does not restart every rotation at zero, and that purpose is unmet until
+ * something records the value.
+ *
+ * ## Reads, does not reset
+ *
+ * `GET`, never `GETSET`. Redis stays the arbiter and this is a snapshot: resetting would mean the
+ * counter and the record disagree for exactly as long as it takes the next respondent to arrive,
+ * and a ticket issued in that window would be a duplicate of one already recorded.
+ *
+ * The flush is `GREATEST` on the far side (0025), so a snapshot that arrives out of order after a
+ * retry cannot move the recorded value backwards. That is what makes reading-without-resetting safe
+ * to do on a loop.
+ *
+ * ## Which versions
+ *
+ * The caller supplies them, because only the caller knows what is in field — the runtime holds
+ * pinned artifact hashes for live tokens. Scanning the keyspace for `rot:*` would work and is what
+ * ADR-008 forbids for the quota sweeper too: a `KEYS` on a shared Redis is a stall for every other
+ * user of it.
+ */
+export async function drainRotationCountersOnce(
+  redis: Pick<Redis, 'get'>,
+  target: RotationFlushTarget,
+  surveyVersionIds: readonly string[],
+): Promise<number> {
+  if (surveyVersionIds.length === 0) return 0;
+
+  const rows: { v: string; k: string; i: number }[] = [];
+  for (const versionId of surveyVersionIds) {
+    const issued = await readRotationCounter(redis, versionId);
+    // `null` is "no counter yet", which is different from "counter at zero": flushing a 0 for a
+    // version nobody has entered would write a row that says nothing and make the table's row count
+    // a count of versions rather than of rotations.
+    if (issued === null || issued <= 0) continue;
+    // One counter per version today, so the key column is a constant. It is a COLUMN rather than
+    // being folded into the version id because per-axis counters are a plausible future and the
+    // table should not need a migration to hold them — 0025's comment says the shape is opaque here
+    // on purpose.
+    rows.push({ v: versionId, k: 'session', i: issued });
+  }
+
+  if (rows.length === 0) return 0;
+  return target.flush(rows);
 }
