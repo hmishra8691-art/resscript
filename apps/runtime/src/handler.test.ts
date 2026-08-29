@@ -420,6 +420,31 @@ describe('health endpoints', () => {
     expect(r.body.ready).toBe(false);
     expect(r.body.checks.token_resolver).toBe('unavailable');
   });
+
+  it('/ready is 503 while draining, even though every dependency is healthy', async () => {
+    // The point of the whole graceful-shutdown path. During SIGTERM the dependencies are still
+    // fine, so without this short-circuit the probe answers 200 and the load balancer keeps
+    // routing new respondents to a process that is closing its listener — which is the case
+    // `server.close()` alone does NOT cover.
+    const r = await call(deps({ draining: () => true }), { path: '/ready', host: 'lb.internal' });
+
+    expect(r.status).toBe(503);
+    expect(r.body.ready).toBe(false);
+    expect(r.body.checks.draining).toBe('shutting_down');
+    // Short-circuited: the dependency checks are not even attempted, because their answer is
+    // irrelevant once the process is leaving.
+    expect(r.body.checks.token_resolver).toBeUndefined();
+  });
+
+  it('/health stays 200 while draining — liveness is not readiness', async () => {
+    // Borrowed from the worker's health suite, and load-bearing for the same reason: a liveness
+    // probe that fails during a graceful shutdown gets the pod SIGKILLed by the orchestrator
+    // partway through the drain, converting an orderly exit into the abrupt one it replaced.
+    const r = await call(deps({ draining: () => true }), { path: '/health', host: 'lb.internal' });
+
+    expect(r.status).toBe(200);
+    expect(r.body.status).toBe('ok');
+  });
 });
 
 /* ---------------------------------------------------------------- *

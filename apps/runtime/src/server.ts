@@ -238,15 +238,41 @@ export const handler: ReturnType<typeof createHandler> = async (req, res) => {
  * Requires both halves to be present, and says which one is missing rather than starting a loop
  * that cannot work. Returns the stopper so a caller that wants to shut down cleanly can.
  */
-function startQuotaDrain(): (() => void) | undefined {
+interface DrainHandle {
+  /** Stops the periodic loop. */
+  readonly stop: () => void;
+  /** One last pass, on the way out. See the shutdown block for why it is worth waiting for. */
+  readonly flush: () => Promise<void>;
+}
+
+function startQuotaDrain(): DrainHandle | undefined {
   const redisUrl = process.env['REDIS_URL'];
-  const databaseUrl = process.env['DATABASE_URL'];
+  /*
+   * `RUNTIME_DATABASE_URL` FIRST, exactly like the writer and the token resolver above.
+   *
+   * This read `DATABASE_URL` alone. Production is required to set `RUNTIME_DATABASE_URL` — the
+   * writer throws without it — and ADR-001 gives the two planes different roles, so a correctly
+   * configured deployment may well set only that one. The drain then found nothing, logged
+   * `quota_drain_not_started` with `durable: false`, and served every request correctly while
+   * never writing a counter down. Redis stayed the arbiter so nothing looked wrong; the loss
+   * would have surfaced on the day Redis was lost, which is the precise failure this drain was
+   * added to prevent.
+   *
+   * I found it while writing DEPLOY.md — I was about to tell the reader to set both variables to
+   * work around it, which would have made the deployment document the bug's workaround instead of
+   * the deployment. `runtime.flush_quota_counters` is a SECURITY DEFINER function in schema
+   * `runtime`, so the runtime connection is the one it is meant to be called on.
+   */
+  const databaseUrl = process.env['RUNTIME_DATABASE_URL'] ?? process.env['DATABASE_URL'];
   if (redisUrl === undefined || databaseUrl === undefined) {
     // Loud, because a runtime without a drain still SERVES correctly — the arbiter is Redis — and
     // the damage is invisible until the day Redis is lost. `durable: false` mirrors the phrasing
     // `apps/worker` uses for its in-memory job store, which is the same class of silent hazard.
     log.warn('quota_drain_not_started', {
-      reason: redisUrl === undefined ? 'REDIS_URL is unset' : 'DATABASE_URL is unset',
+      reason:
+        redisUrl === undefined
+          ? 'REDIS_URL is unset'
+          : 'neither RUNTIME_DATABASE_URL nor DATABASE_URL is set',
       durable: false,
     });
     return undefined;
@@ -259,20 +285,90 @@ function startQuotaDrain(): (() => void) | undefined {
   log.info('quota_drain_started', {
     interval_ms: Number(process.env['QUOTA_DRAIN_INTERVAL_MS'] ?? 30_000),
   });
-  return stop;
+  return {
+    stop,
+    flush: async (): Promise<void> => {
+      // Best-effort and never fatal: Redis remains the arbiter (ADR-008), so an unflushed cell is
+      // a durable-record lag, not a quota error. Worth one attempt because the LAST instance to
+      // stop would otherwise leave its counters in Redis with nobody scheduled to write them
+      // down until something boots again.
+      try {
+        const { scanned, written } = await drain.drainOnce();
+        log.info('quota_drain_final_flush', { scanned, written });
+      } catch (err: unknown) {
+        log.error('quota_drain_final_flush_failed', { err: String(err) });
+      }
+    },
+  };
 }
 
+/*
+ * How long to spend finishing in-flight requests before exiting anyway.
+ *
+ * Must be SHORTER than the orchestrator's own termination grace period (Kubernetes'
+ * `terminationGracePeriodSeconds`, default 30s), or the process is SIGKILLed mid-drain and the
+ * whole exercise is decoration. 10s against a 30s default leaves room for the readiness probe to
+ * observe the 503 first — see the shutdown block.
+ */
+const SHUTDOWN_GRACE_MS = Number(process.env['SHUTDOWN_GRACE_MS'] ?? 10_000);
+
+/*
+ * How long to keep SERVING after `/ready` starts answering 503, before closing the listener.
+ *
+ * Without this the draining flag is unobservable and therefore pointless, which is what my own
+ * first version shipped. `server.close()` refuses new connections immediately, so a readiness
+ * probe — which arrives on a NEW connection — gets connection-refused rather than the 503 the
+ * flag exists to serve. I only noticed because I probed a live process during shutdown expecting
+ * 503 and got a connection error, having already written a comment describing the 503 behaviour.
+ *
+ * The load balancer needs to observe at least one failed probe and remove this instance from its
+ * pool BEFORE the listener goes away. Until it does, it keeps routing respondents here, and every
+ * one of them gets a connection error — the exact failure the graceful path is supposed to avoid,
+ * merely moved from "killed in flight" to "refused at connect".
+ *
+ * 5s against a typical 5–10s probe interval is one to two probes. Tune it to the actual readiness
+ * probe period, and keep it comfortably below SHUTDOWN_GRACE_MS so there is still time to finish
+ * in-flight work afterwards. Set to 0 for a local run where nothing is probing.
+ */
+const SHUTDOWN_READY_DELAY_MS = Number(process.env['SHUTDOWN_READY_DELAY_MS'] ?? 5_000);
+
 if (process.env['NODE_ENV'] !== 'test') {
-  const h = createHandler(buildDeps());
-  const stopDrain = startQuotaDrain();
-  const shutdown = (signal: string): void => {
-    log.info('runtime_signal', { signal });
-    stopDrain?.();
-    process.exit(0);
-  };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  createServer((req, res) => {
+  /*
+   * SHUTDOWN, AND WHY IT IS MORE THAN `process.exit(0)`.
+   *
+   * This block used to stop the drain timer and exit immediately. Every in-flight request died
+   * with the process — for a survey runtime that means a respondent's submitted answers dropped
+   * at the moment of a rolling deploy, and the respondent seeing a network error on a page they
+   * had already filled in. Nothing recorded it, because the process was gone.
+   *
+   * I noticed only because I was writing this app's Dockerfile and copying the worker's comment
+   * about SIGTERM needing to reach node so it can drain. The worker does drain. This did not, and
+   * the comment I was about to reuse would have documented a behaviour that did not exist.
+   *
+   * The order below is the whole design:
+   *
+   *  1. `draining` flips, so `/ready` answers 503 (see `readiness` in handler.ts) while the
+   *     listener STAYS OPEN for SHUTDOWN_READY_DELAY_MS. Both halves are needed: the flag tells
+   *     the load balancer to stop routing here, and the delay gives it time to notice before the
+   *     socket disappears. Closing immediately turns a graceful shutdown into connection-refused
+   *     for every respondent the balancer sends in the meantime.
+   *  2. The periodic drain timer stops, so no new pass starts while we are leaving.
+   *  3. `server.close()` stops accepting connections and waits for in-flight responses.
+   *     `closeIdleConnections()` is belt-and-braces, and I nearly documented it as load-bearing
+   *     without checking. Measured on this Node (22): holding an idle keep-alive socket open
+   *     across SIGTERM, shutdown completes in ~117 ms WITH the call and ~118 ms WITHOUT it,
+   *     because modern `http.Server.close()` already closes connections that are not sending a
+   *     request or awaiting a response. Kept because it states the intent explicitly and costs
+   *     nothing, NOT because it was observed to do anything here.
+   *  4. One last quota flush, then exit.
+   *  5. A hard deadline exits anyway. A shutdown path that can hang is a pod that gets SIGKILLed
+   *     at the orchestrator's grace period, which is the behaviour this replaces.
+   */
+  let draining = false;
+  const drainHandle = startQuotaDrain();
+  const h = createHandler({ ...buildDeps(), draining: () => draining });
+
+  const server = createServer((req, res) => {
     void h(req, res).catch((err: unknown) => {
       log.error('unhandled_request_error', { err: String(err) });
       if (!res.headersSent) {
@@ -280,5 +376,51 @@ if (process.env['NODE_ENV'] !== 'test') {
         res.end(JSON.stringify({ error: { code: 'internal' } }));
       }
     });
-  }).listen(PORT, () => log.info('runtime_listening', { port: PORT, domain: RUNTIME_DOMAIN }));
+  });
+
+  const shutdown = (signal: string): void => {
+    // Two SIGTERMs must not start two shutdowns: the second would race the first's exit and can
+    // close the server twice, which throws ERR_SERVER_NOT_RUNNING out of a signal handler.
+    if (draining) {
+      log.info('runtime_signal_ignored', { signal, reason: 'already draining' });
+      return;
+    }
+    draining = true;
+    log.info('runtime_signal', { signal, grace_ms: SHUTDOWN_GRACE_MS });
+
+    const forced = setTimeout(() => {
+      log.warn('runtime_shutdown_forced', { grace_ms: SHUTDOWN_GRACE_MS });
+      process.exit(0);
+    }, SHUTDOWN_GRACE_MS);
+    // Unref'd so a shutdown that finishes early is not held open by its own deadline.
+    forced.unref();
+
+    drainHandle?.stop();
+
+    const closeAndExit = (): void => {
+      server.close(() => {
+        void (async () => {
+          await drainHandle?.flush();
+          log.info('runtime_shutdown_complete', { signal });
+          process.exit(0);
+        })();
+      });
+      server.closeIdleConnections();
+    };
+
+    if (SHUTDOWN_READY_DELAY_MS > 0) {
+      log.info('runtime_draining', { ready_delay_ms: SHUTDOWN_READY_DELAY_MS });
+      // Not unref'd: this timer is the shutdown. The forced-exit deadline above still bounds it,
+      // so a delay misconfigured longer than the grace period ends in a logged force rather than
+      // a hang.
+      setTimeout(closeAndExit, SHUTDOWN_READY_DELAY_MS);
+    } else {
+      closeAndExit();
+    }
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+
+  server.listen(PORT, () => log.info('runtime_listening', { port: PORT, domain: RUNTIME_DOMAIN }));
 }

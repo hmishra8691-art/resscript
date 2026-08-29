@@ -108,6 +108,17 @@ export interface RuntimeDeps {
    * recorded — which E §8.5 prescribes rather than treating as a failure.
    */
   readonly allocator?: Allocator;
+  /**
+   * True once the process has begun shutting down.
+   *
+   * `/ready` answers 503 while this is true, and that is the whole point of a graceful shutdown:
+   * `server.close()` refuses NEW connections but a load balancer that has not been told to stop
+   * routing keeps opening them, so without this the grace period is spent rejecting traffic
+   * instead of finishing the requests already in flight.
+   *
+   * Optional, and absent means "not draining" — the in-memory and test paths have no shutdown.
+   */
+  readonly draining?: () => boolean;
   /** Injected so a replayed request produces identical timestamps (ADR-006). */
   readonly now: () => number;
   /** ULID generator. */
@@ -2167,6 +2178,15 @@ async function readiness(deps: RuntimeDeps): Promise<{
   // but must not receive respondent traffic, because every request would fail after doing work.
   const checks: Record<string, string> = {};
   let ready = true;
+
+  // Draining is checked FIRST and short-circuits: during shutdown the dependencies are still
+  // perfectly healthy, so every check below would pass and the probe would keep this pod in the
+  // load balancer's pool right up to the moment it stops answering. Reporting not-ready here is
+  // what converts `server.close()` from "reject new connections" into an actual drain.
+  if (deps.draining?.() === true) {
+    checks['draining'] = 'shutting_down';
+    return { ready: false, checks };
+  }
 
   try {
     await deps.tokens.resolve('0'.repeat(26));
