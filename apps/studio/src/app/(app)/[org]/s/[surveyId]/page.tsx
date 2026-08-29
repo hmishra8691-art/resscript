@@ -27,6 +27,7 @@ import { ExportDialog } from '@/components/exports/ExportDialog';
 import { FieldDashboard } from '@/components/field/FieldDashboard';
 import { RulesPanel } from '@/components/rules/RulesPanel';
 import { PublishPane } from '@/components/publish/PublishPane';
+import { RedirectsPane } from '@/components/redirects/RedirectsPane';
 import { SurveyTreePane } from '@/components/tree/SurveyTreePane';
 
 const PANES = [
@@ -38,6 +39,7 @@ const PANES = [
   'Publish',
   'Preview',
   'Translations',
+  'Redirects',
   'Exports',
   'Field',
 ] as const;
@@ -52,6 +54,7 @@ const LIVE_PANES: readonly (typeof PANES)[number][] = [
   'Publish',
   'Preview',
   'Translations',
+  'Redirects',
   'Exports',
   'Field',
 ];
@@ -202,6 +205,8 @@ export default function SurveyPage({
               />
             ) : activePane === 'Translations' ? (
               <LanguageManager versionId={selectedVersionId} role={role} />
+            ) : activePane === 'Redirects' ? (
+              <RedirectsPane versionId={selectedVersionId} role={role} />
             ) : activePane === 'Exports' ? (
               <ExportDialog versionId={selectedVersionId} role={role} />
             ) : (
