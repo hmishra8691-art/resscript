@@ -27,6 +27,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createLogger } from '@resscript/observability';
+import { artifactKey } from '@resscript/schema';
 import type {
   ArtifactGraph,
   QuotaConfig,
@@ -192,7 +193,14 @@ export function fileSource(dir: string): ArtifactSource {
     name: 'file',
     async fetch(hash: string, path: string): Promise<string | null> {
       try {
-        return await readFile(join(dir, hash, path), 'utf8');
+        // `artifactKey`, NOT `join(dir, hash, path)`. This read `<dir>/<hash>/<path>` while
+        // `apps/worker` writes `<dir>/artifact/<hash>/<path>`, so on any deployment sharing a
+        // directory the runtime looked one level too shallow and answered 404 for every published
+        // survey — the artifact was there and the database named it correctly. Neither side's tests
+        // could see it: the worker writes and reads through its own store, and this loader is faked
+        // from a map in the runtime's tests, so this line never ran. The key now has one definition,
+        // in `@resscript/schema`.
+        return await readFile(join(dir, artifactKey(hash, path)), 'utf8');
       } catch (err) {
         if ((err as { code?: string }).code === 'ENOENT') return null;
         throw err;

@@ -14,8 +14,11 @@
 
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
+
+import { artifactKey } from '@resscript/schema';
+
 import {
   ArtifactNotFound,
   createLoader,
@@ -445,19 +448,44 @@ describe('source tiers', () => {
  * ---------------------------------------------------------------- */
 
 describe('fileSource', () => {
-  it('reads an artifact laid out as the compiler emits it', async () => {
+  /*
+   * Laid out with `artifactKey`, which is what the WRITER uses.
+   *
+   * This test was called "reads an artifact laid out as the compiler emits it" and laid the files
+   * out at `<root>/<hash>/…` — without the `artifact/` prefix that `apps/worker` actually writes.
+   * So it agreed with the loader's own mistake and both were wrong together: on any deployment
+   * sharing a directory, the runtime answered 404 for every published survey while the artifact sat
+   * one level deeper, exactly where the database said it was.
+   *
+   * Using the shared key builder rather than hand-writing the path is the fix that outlives this
+   * test: if the layout ever moves, the writer, the reader and this fixture move with it, because
+   * all three now name one function.
+   */
+  it('reads an artifact laid out as the WORKER writes it (artifactKey)', async () => {
     const root = await mkdtemp(join(tmpdir(), 'resscript-artifacts-'));
-    await mkdir(join(root, HASH, 'pages', 'en'), { recursive: true });
-    await writeFile(join(root, HASH, 'manifest.json'), JSON.stringify(MANIFEST));
-    await writeFile(join(root, HASH, 'graph.json'), JSON.stringify(GRAPH));
-    await writeFile(join(root, HASH, 'logic.json'), JSON.stringify(LOGIC));
-    await writeFile(join(root, HASH, 'pages', 'en', 'pg_1.json'), JSON.stringify(PAGE_1));
+    const at = (path: string): string => join(root, artifactKey(HASH, path));
+    await mkdir(dirname(at('pages/en/pg_1.json')), { recursive: true });
+    await writeFile(at('manifest.json'), JSON.stringify(MANIFEST));
+    await writeFile(at('graph.json'), JSON.stringify(GRAPH));
+    await writeFile(at('logic.json'), JSON.stringify(LOGIC));
+    await writeFile(at('pages/en/pg_1.json'), JSON.stringify(PAGE_1));
 
     const loader = createLoader({ sources: [fileSource(root)] });
 
     const head = await loader.head(HASH);
     expect(head.graph.page_entry).toEqual({ pg_1: 'fn_seq', pg_2: 'fn_seq' });
     expect((await loader.page(HASH, 'en', 'pg_1'))?.id).toBe('pg_1');
+  });
+
+  it('does NOT find an artifact written without the prefix', async () => {
+    // The old layout, asserted as absent so the two can never quietly swap back. A loader that
+    // accepted both would hide the next disagreement instead of failing on it.
+    const root = await mkdtemp(join(tmpdir(), 'resscript-artifacts-'));
+    await mkdir(join(root, HASH), { recursive: true });
+    await writeFile(join(root, HASH, 'manifest.json'), JSON.stringify(MANIFEST));
+
+    const loader = createLoader({ sources: [fileSource(root)] });
+    await expect(loader.head(HASH)).rejects.toThrow(ArtifactNotFound);
   });
 
   it('reports a missing file as absence, not as an error', async () => {

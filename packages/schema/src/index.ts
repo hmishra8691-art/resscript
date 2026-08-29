@@ -156,6 +156,13 @@ export type {
   VariableManifestEntry,
 } from './types/index.js';
 
+/*
+ * The artifact's storage layout, shared by the writer (`apps/worker`) and the reader
+ * (`apps/runtime`). One definition because they had two and the two disagreed — see
+ * `artifact-keys.ts`.
+ */
+export { ARTIFACT_KEY_PREFIX, artifactKey } from './artifact-keys.js';
+
 export {
   ANCHOR_PATTERN,
   BASE_OPTION_DEFAULT,

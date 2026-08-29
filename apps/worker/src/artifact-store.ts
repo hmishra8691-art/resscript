@@ -44,18 +44,14 @@ import { dirname, join, resolve, sep } from 'node:path';
 
 import { AppError } from '@resscript/observability';
 
-/**
- * The storage key for one file of one artifact.
+/*
+ * The storage key moved to `@resscript/schema`, and this file no longer owns it.
  *
- * `artifact/<hash>/<path>` — hash first, so every file of one artifact shares a prefix and a
- * bucket listing groups by artifact rather than by page number, and so a lifecycle rule or an
- * object-lock policy can be written against one prefix per published version.
+ * It was defined here and independently re-derived in `apps/runtime`'s ARTIFACT_DIR source, which
+ * read `<hash>/<path>` with no prefix — so the runtime 404'd every artifact this store had written.
+ * Re-exported so existing importers are unchanged; the definition is shared now, which is the point.
  */
-export const ARTIFACT_KEY_PREFIX = 'artifact';
-
-export function artifactKey(hash: string, path: string): string {
-  return `${ARTIFACT_KEY_PREFIX}/${hash}/${path}`;
-}
+export { ARTIFACT_KEY_PREFIX, artifactKey } from '@resscript/schema';
 
 export interface ArtifactStore {
   /**
