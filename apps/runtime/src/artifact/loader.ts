@@ -209,12 +209,28 @@ export function fileSource(dir: string): ArtifactSource {
   };
 }
 
-/** An HTTP source: a CDN or object storage, both addressed as `<base>/<hash>/<path>`. */
+/**
+ * An HTTP source: a CDN or object storage, both addressed at the key the WRITER used.
+ *
+ * `base` is the bucket or CDN ROOT — it must not already include the `artifact/` prefix, because
+ * `artifactKey` adds it. Getting this wrong is silent: every object is a 404, which this source
+ * correctly reports as absence, so the survey renders as "not found" rather than as an error.
+ *
+ * This line said `${base}/${hash}/${path}` until the commit that added the shared key, and it was
+ * the SECOND copy of that mistake. The first was the ARTIFACT_DIR source, which I found because a
+ * preview 404'd in front of me; I fixed that one, wrote a test for it, and did not look here — even
+ * though this is the source PRODUCTION actually uses, since `createArtifactLoader` refuses
+ * ARTIFACT_DIR when NODE_ENV=production. Fixing the path I could reproduce and leaving its sibling
+ * is a worse error than the original: the original was one mistake, this was declining to ask
+ * whether it was the only one.
+ *
+ * It had no tests whatsoever, which is why grepping for the defect found nothing. It has some now.
+ */
 export function httpSource(name: string, base: string): ArtifactSource {
   return {
     name,
     async fetch(hash: string, path: string): Promise<string | null> {
-      const res = await fetch(`${base}/${hash}/${path}`);
+      const res = await fetch(`${base}/${artifactKey(hash, path)}`);
       // 404 is a definite absence and must not fall through to the next tier as an error: the
       // artifact genuinely has no such page, which `page()` reports as null.
       if (res.status === 404) return null;

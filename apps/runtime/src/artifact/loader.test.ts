@@ -15,7 +15,7 @@
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { artifactKey } from '@resscript/schema';
 
@@ -23,6 +23,7 @@ import {
   ArtifactNotFound,
   createLoader,
   fileSource,
+  httpSource,
   type ArtifactSource,
 } from './loader.js';
 
@@ -446,6 +447,56 @@ describe('source tiers', () => {
 /* ---------------------------------------------------------------- *
  * The filesystem source
  * ---------------------------------------------------------------- */
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe('httpSource', () => {
+  /*
+   * These are new. `httpSource` had NO tests, which is exactly why it kept the path bug after the
+   * ARTIFACT_DIR source was fixed — and it is the source production uses, because
+   * `createArtifactLoader` refuses ARTIFACT_DIR when NODE_ENV=production.
+   */
+  it('requests the key the writer wrote, prefix included', async () => {
+    const seen: string[] = [];
+    const fake = vi.fn(async (input: string | URL | Request) => {
+      seen.push(String(input));
+      return new Response(JSON.stringify(MANIFEST), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fake);
+
+    const src = httpSource('cdn', 'https://cdn.example');
+    await src.fetch(HASH, 'manifest.json');
+
+    // The bucket root plus the shared key — NOT `<base>/<hash>/manifest.json`.
+    expect(seen[0]).toBe(`https://cdn.example/${artifactKey(HASH, 'manifest.json')}`);
+    expect(seen[0]).toContain('/artifact/');
+  });
+
+  it('reports 404 as absence rather than an error', async () => {
+    // Load-bearing: a definite absence must not fall through to the next tier as a failure, and a
+    // whole-artifact 404 caused by a WRONG PATH is indistinguishable from a genuinely missing
+    // page at this layer. That is why the test above asserts the URL and not just the behaviour.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 404 })),
+    );
+    await expect(httpSource('cdn', 'https://cdn.example').fetch(HASH, 'graph.json')).resolves.toBe(
+      null,
+    );
+  });
+
+  it('raises anything that is not a 404', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('', { status: 503 })),
+    );
+    await expect(
+      httpSource('storage', 'https://s3.example/bucket').fetch(HASH, 'graph.json'),
+    ).rejects.toThrow('storage returned 503');
+  });
+});
 
 describe('fileSource', () => {
   /*
