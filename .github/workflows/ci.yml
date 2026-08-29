@@ -2,7 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # BOTH names, deliberately. This said `[main]` while the repository's default branch is
+    # `master`, so no push to it ever triggered CI — every commit landed ungated, and the `deploy`
+    # job below (which tests `refs/heads/main`) has never once run. Listing both is what makes this
+    # correct today without assuming a rename tomorrow; the `deploy` job's own ref test is fixed to
+    # match.
+    branches: [main, master]
   pull_request:
   # The DSL round-trip properties run at their full case count nightly, not per PR — see the
   # `properties` job below and R1 in the roadmap's risk register.
@@ -189,6 +194,153 @@ jobs:
         run: pnpm --filter @resscript/rescript-dsl test
 
   # ---------------------------------------------------------------------------
+  # Container images. The Dockerfiles for apps/worker and apps/runtime were both written
+  # and hand-verified against a pruned `pnpm deploy` tree, but neither had ever been
+  # BUILT — the sandbox they were authored in has a docker CLI and no reachable registry.
+  # A Dockerfile that has never been built is a guess, so this job builds both on every
+  # run and boots the runtime image to prove it serves.
+  #
+  # Build only, no push: there is no registry configured for this project yet. When one
+  # exists, add login + `push: true` here rather than in the deploy job — an image should
+  # be built and smoke-tested once, then promoted, not rebuilt at deploy time from a
+  # different commit's context.
+  # ---------------------------------------------------------------------------
+  images:
+    name: Container images
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: resscript
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/resscript
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # The runtime image's /ready probe resolves a token against the runtime schema, so the
+      # schema has to exist before the container is asked whether it is ready.
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Apply migrations
+        run: node tools/migrate/cli.mjs up
+
+      # Root context for both, because this is a pnpm workspace and each app imports sibling
+      # packages as `workspace:*`. A context of the app directory cannot see them.
+      - name: Build worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/worker/Dockerfile
+          build-args: GIT_SHA=${{ github.sha }}
+          tags: resscript-worker:${{ github.sha }}
+          load: true
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,scope=worker,mode=max
+
+      - name: Build runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/runtime/Dockerfile
+          build-args: GIT_SHA=${{ github.sha }}
+          tags: resscript-runtime:${{ github.sha }}
+          load: true
+          cache-from: type=gha,scope=runtime
+          cache-to: type=gha,scope=runtime,mode=max
+
+      # Building proves the Dockerfile resolves. It does not prove the image RUNS — the worker's
+      # own DEPLOY.md makes that distinction and it is the one that matters, because every failure
+      # mode these images were written against (a dangling workspace symlink, a missing client
+      # bundle) survives the build and appears at boot.
+      # ARTIFACT_STORAGE_URL is a placeholder: a source must be SET or createArtifactLoader()
+      # refuses to boot, but neither /health nor /ready fetches an artifact, so it is never
+      # dialled. Port 9 is discard — if it ever IS dialled, that is a bug and it fails loudly
+      # rather than quietly reaching something real.
+      - name: Runtime image boots and serves
+        run: |
+          set -euo pipefail
+          docker run -d --name rt --network host \
+            -e NODE_ENV=production \
+            -e PORT=8081 \
+            -e RUNTIME_DOMAIN=run.local \
+            -e RUNTIME_DATABASE_URL="postgres://postgres:postgres@localhost:5432/resscript" \
+            -e REDIS_URL="redis://localhost:6379" \
+            -e ARTIFACT_STORAGE_URL="http://localhost:9/artifacts" \
+            -e STUDIO_ORIGIN="https://studio.invalid" \
+            -e PREVIEW_SIGNING_SECRET="ci-not-a-real-secret" \
+            resscript-runtime:${{ github.sha }}
+
+          # /health is liveness and touches nothing, so it answers as soon as the listener is up.
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8081/health; then break; fi
+            if [ "$i" = 30 ]; then echo "runtime never answered /health"; docker logs rt; exit 1; fi
+            sleep 1
+          done
+
+          # /ready additionally resolves a token, which is why the migrations ran above. A 503
+          # here means the image booted but cannot reach Postgres — a different bug from a
+          # Dockerfile that does not build, and worth telling apart.
+          if ! curl -fsS -o /dev/null http://127.0.0.1:8081/ready; then
+            echo "/ready did not return 200:"; curl -s http://127.0.0.1:8081/ready || true
+            docker logs rt; exit 1
+          fi
+
+          # The client bundle is served by the app, not just present in the image. A survey whose
+          # script 404s renders and then ignores every click, which no build-time check catches.
+          curl -fsS -o /dev/null http://127.0.0.1:8081/client.js
+
+          # SIGTERM must reach node (exec form, no shell wrapper) and the graceful path must
+          # complete rather than hit its forced-exit deadline. `docker stop` sends SIGTERM and
+          # waits; the timeout is above SHUTDOWN_GRACE_MS so a hang is visible as a slow stop.
+          docker stop -t 20 rt
+          docker logs rt 2>&1 | tee /tmp/rt-logs.txt
+          grep -q runtime_shutdown_complete /tmp/rt-logs.txt \
+            || { echo "runtime did not shut down gracefully"; exit 1; }
+          if grep -q runtime_shutdown_forced /tmp/rt-logs.txt; then
+            echo "runtime hit its forced-exit deadline instead of draining"; exit 1
+          fi
+
+      - name: Worker image starts and reports its store
+        run: |
+          set -euo pipefail
+          docker run -d --name wk --network host \
+            -e DATABASE_URL="postgres://postgres:postgres@localhost:5432/resscript" \
+            -e PORT=8082 \
+            resscript-worker:${{ github.sha }}
+          for i in $(seq 1 30); do
+            if curl -fsS -o /dev/null http://127.0.0.1:8082/health; then break; fi
+            if [ "$i" = 30 ]; then echo "worker never answered /health"; docker logs wk; exit 1; fi
+            sleep 1
+          done
+          # An in-memory job store passes both probes and loses every job on restart, so the
+          # smoke test asserts the DURABLE one specifically.
+          if docker logs wk 2>&1 | grep -q worker_using_memory_store; then
+            echo "worker fell back to the in-memory store despite DATABASE_URL"; exit 1
+          fi
+          docker stop -t 20 wk
+
+  # ---------------------------------------------------------------------------
   # Release ordering: migrations apply BEFORE application code deploys, and a failing
   # migration aborts the release without deploying anything (M0.3 acceptance).
   #
@@ -197,8 +349,13 @@ jobs:
   # ---------------------------------------------------------------------------
   deploy:
     name: Deploy (prod)
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: [static, database, test]
+    if: >-
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      && github.event_name == 'push'
+    # `images` included deliberately: deploying a commit whose container image does not build,
+    # or whose image boots and then fails its probes, is a release that cannot succeed. Cheaper to
+    # find that here than after the migrations in the first step have already been applied.
+    needs: [static, database, test, images]
     runs-on: ubuntu-latest
     environment: prod
     steps:
