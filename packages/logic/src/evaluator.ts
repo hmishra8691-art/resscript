@@ -77,6 +77,14 @@ export const NO_CELLS: CellReader = {
 export interface EvalSchema {
   /** `label_key` for a code in a domain, so `label_of` can reach `ctx.labels`. */
   readonly labelKey: (domain: DomainId, code: number) => string | undefined;
+  /**
+   * Every code a domain declares, ascending — `recode`'s membership test.
+   *
+   * An EMPTY result means "this schema cannot see the domain", and `recode` answers null rather
+   * than an empty set for it. A domain with no codes cannot occur in a valid survey, so the two
+   * are safely conflated, and they are conflated in the safe direction.
+   */
+  readonly domainCodes: (domain: DomainId) => readonly number[];
   /** Every variable a question emits — how a question-scoped probe becomes value reads. */
   readonly questionVariables: (id: QuestionId) => readonly VariableId[];
   /** The questions on a page, for a page-scoped probe. */
@@ -91,6 +99,7 @@ export interface EvalSchema {
 
 export const EMPTY_SCHEMA: EvalSchema = {
   labelKey: () => undefined,
+  domainCodes: () => [],
   questionVariables: () => [],
   pageQuestions: () => [],
   ownerQuestion: () => undefined,
@@ -514,6 +523,9 @@ function compute(e: Expr, env: ExprEnv): Value {
 
     case 'cast':
       return evalCast(e.to, e.on_fail, evalExpr(e.args[0], env));
+
+    case 'recode':
+      return evalRecode(e.to, evalExpr(e.args[0], env), env);
 
     case 'label_of': {
       const v = evalExpr(e.args[0], env);
@@ -972,6 +984,31 @@ function strictEq(a: Value, b: Value): boolean {
     return false;
   }
   return valueEq(a, b);
+}
+
+/**
+ * `RECODE(x, d)` — the same codes, reinterpreted in domain `d`.
+ *
+ * Three outcomes, and the difference between the last two is the point:
+ *
+ *  - a code the target declares is kept, retagged to `d`;
+ *  - a code it does not declare is DROPPED from a set and NULLS an enum — a recode is a
+ *    translation, and a term with no translation is absent, not zero;
+ *  - a target the schema cannot see at all is NULL, never an empty set. "Cannot recode" and
+ *    "recoded to nothing" have opposite consequences downstream: an empty set satisfies
+ *    `NONE OF` and fires a mask's `when_empty`, a null propagates and is excluded. Guessing the
+ *    permissive one on a missing domain is how a mask silently shows everything.
+ */
+function evalRecode(to: DomainId, value: Value, env: ExprEnv): Value {
+  if (value.k === 'null') return NULL;
+  const declared = env.schema.domainCodes(to);
+  if (declared.length === 0) return NULL;
+  const allowed = new Set(declared);
+  if (value.k === 'enum') return allowed.has(value.v) ? enumValue(value.v, to) : NULL;
+  if (value.k === 'set') return setValue(value.v.filter((code) => allowed.has(code)), to);
+  // Anything else is a checker failure that reached the evaluator; null rather than a throw,
+  // for the same reason `T_NEVER` exists — one mistake should not become an outage.
+  return NULL;
 }
 
 function evalCast(to: 'num' | 'text' | 'date' | 'bool', onFail: 'null' | 'error', v: Value): Value {

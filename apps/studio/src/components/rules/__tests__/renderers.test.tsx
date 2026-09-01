@@ -118,6 +118,7 @@ describe('RENDERERS', () => {
       case: b.caseExpr([{ when: yes, then: one }], one),
       coalesce: b.coalesce(one, one),
       cast: b.cast('num', text),
+      recode: b.recode(b.variable('var_q5set' as never), 'dom_brand' as never),
       label_of: b.labelOf(b.variable('var_s1' as never)),
     };
     for (const kind of AST_KINDS) {

@@ -468,6 +468,12 @@ export function evalAbstract(expr: Expr, env: AbstractEnv): Abstract {
     case 'date_trunc':
     case 'cast':
     case 'label_of':
+    // `recode` is deliberately ⊤ rather than "the operand's abstract value retagged". The solver
+    // proves unsatisfiability, and it may only do so soundly: a recode drops codes the target
+    // domain does not declare, so narrowing through one could prove a condition dead that is
+    // live. Sound and incomplete is the standing trade (§8.3) — a false "this can never fire"
+    // would destroy trust in every diagnostic here.
+    case 'recode':
     case '+':
     case '-':
     case '*':

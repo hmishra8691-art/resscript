@@ -1140,6 +1140,41 @@ class Resolver {
           type: expect ?? inferred ?? T_NEVER,
         };
       }
+      case 'RECODE': {
+        // `RECODE(<expr>, <question ref>)` — D §3.2's explicit cross-domain escape.
+        //
+        // The target is written as a QUESTION, not a domain: a domain has no name in the surface
+        // syntax, it is derived from the option list a question declares, and naming the question
+        // is what the author is actually thinking. The AST stores the resolved `DomainId`, so
+        // renaming the question afterwards touches nothing.
+        arity(2, 2);
+        const targetRef = args[1];
+        const ref =
+          targetRef !== undefined && targetRef.k === 'path' && targetRef.attrs.length === 0
+            ? targetRef.head
+            : undefined;
+        const questionId = ref === undefined ? undefined : questionIdOf(this.registry, ref);
+        const domain = questionId === undefined ? undefined : this.registry.env.question(questionId)?.domain;
+        if (domain === undefined) {
+          this.diagnostics.push(
+            rslDiagnostic(
+              'RSL-0010',
+              `RECODE's second argument must name a question with an option list; ` +
+                `${ref ?? 'that expression'} is not one. The target is the question whose codes ` +
+                'you are reinterpreting into, for example RECODE(Q1, Q4).',
+              (targetRef ?? surface).span,
+              ...(ref === undefined ? [] : [{ ref }]),
+            ),
+          );
+          return { expr: this.mk(ctx.b.nullLit(), surface.span, ctx), type: T_NEVER };
+        }
+        const operand = this.expr(args[0] as never, ctx, undefined);
+        const node = ctx.b.recode(operand.expr, domain);
+        return {
+          expr: this.mk(node, surface.span, ctx),
+          type: operand.type.k === 'set' ? { k: 'set', d: domain } : { k: 'enum', d: domain },
+        };
+      }
       case 'LABEL_OF': {
         arity(1, 2);
         // `SHORT` is the default (`exprEq` compares `form ?? 'short'`), so it is normalized away:

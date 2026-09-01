@@ -91,6 +91,8 @@ export const PARSER_PRODUCTIONS: { readonly [K in AstKind]: string } = {
   case: 'SET SEGMENT = CASE WHEN AGE < 35 THEN "young" ELSE "old" END',
   coalesce: 'IF COALESCE(HEAVY_BUYER, FALSE) THEN SHOW Q12',
   cast: 'IF CAST(OE AS BOOL ON FAIL ERROR) THEN SHOW Q12',
+  // Q5's own domain reinterpreted as Q3's brand list — the explicit cross-domain escape.
+  recode: 'IF RECODE(Q5, Q3) CONTAINS Q3 THEN SHOW Q12',
   label_of: 'IF LABEL_OF(Q5) = "Apple" THEN SHOW Q12',
 };
 
@@ -157,6 +159,6 @@ describe('D §7.2 three-way closure — the renderer leg (P1-12)', () => {
     const pending: Partial<AstRendererRegistry<string>> = {};
     const missing = AST_KINDS.filter((kind) => pending[kind] === undefined);
     expect(missing).toHaveLength(AST_KINDS.length);
-    expect(AST_KINDS).toHaveLength(58);
+    expect(AST_KINDS).toHaveLength(59);
   });
 });

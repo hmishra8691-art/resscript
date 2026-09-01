@@ -15,6 +15,7 @@ import type {
   Arith,
   BoolOp,
   Cast,
+  Recode,
   CaseExpr,
   Cmp,
   CmpOp,
@@ -83,6 +84,8 @@ export interface AstBuilder {
   ) => CaseExpr;
   readonly coalesce: (...args: readonly Expr[]) => Coalesce;
   readonly cast: (to: Cast['to'], a: Expr, onFail?: Cast['on_fail']) => Cast;
+  /** `RECODE(x, <domain>)` — the explicit cross-domain escape. See `Recode`. */
+  readonly recode: (a: Expr, to: DomainId) => Recode;
   readonly labelOf: (a: Expr, form?: LabelOf['form']) => LabelOf;
 }
 
@@ -158,6 +161,7 @@ export function astBuilder(start: NodeId = 1): AstBuilder {
     caseExpr: (cases, otherwise) => ({ n: n(), op: 'case', cases, else: otherwise }),
     coalesce: (...args) => ({ n: n(), op: 'coalesce', args }),
     cast: (to, a, onFail = 'null') => ({ n: n(), op: 'cast', to, args: [a], on_fail: onFail }),
+    recode: (a, to) => ({ n: n(), op: 'recode', args: [a], to }),
     labelOf: (a, form) =>
       form === undefined
         ? { n: n(), op: 'label_of', args: [a] }

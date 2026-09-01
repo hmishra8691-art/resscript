@@ -131,9 +131,29 @@ export function schemaOf(
     }
   }
 
+  // `recode`'s membership test, derived from `label_keys` rather than emitted separately: its
+  // keys ARE the domain's codes, and a second copy in the artifact could disagree with the first.
+  // Memoized per domain because a recode inside a per-item mask condition asks once per item.
+  const codesByDomain = new Map<string, readonly number[]>();
+  const domainCodes = (domain: DomainId): readonly number[] => {
+    const cached = codesByDomain.get(domain);
+    if (cached !== undefined) return cached;
+    const entries = artifactSchema.label_keys[domain];
+    const codes =
+      entries === undefined
+        ? []
+        : Object.keys(entries)
+            .map(Number)
+            .filter((code) => Number.isFinite(code))
+            .sort((a, b) => a - b);
+    codesByDomain.set(domain, codes);
+    return codes;
+  };
+
   return {
     labelKey: (domain: DomainId, code: number) =>
       artifactSchema.label_keys[domain]?.[String(code)],
+    domainCodes,
     questionVariables: (id) => (artifactSchema.question_variables[id] ?? []) as never,
     pageQuestions: (id) => (artifactSchema.page_questions[id] ?? []) as never,
     ownerQuestion: (id) => owner.get(id) as never,

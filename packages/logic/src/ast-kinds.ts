@@ -65,6 +65,7 @@ export const AST_KINDS = [
   'case',
   'coalesce',
   'cast',
+  'recode',
   'label_of',
 ] as const;
 
@@ -150,6 +151,7 @@ export const AST_FAMILY: { readonly [K in AstKind]: AstFamily } = {
   case: 'conditional',
   coalesce: 'conditional',
   cast: 'conditional',
+  recode: 'conditional',
   label_of: 'conditional',
 };
 

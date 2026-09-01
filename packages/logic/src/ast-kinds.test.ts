@@ -96,6 +96,8 @@ const SAMPLES: { readonly [K in AstKind]: Expr } = {
   case: b.caseExpr([{ when: b.variable(V.heavy), then: b.numLit(1) }], b.numLit(0)),
   coalesce: b.coalesce(b.variable(V.q6), b.numLit(0)),
   cast: b.cast('num', b.variable(V.openEnd)),
+  // Q5's set, reinterpreted in the brand domain — the deliberate cross-domain escape (D §3.2).
+  recode: b.recode(b.variable(V.q5set), DOM.brand),
   label_of: b.labelOf(b.variable(V.q5set)),
 };
 
@@ -128,9 +130,9 @@ describe('the AST kind registry (D §7.2)', () => {
       'concat', 'len', 'lower', 'upper', 'trim', 'starts_with', 'ends_with', 'str_contains',
       'matches', 'substr', 'split_count', 'word_count',
       'date_diff', 'date_add', 'date_part', 'date_trunc',
-      'case', 'coalesce', 'cast', 'label_of',
+      'case', 'coalesce', 'cast', 'recode', 'label_of',
     ]);
-    expect(AST_KINDS).toHaveLength(58);
+    expect(AST_KINDS).toHaveLength(59);
     expect(new Set(AST_KINDS).size).toBe(AST_KINDS.length);
   });
 

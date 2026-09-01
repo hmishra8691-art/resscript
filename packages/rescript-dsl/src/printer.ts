@@ -487,6 +487,22 @@ class Printer {
     return this.registry.env.byId(id)?.name ?? fallback;
   }
 
+  /**
+   * The question ref that owns an enum domain, for `RECODE`'s target.
+   *
+   * A domain is not itself nameable in the surface syntax — it is derived from the question that
+   * declares the option list — so the printed form names the question, which is also what the
+   * author wrote. Two questions sharing one domain (a shared option list) is the case that makes
+   * this ambiguous; the FIRST in registry order wins, which is stable because `env.questions()`
+   * is document-ordered, and either ref denotes the same domain so neither is wrong.
+   */
+  private refOfDomain(domain: string): string | undefined {
+    for (const question of this.registry.env.questions()) {
+      if (question.domain === domain) return question.ref;
+    }
+    return undefined;
+  }
+
   /* ---- expressions ------------------------------------------------------- */
 
   /**
@@ -699,6 +715,13 @@ class Printer {
       case 'label_of': {
         const form = expr.form === 'long' ? ', LONG' : '';
         return { text: `LABEL_OF(${this.expr(expr.args[0], 0, trivia)}${form})`, prec: P_PRIMARY };
+      }
+      case 'recode': {
+        // Printed against the QUESTION that owns the domain, not the domain id: `RECODE(Q1, Q4)`
+        // is what the author wrote and what they can read back. A domain with no question — which
+        // a hand-built artifact could carry — falls back to the id rather than losing the node.
+        const ref = this.refOfDomain(expr.to) ?? expr.to;
+        return { text: `RECODE(${this.expr(expr.args[0], 0, trivia)}, ${ref})`, prec: P_PRIMARY };
       }
       default: {
         const never: never = expr;

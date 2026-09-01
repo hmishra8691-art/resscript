@@ -488,6 +488,47 @@ function infer(e: Expr, cx: Cx): Ann {
       return { node: withArgs(e, args.map((a) => a.node), t), t };
     }
 
+    case 'recode': {
+      // The explicit cross-domain escape (D §3.2). Two things are checked and a third is
+      // deliberately NOT: the operand must be enum- or set-typed, and the target domain must
+      // exist — but whether the codes actually correspond is not checkable and not checked. That
+      // is the author's assertion, which is exactly why this is a visible node rather than an
+      // implicit coercion: the claim is written down where a reviewer can see it.
+      const args = argsOf(e).map((a) => infer(a, cx));
+      if (args.length !== 1) {
+        report(cx, 'LGC-T006', e, `RECODE takes one operand, got ${args.length}.`, {
+          arity: args.length,
+        });
+      }
+      const operand = args[0]?.t ?? T_NEVER;
+      const target = cx.env.domain(e.to);
+      if (target === undefined) {
+        report(cx, 'LGC-T001', e, `RECODE target domain ${e.to} does not exist.`, { domain: e.to });
+        return { node: withArgs(e, args.map((a) => a.node), T_NEVER), t: T_NEVER };
+      }
+      if (operand.k !== 'enum' && operand.k !== 'set' && operand.k !== 'never') {
+        report(
+          cx,
+          'LGC-T011',
+          e,
+          `RECODE expects an enum or a set, got ${typeName(operand)}. Only coded answers have ` +
+            'codes to reinterpret.',
+          { operand: typeName(operand) },
+        );
+        return { node: withArgs(e, args.map((a) => a.node), T_NEVER), t: T_NEVER };
+      }
+      // A recode to the domain the operand already has is the identity and almost certainly a
+      // leftover from an edit. Reported as a constant-condition-class warning rather than an
+      // error: it is harmless, and blocking publish over a redundant node would be disproportionate.
+      if ((operand.k === 'enum' || operand.k === 'set') && operand.d === e.to) {
+        report(cx, 'LGC-W030', e, `RECODE to enum<${e.to}> is the identity: the operand is already in that domain.`, {
+          domain: e.to,
+        });
+      }
+      const t: Type = operand.k === 'set' ? { k: 'set', d: e.to } : { k: 'enum', d: e.to };
+      return { node: withArgs(e, args.map((a) => a.node), t), t };
+    }
+
     case 'label_of': {
       // `label_of` accepts anything with a label — an enum, a set, or a null. The result is
       // text, and `label_of(null)` is null (D §2.5), which piping renders as the empty token.

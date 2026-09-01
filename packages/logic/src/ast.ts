@@ -291,6 +291,30 @@ export type Cast = NodeBase & {
   readonly on_fail: 'null' | 'error';
 };
 
+/**
+ * Reinterpret an enum or set of one domain as the SAME CODES in another domain.
+ *
+ * The deliberate, visible escape from nominal enum typing (D §3.2). Two questions that happen to
+ * share codes are not comparable — that is what stops a rule copy-pasted from a satisfaction scale
+ * silently "working" on a frequency scale, and it is why cross-question option matching normally
+ * requires a shared option list. But sometimes the lists genuinely differ and the author really
+ * does mean "the same brand, by code", and refusing that outright pushes them into worse
+ * workarounds. So the coercion exists and is a NODE: it appears in the source, in the printed
+ * form, in the builder, and in the trace. What it must never be is implicit.
+ *
+ * Codes with no counterpart in the target domain are dropped from a set and null an enum — a
+ * recode is a translation, and a term with no translation is absent, not zero. A target domain
+ * the schema cannot see at all yields null rather than an empty set, because "cannot recode" and
+ * "recoded to nothing" have opposite consequences downstream: an empty set satisfies `NONE OF`
+ * and fires a mask's `when_empty`, while a null propagates and is excluded.
+ */
+export type Recode = NodeBase & {
+  readonly op: 'recode';
+  readonly args: readonly [Expr];
+  /** The target domain. Stored as an id: a ref would not survive renaming the question. */
+  readonly to: DomainId;
+};
+
 export type LabelOf = NodeBase & {
   readonly op: 'label_of';
   readonly args: readonly [Expr];
@@ -313,6 +337,7 @@ export type Expr =
   | CaseExpr
   | Coalesce
   | Cast
+  | Recode
   | LabelOf;
 
 /* ========================================================================== */
@@ -517,6 +542,8 @@ function discriminantsEq(a: Expr, b: Expr): boolean {
       return b.op === 'date_trunc' && a.unit === b.unit;
     case 'cast':
       return b.op === 'cast' && a.to === b.to && a.on_fail === b.on_fail;
+    case 'recode':
+      return b.op === 'recode' && a.to === b.to;
     case 'label_of':
       return b.op === 'label_of' && (a.form ?? 'short') === (b.form ?? 'short');
     case 'case':

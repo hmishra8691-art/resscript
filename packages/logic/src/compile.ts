@@ -30,6 +30,7 @@ import { buildCellGraph } from './graph.js';
 import type { CellIdx, DomainId, PageId, QuestionId, VariableId } from './ids.js';
 import { LogicInvariant } from './ids.js';
 import { optimizeExpr } from './optimize.js';
+import { EMPTY_CODES } from './value.js';
 import type { TypeEnv } from './registry.js';
 import type { Cell, MaskAxis, OptProp, Rule } from './rules.js';
 
@@ -365,6 +366,8 @@ function discriminant(e: Expr): string {
       return e.part;
     case 'cast':
       return `${e.to}:${e.on_fail}`;
+    case 'recode':
+      return e.to;
     case 'label_of':
       return e.form ?? 'short';
     case 'case':
@@ -514,12 +517,23 @@ function axisItems(env: TypeEnv, questionId: QuestionId, axis: MaskAxis): readon
  */
 export function buildEvalSchema(env: TypeEnv): EvalSchema {
   const labelKeys = new Map<string, string>();
+  // Ascending and deduplicated, so `recode`'s membership test is a property of the domain and not
+  // of which question the compiler happened to walk first.
+  const codeSets = new Map<DomainId, Set<number>>();
   for (const question of env.questions()) {
     if (question.domain === undefined) continue;
+    let codes = codeSets.get(question.domain);
+    if (codes === undefined) {
+      codes = new Set<number>();
+      codeSets.set(question.domain, codes);
+    }
     for (const item of [...question.options, ...question.rows, ...question.columns]) {
       labelKeys.set(`${question.domain}:${String(item.code)}`, item.label_key);
+      codes.add(item.code);
     }
   }
+  const domainCodes = new Map<DomainId, readonly number[]>();
+  for (const [domain, codes] of codeSets) domainCodes.set(domain, [...codes].sort((a, b) => a - b));
 
   const pageOf = new Map<string, PageId>();
   for (const page of env.pages()) {
@@ -528,6 +542,7 @@ export function buildEvalSchema(env: TypeEnv): EvalSchema {
 
   return {
     labelKey: (domain: DomainId, code: number) => labelKeys.get(`${domain}:${String(code)}`),
+    domainCodes: (domain: DomainId) => domainCodes.get(domain) ?? EMPTY_CODES,
     questionVariables: (id) => env.question(id)?.emits ?? [],
     pageQuestions: (id) => env.page(id)?.question_ids ?? [],
     ownerQuestion: (id) => env.ownerQuestion(id)?.id,

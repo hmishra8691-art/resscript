@@ -34,6 +34,12 @@ export interface RenderCtx {
   nodeRef(id: string): string;
   /** Option label for `(domain, code)`, or the bare code. */
   optionLabel(domain: string, code: number): string;
+  /**
+   * The question ref that owns an enum domain, for `RECODE`'s target — the printer resolves the
+   * same way. Optional so a caller that has no registry still renders the tree, with the bare
+   * domain id where the ref would be.
+   */
+  questionOfDomain?(domain: string): string | undefined;
   /** Recursive render of a child expression. */
   child(node: Expr): React.ReactNode;
 }
@@ -250,6 +256,19 @@ export const RENDERERS: Renderers = {
   cast: (node, ctx) => (
     <span className="rs-expr">
       {kw(node.to === 'num' ? 'CODE' : `TO_${node.to.toUpperCase()}`)}({ctx.child(node.args[0])})
+    </span>
+  ),
+  /**
+   * The cross-domain escape, rendered as prose rather than as a function call.
+   *
+   * "matched by code against <Q>" is what the node means, and it is the one node in the tree that
+   * asserts something the type system could not check — so it reads as a claim the reviewer is
+   * being asked to agree with, not as machinery.
+   */
+  recode: (node, ctx) => (
+    <span className="rs-expr">
+      {ctx.child(node.args[0])} {kw('matched by code against')}{' '}
+      <span className="rs-chip">{ctx.questionOfDomain?.(node.to) ?? node.to}</span>
     </span>
   ),
   label_of: (node, ctx) => (
