@@ -228,3 +228,92 @@ describe('complex cases', () => {
     expect(pipe(template, vars)).toBe('APPLE, BANANA');
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Label resolution                                                            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The defect these cover: `vars` stores an enum answer as a CODE and is keyed by variable ID, so
+ * before `PipeSchema` existed `{{Q1.label}}` and `{{Q1.code}}` returned the same string and a
+ * piped brand rendered as `2`. Every assertion below fails against the previous implementation.
+ */
+describe('piping with a schema', () => {
+  const BRANDS: ReadonlyMap<number, string> = new Map([
+    [1, 'Apple'],
+    [2, 'Nike'],
+    [3, 'Adidas'],
+  ]);
+  const schema = {
+    variableRef: (ref: string) => (ref === 'Q1' ? 'var_q1' : ref === 'Q5' ? 'var_q5' : undefined),
+    label: (variableId: string, code: number) =>
+      variableId === 'var_q1' || variableId === 'var_q5' ? BRANDS.get(code) : undefined,
+  };
+  const vars = { var_q1: 2, var_q5: [1, 2, 3] };
+  const run = (template: string): string => pipe(template, vars, { schema });
+
+  it('resolves a ref to the id vars is keyed by', () => {
+    expect(run('{{Q1}}')).toBe('Nike');
+  });
+
+  it('label form returns the label, not the code', () => {
+    expect(run('{{Q1.label}}')).toBe('Nike');
+  });
+
+  it('code form still returns the code, because that is what it is for', () => {
+    expect(run('{{Q1.code}}')).toBe('2');
+    expect(run('{{Q1.value}}')).toBe('2');
+  });
+
+  it('list joins labels with a comma, unchanged from before', () => {
+    expect(run('{{Q5.list}}')).toBe('Apple, Nike, Adidas');
+  });
+
+  it('and_list is the prose form', () => {
+    expect(run('{{Q5.and_list}}')).toBe('Apple, Nike and Adidas');
+  });
+
+  it('and_list degrades correctly at one and two items', () => {
+    const one = pipe('{{Q5.and_list}}', { var_q5: [1] }, { schema });
+    const two = pipe('{{Q5.and_list}}', { var_q5: [1, 2] }, { schema });
+    expect(one).toBe('Apple');
+    expect(two).toBe('Apple and Nike');
+  });
+
+  it('bullets puts one label per line', () => {
+    expect(run('{{Q5.bullets}}')).toBe('• Apple\n• Nike\n• Adidas');
+  });
+
+  it('first and last read the selection order', () => {
+    expect(run('{{Q5.first}}')).toBe('Apple');
+    expect(run('{{Q5.last}}')).toBe('Adidas');
+  });
+
+  it('count is unaffected by labels', () => {
+    expect(run('{{Q5.count}}')).toBe('3');
+  });
+
+  it('falls back to the code when no label resolves', () => {
+    expect(pipe('{{Q1}}', { var_q1: 99 }, { schema })).toBe('99');
+  });
+
+  it('leaves a caller that keys vars by name working with no schema at all', () => {
+    // The backward-compatibility contract: every existing call site passes no schema.
+    expect(pipe('{{brand}}', { brand: 'Nike' })).toBe('Nike');
+    expect(pipe('{{brand.label}}', { brand: 'Nike' })).toBe('Nike');
+  });
+
+  it('prefers a direct key over the ref map, so a name-keyed caller is never rewritten', () => {
+    expect(pipe('{{Q1}}', { Q1: 'literal' }, { schema })).toBe('literal');
+  });
+
+  it('escapes the resolved label, not the template around it', () => {
+    const risky = {
+      variableRef: () => 'v',
+      label: () => '<b>Nike</b>',
+    };
+    expect(pipe('Brand: {{X}}', { v: 1 }, { schema: risky, escapeContext: 'html_text' })).toBe(
+      'Brand: &lt;b&gt;Nike&lt;/b&gt;',
+    );
+  });
+});

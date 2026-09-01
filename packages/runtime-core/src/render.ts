@@ -59,7 +59,7 @@
  */
 
 import { hashString } from './prng.js';
-import { pipe, type EscapeContext } from './piping.js';
+import { pipe, type EscapeContext, type PipeSchema } from './piping.js';
 import {
   randomize,
   type OrderGroup,
@@ -115,6 +115,11 @@ export interface OptionState {
 export interface RenderCtx {
   /** Session variable state, for piping. */
   readonly vars: { readonly [variableId: string]: unknown };
+  /**
+   * Ref and label resolution for piping. Absent means `{{Q1.label}}` renders the stored code —
+   * which is the behaviour this hook exists to replace, so a production caller supplies one.
+   */
+  readonly pipeSchema?: PipeSchema;
   /** Question-level visibility after rule evaluation. Absent means visible. */
   readonly isQuestionVisible?: (question_id: string) => boolean;
   /**
@@ -444,6 +449,7 @@ export function renderPage(
     return pipe(text, ctx.vars, {
       emptyToken: ctx.emptyToken ?? '',
       escapeContext: ctx.escapeContext ?? 'none',
+      ...(ctx.pipeSchema === undefined ? {} : { schema: ctx.pipeSchema }),
     });
   };
 

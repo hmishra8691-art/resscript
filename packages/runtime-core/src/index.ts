@@ -119,6 +119,7 @@ export {
 export {
   pipe,
   escape,
+  type PipeSchema,
   testBasicPiping,
   testVariableForms,
   testFilters,

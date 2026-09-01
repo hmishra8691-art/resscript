@@ -36,6 +36,7 @@ import {
   type OrderGroup,
   type RehydratedLogic,
   type RenderPage,
+  type PipeSchema,
   type RenderedPage,
 } from '@resscript/runtime-core';
 import { NO_CELLS, evalCondition, evaluate, varStateOf } from '@resscript/logic';
@@ -507,6 +508,59 @@ function groupsFor(head: ArtifactHead): (group_ref: string) => OrderGroup | unde
  * produces the trace on every evaluation regardless — and the surface that sets it sits behind a
  * signed preview token and redacts pii before responding.
  */
+/**
+ * Per-artifact indexes for piping: ref → variable id, and (variable, code) → label.
+ *
+ * Cached against the manifest object rather than rebuilt per page. The build is cheap — two maps
+ * over the variable list — but it is on the render path of every page of every session, and the
+ * manifest is already per-artifact and already immutable, so a `WeakMap` keyed by it is both the
+ * correct lifetime and free to invalidate: a new artifact is a new object.
+ *
+ * `labels` is part of the key in effect, not in fact: a session in another language gets another
+ * bundle, so the label closure reads `labels` from the call rather than from the cache. Only the
+ * two id maps are shared.
+ */
+const PIPE_INDEX = new WeakMap<
+  object,
+  {
+    readonly idByRef: ReadonlyMap<string, string>;
+    readonly labelKeys: ReadonlyMap<string, ReadonlyMap<number, string>>;
+  }
+>();
+
+function pipeSchemaFor(
+  manifest: Pick<ArtifactManifest, 'variable_manifest'>,
+  labels: { readonly [key: string]: string } | undefined,
+): PipeSchema {
+  let index = PIPE_INDEX.get(manifest);
+  if (index === undefined) {
+    const idByRef = new Map<string, string>();
+    const labelKeys = new Map<string, ReadonlyMap<number, string>>();
+    for (const entry of manifest.variable_manifest) {
+      // First declaration wins. Two variables cannot share a name — `validateStructural` refuses
+      // it — so this only guards a hand-built artifact, where losing a token beats picking one.
+      if (!idByRef.has(entry.name)) idByRef.set(entry.name, entry.id);
+      const domain = entry.enum_domain;
+      if (domain !== undefined && domain !== null) {
+        labelKeys.set(entry.id, new Map(domain.map(e => [e.code, e.label_key])));
+      }
+    }
+    index = { idByRef, labelKeys };
+    PIPE_INDEX.set(manifest, index);
+  }
+  const resolved = index;
+  return {
+    variableRef: ref => resolved.idByRef.get(ref),
+    label: (variableId, code) => {
+      const key = resolved.labelKeys.get(variableId)?.get(code);
+      // An unresolvable key falls through to the code rather than to the empty string: a missing
+      // translation should read as `2`, which is wrong and visible, not as a gap, which is wrong
+      // and silent. `CMP-0200` reports the missing key at publish.
+      return key === undefined ? undefined : labels?.[key];
+    },
+  };
+}
+
 function evaluateAndRender(
   page: RenderPage,
   session: SessionState,
@@ -555,6 +609,10 @@ function evaluateAndRender(
   const rendered = renderPage(page, session.random_seed, {
     vars: session.vars as Record<string, unknown>,
     escapeContext,
+    // Without this, `{{Q1.label}}` renders the stored CODE: `vars` holds what the session saved
+    // and is keyed by variable id, so neither the ref nor the label is reachable from the
+    // template alone. Both are in the manifest and the language bundle, which are right here.
+    pipeSchema: pipeSchemaFor(manifest, labels),
     ...evaluated.renderHooks,
   });
 
