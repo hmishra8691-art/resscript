@@ -275,9 +275,16 @@ export function evaluatePage(input: EvaluatePageInput): EvaluatedPage {
     // author meant to grey out.
     const visible = verdict.option(item.id, 'visible' as never);
     const enabled = verdict.option(item.id, 'enabled' as never);
+    // The two ordering bands. Reported only when TRUE: `renderAxis` treats an absent band as
+    // "middle", and emitting `prioritized: false` would say the same thing in a shape that a
+    // future reader could mistake for "explicitly demoted".
+    const prioritized = verdict.option(item.id, 'prioritized' as never);
+    const deprioritized = verdict.option(item.id, 'deprioritized' as never);
     return {
       ...(visible ? {} : { hidden: true }),
       ...(enabled ? {} : { disabled: true }),
+      ...(prioritized ? { prioritized: true } : {}),
+      ...(deprioritized ? { deprioritized: true } : {}),
     };
   };
 

@@ -55,7 +55,30 @@ export const DISPOSITIONS = [
 ] as const;
 export type Disposition = (typeof DISPOSITIONS)[number];
 
-export type OptProp = 'visible' | 'enabled' | 'preselected' | 'auto_select' | 'required';
+/**
+ * The per-item cells a rule can write.
+ *
+ * `prioritized` / `deprioritized` are ORDERING inputs, and they live here — in the engine, on the
+ * `opt` cell — rather than in the renderer for one reason: the *condition* under which an item is
+ * promoted is logic, and logic belongs where the trace, the dependency graph, cycle detection and
+ * the dead-option solver already are. The engine still never orders anything (ADR-006): it decides
+ * the predicate and `renderAxis` performs the partition. That is the split `visible` already has —
+ * the engine says whether, the renderer says where.
+ *
+ * Booleans and not a numeric rank, deliberately. Two booleans OR-combine on the lattice the `opt`
+ * cell already has, so two rules promoting the same item is order-independent and needs no new
+ * conflict rule. A numeric priority has no natural join, so two writers would have to become
+ * `LGC-CONFLICT` — banning exactly the layered "and also push the client's brand up" rule the
+ * feature exists to allow.
+ */
+export type OptProp =
+  | 'visible'
+  | 'enabled'
+  | 'preselected'
+  | 'auto_select'
+  | 'required'
+  | 'prioritized'
+  | 'deprioritized';
 
 export type Target =
   | { readonly type: 'question'; readonly id: QuestionId }
@@ -318,6 +341,8 @@ export function optPropCombiner(prop: OptProp): (base: boolean, writes: readonly
     case 'preselected':
     case 'auto_select':
     case 'required':
+    case 'prioritized':
+    case 'deprioritized':
       return combineOr;
     default: {
       const never: never = prop;

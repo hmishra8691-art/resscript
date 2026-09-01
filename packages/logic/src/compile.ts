@@ -476,6 +476,8 @@ function defaultOptionState(prop: OptProp): boolean {
     case 'preselected':
     case 'auto_select':
     case 'required':
+    case 'prioritized':
+    case 'deprioritized':
       return false;
     default: {
       const never: never = prop;

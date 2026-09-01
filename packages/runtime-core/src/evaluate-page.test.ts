@@ -92,7 +92,12 @@ function verdict(over: Partial<PageVerdict> = {}): PageVerdict {
   return {
     visible: () => true,
     items: (() => [1, 2, 3, 4]) as never,
-    option: () => true,
+    // Mirrors `defaultOptionState`, rather than answering `true` to everything: `visible` and
+    // `enabled` default true, every other `OptProp` defaults false. A fake that says true for all
+    // of them models a system this one is not — it would have reported every option as both
+    // promoted and demoted, and the render tests that trusted it would have been asserting a
+    // partition the engine never produces.
+    option: ((_id: string, prop: string) => prop === 'visible' || prop === 'enabled') as never,
     value: () => null,
     validations: [],
     termination: undefined,
@@ -240,8 +245,10 @@ describe('verdict becomes renderer hooks', () => {
     // selectable. Collapsing them would silently drop an option the author meant to grey out.
     const { result } = run({
       v: verdict({
-        option: (optionId, prop) =>
-          optionId === 'opt_pepsi' ? prop !== ('visible' as never) : prop !== ('enabled' as never),
+        option: ((optionId: string, prop: string) => {
+          if (prop !== 'visible' && prop !== 'enabled') return false;
+          return optionId === 'opt_pepsi' ? prop !== 'visible' : prop !== 'enabled';
+        }) as never,
       }),
     });
 

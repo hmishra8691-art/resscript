@@ -30,6 +30,21 @@ export interface OptionBehaviour {
   /** Dynamic: select this item when the condition holds (e.g. "None" after a mask empties). */
   readonly auto_select?: ConditionalValue<boolean> | null;
   readonly required_if?: Expr | null;
+  /**
+   * Move this item to the top of the eligible list, or to the bottom.
+   *
+   * Ordering, not eligibility: a deprioritized item is still offered, still exportable, and still
+   * selectable — it is simply last. Both are ORs over the item's writers, so two rules promoting
+   * the same item agree rather than conflict, and both set means `prioritized` wins (a promotion
+   * is nearly always the more specific, later-added intent).
+   *
+   * The partition is STABLE: with neither set on any item, the band split is the identity and the
+   * rendered order is byte-identical to a survey compiled before these existed. That is the whole
+   * backward-compatibility argument for putting ordering here rather than moving randomization
+   * after eligibility, which would have changed the seeded order of every survey in field.
+   */
+  readonly prioritized?: ConditionalValue<boolean>;
+  readonly deprioritized?: ConditionalValue<boolean>;
 }
 
 export interface OptionMedia {

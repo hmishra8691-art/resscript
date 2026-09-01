@@ -842,16 +842,31 @@ function explicitCodes(
 /* ========================================================================== */
 
 /**
- * The `behaviour` properties whose cells a respondent can actually observe.
+ * The `behaviour` properties whose cells a respondent can actually observe, and the lattice each
+ * one combines on — which decides how "the condition holds" becomes a write.
  *
- * Only `visible` and `enabled`. `preselected`, `auto_select` and `required_if` also have `opt`
- * cells and also type-check, and lowering them here would produce three more cells that nothing
- * reads: `OptionState` in `runtime-core/src/render.ts` carries exactly `hidden` and `disabled`,
- * so a `preselected` verdict computed at publish would reach no respondent. That is this
- * codebase's failure shape #1 — a computed value with no consumer — and the fix is to add the
- * consumer first, not the producer now. Left open, deliberately, and named in the report.
+ *  - `absorbing_false` (`visible`, `enabled`): a `false` write wins and a `true` write is a no-op
+ *    against a base that already defaults to `true`. "P iff C" is therefore `IF NOT C THEN FALSE`.
+ *  - `or` (`prioritized`, `deprioritized`): a `true` write wins over a base of `false`. "P iff C"
+ *    is `IF C THEN TRUE`, with no negation.
+ *
+ * Getting the two the same way round is the correctness argument for the whole pass, and the two
+ * shapes are genuinely opposite — a single lowering applied to both would be silently wrong for
+ * one of them in a way no shape assertion catches. `rules.test.ts` evaluates both tables.
+ *
+ * `preselected`, `auto_select` and `required_if` are absent on purpose. They have `opt` cells and
+ * would type-check, and `OptionState` in `runtime-core/src/render.ts` carries exactly `hidden`,
+ * `disabled` and the two bands — so lowering them would add three more computed values with no
+ * consumer, this codebase's failure shape #1. The consumer goes first.
  */
-const LOWERED_PROPS = ['visible', 'enabled'] as const;
+const LOWERED_PROPS = {
+  visible: 'absorbing_false',
+  enabled: 'absorbing_false',
+  prioritized: 'or',
+  deprioritized: 'or',
+} as const;
+
+type LoweredProp = keyof typeof LOWERED_PROPS;
 
 /** The three axes, because an option, a row and a column all carry `behaviour`. */
 const BEHAVIOUR_AXES = ['options', 'rows', 'columns'] as const;
@@ -859,7 +874,7 @@ const BEHAVIOUR_AXES = ['options', 'rows', 'columns'] as const;
 interface BehaviourSite {
   readonly question: QuestionNode;
   readonly item: QuestionItem;
-  readonly prop: (typeof LOWERED_PROPS)[number];
+  readonly prop: LoweredProp;
   readonly condition: SchemaExpr;
   /** Ordinal within the question, so sibling items get distinct order keys. */
   readonly slot: number;
@@ -897,7 +912,7 @@ function behaviourSites(survey: Survey): readonly BehaviourSite[] {
     let slot = 0;
     for (const axis of BEHAVIOUR_AXES) {
       (node[axis] ?? []).forEach((item, index) => {
-        for (const prop of LOWERED_PROPS) {
+        for (const prop of Object.keys(LOWERED_PROPS) as readonly LoweredProp[]) {
           const condition = conditionOf(item.behaviour?.[prop]);
           if (condition === undefined) continue;
           out.push({
@@ -947,6 +962,11 @@ function conditionOf(
  * nothing. `CMP-0703` reports it wherever the condition can be unknown, so the author can write
  * `ANSWERED(...)` — D §2.5's preferred form — instead of finding out in field.
  *
+ * An `or` property inverts all of this: `behaviour.prioritized = {condition: C}` lowers to
+ * `IF C THEN prioritized = TRUE`, with no negation, because a `true` write is what moves an
+ * OR cell off a `false` base. Its unknown row needs no warning either — an undecided condition
+ * leaves the item unpromoted, which is both the safe direction and the one an author expects.
+ *
  * The condition is renumbered because it mixes authored node ids with the fresh `not`: nothing
  * else in this file wraps an authored expression, and two nodes sharing an `n` would collide in
  * the memo table's typed array rather than fail loudly. The effect's builder then starts *past*
@@ -959,15 +979,17 @@ function conditionOf(
  */
 function lowerOptionBehaviour(site: BehaviourSite, ctx: Ctx): Rule {
   const questionSite = flowSiteOfQuestion(site.question.id, ctx);
-  const condition = renumber(astBuilder().not(asLogicExpr(site.condition)));
+  const absorbing = LOWERED_PROPS[site.prop] === 'absorbing_false';
+  const authored = asLogicExpr(site.condition);
+  const condition = renumber(absorbing ? astBuilder().not(authored) : authored);
   const b = astBuilder(countNodes(condition) + 1);
-  reportUnknownable(site, condition, ctx);
+  if (absorbing) reportUnknownable(site, condition, ctx);
   return {
     id: synthesizedOptionRuleId(site.item.id, site.prop),
     kind: 'option_state',
     target: { type: 'option', id: asOptionId(site.item.id) },
     condition,
-    effect: optionState(site.item.id, site.prop, false, b),
+    effect: optionState(site.item.id, site.prop, !absorbing, b),
     // `on_change`, for `lowerQuestionMask`'s reason: the item's state is a cell like any other
     // and the graph decides when it is recomputed.
     evaluation: 'on_change',

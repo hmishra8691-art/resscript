@@ -305,6 +305,8 @@ export const BASE_OPTION_DEFAULT = {
   preselected: false,
   auto_select: false,
   required: false,
+  prioritized: false,
+  deprioritized: false,
 } as const;
 
 /** `base_visible`'s default. Absent ⇒ the node is visible. Same wire-contract argument. */

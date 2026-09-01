@@ -464,6 +464,8 @@ export const SCHEMA_DEFS: { readonly [name: string]: SchemaDesc } = {
     preselected: opt(conditionalBool),
     auto_select: optNull(conditionalBool),
     required_if: optNull(expr),
+    prioritized: opt(conditionalBool),
+    deprioritized: opt(conditionalBool),
   }),
   QuestionCell: object<QuestionCell>({
     row_ref: req(str()),

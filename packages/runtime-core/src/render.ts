@@ -110,6 +110,10 @@ export interface OptionState {
   readonly disabled?: boolean;
   /** Removed from the render entirely — distinct from masked out, and recorded separately. */
   readonly hidden?: boolean;
+  /** Ordering, not eligibility: move to the top of the surviving list. */
+  readonly prioritized?: boolean;
+  /** Ordering, not eligibility: move to the bottom of the surviving list. */
+  readonly deprioritized?: boolean;
 }
 
 export interface RenderCtx {
@@ -377,12 +381,32 @@ function renderAxis(
 
   // ---- 4: option state, over the survivors only -----------------------
   const disabled: number[] = [];
-  const surviving = masked.filter(item => {
+  const top: RenderItem[] = [];
+  const middle: RenderItem[] = [];
+  const bottom: RenderItem[] = [];
+  for (const item of masked) {
     const state = ctx.optionState?.(q.id, axis, item);
-    if (state?.hidden) return false;
+    if (state?.hidden) continue;
     if (state?.disabled) disabled.push(item.code);
-    return true;
-  });
+    // `prioritized` wins when both are set: a promotion is nearly always the later, more specific
+    // intent, and the alternative — dropping the item to the middle — is the one outcome neither
+    // rule asked for.
+    if (state?.prioritized) top.push(item);
+    else if (state?.deprioritized) bottom.push(item);
+    else middle.push(item);
+  }
+
+  // ---- 4b: the priority partition -------------------------------------
+  // A STABLE three-band partition, and stability is the whole backward-compatibility argument:
+  // each band keeps the relative order step 2 produced, so a survey where no item is banded gets
+  // `[] ++ everything ++ []` — the identity — and renders byte-identical to one compiled before
+  // bands existed. Same seed, same order, same digest, replay intact.
+  //
+  // Deliberately AFTER masking and option state, and not folded into step 2: you can only promote
+  // an item that survived, and doing it earlier would let a band be decided by items the
+  // respondent never sees. Deliberately not a re-randomization either — the engine settles which
+  // band, the seed already settled the order within it.
+  const surviving = top.length === 0 && bottom.length === 0 ? middle : [...top, ...middle, ...bottom];
 
   // A question whose every item logic hid is as unanswerable as one an empty mask produced.
   // Reported the same way downstream because from the respondent's side it is the same event.

@@ -895,3 +895,90 @@ describe('purity', () => {
     expect(renderPage(p, SEED, c)).toEqual(renderPage(p, SEED, c));
   });
 });
+
+/* ---------------------------------------------------------------- *
+ * Priority bands                                                     *
+ * ---------------------------------------------------------------- */
+
+/**
+ * The band partition is stable, and stability is the entire backward-compatibility argument for
+ * placing ordering here rather than moving randomization after eligibility. Every test below that
+ * asserts an unchanged order is asserting that a survey already in field renders as it did.
+ */
+describe('the priority partition', () => {
+  const banded = (
+    prioritized: readonly number[],
+    deprioritized: readonly number[] = [],
+  ): Partial<RenderCtx> => ({
+    optionState: (_q, _a, item) => ({
+      ...(prioritized.includes(item.code) ? { prioritized: true } : {}),
+      ...(deprioritized.includes(item.code) ? { deprioritized: true } : {}),
+    }),
+  });
+
+  it('is the identity when nothing is banded', () => {
+    expect(codesOf(renderPage(page(), SEED, ctx(banded([]))))).toEqual([1, 2, 3, 4]);
+  });
+
+  it('moves a prioritized item to the top', () => {
+    expect(codesOf(renderPage(page(), SEED, ctx(banded([3]))))).toEqual([3, 1, 2, 4]);
+  });
+
+  it('moves a deprioritized item to the bottom', () => {
+    expect(codesOf(renderPage(page(), SEED, ctx(banded([], [1]))))).toEqual([2, 3, 4, 1]);
+  });
+
+  it('keeps relative order WITHIN each band', () => {
+    // 4 before 2 in the top band because 2 comes first in the incoming list — the band is a
+    // partition, not a re-sort, so it never invents an order the seed did not produce.
+    expect(codesOf(renderPage(page(), SEED, ctx(banded([2, 4], [1]))))).toEqual([2, 4, 3, 1]);
+  });
+
+  it('promotes an item that is both, because a promotion is the more specific intent', () => {
+    expect(codesOf(renderPage(page(), SEED, ctx(banded([2], [2]))))).toEqual([2, 1, 3, 4]);
+  });
+
+  it('bands only the survivors, never an item a mask or a rule removed', () => {
+    const r = renderPage(
+      page(),
+      SEED,
+      ctx({
+        ...maskCtx([1, 2, 3]),
+        optionState: (_q, _a, item) => ({
+          ...(item.code === 3 ? { prioritized: true } : {}),
+          ...(item.code === 2 ? { hidden: true } : {}),
+        }),
+      }),
+    );
+    expect(codesOf(r)).toEqual([3, 1]);
+  });
+
+  it('does not disturb disabled_codes, which are a property of the item not the band', () => {
+    const r = renderPage(
+      page(),
+      SEED,
+      ctx({
+        optionState: (_q, _a, item) => ({
+          ...(item.code === 4 ? { prioritized: true } : {}),
+          ...(item.code === 2 ? { disabled: true } : {}),
+        }),
+      }),
+    );
+    expect(codesOf(r)).toEqual([4, 1, 2, 3]);
+    expect(r.questions[0]?.options?.disabled_codes).toEqual([2]);
+  });
+
+  it('leaves the digest unchanged when no item is banded', () => {
+    // The digest covers the item codes in order, so an ordering step that fired when it should
+    // not would show up here even if no assertion above happened to cover that axis.
+    const before = renderPage(page(), SEED, ctx()).digest;
+    const after = renderPage(page(), SEED, ctx(banded([]))).digest;
+    expect(after).toBe(before);
+  });
+
+  it('changes the digest when an item IS banded, so replay cannot silently disagree', () => {
+    const before = renderPage(page(), SEED, ctx()).digest;
+    const after = renderPage(page(), SEED, ctx(banded([3]))).digest;
+    expect(after).not.toBe(before);
+  });
+});

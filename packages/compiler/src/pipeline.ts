@@ -432,6 +432,8 @@ function optionDefaultsOf(survey: Survey): { readonly [key: string]: boolean } {
       put(item.id, 'enabled', literalOf(behaviour.enabled));
       put(item.id, 'preselected', literalOf(behaviour.preselected));
       put(item.id, 'auto_select', literalOf(behaviour.auto_select));
+      put(item.id, 'prioritized', literalOf(behaviour.prioritized));
+      put(item.id, 'deprioritized', literalOf(behaviour.deprioritized));
       // `required_if` is an `Expr` and not a `ConditionalValue`, so it has no literal arm to read:
       // schema §5.1 states per-item requiredness as a condition or not at all.
     }

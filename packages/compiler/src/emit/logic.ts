@@ -123,6 +123,8 @@ export const OPT_PROPS: readonly OptProp[] = [
   'preselected',
   'auto_select',
   'required',
+  'prioritized',
+  'deprioritized',
 ];
 
 // `BASE_OPTION_DEFAULT` and `BASE_VISIBLE_DEFAULT` are imported from `@resscript/schema`. The sparse

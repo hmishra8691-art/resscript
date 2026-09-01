@@ -1082,7 +1082,7 @@ function withItemBehaviour(
   spec: {
     readonly questionRef: string;
     readonly optionRef: string;
-    readonly prop: 'visible' | 'enabled';
+    readonly prop: BehaviourProp;
     readonly behaviour: OptionBehaviour;
   },
 ): Survey {
@@ -1113,8 +1113,10 @@ interface Lowered {
   readonly diagnostics: readonly string[];
 }
 
+type BehaviourProp = 'visible' | 'enabled' | 'prioritized' | 'deprioritized';
+
 function lowerBehaviour(
-  prop: 'visible' | 'enabled',
+  prop: BehaviourProp,
   condition: (env: TypeEnv, q1Variable: string) => SchemaExpr,
 ): Lowered {
   const fixture = scaffold();
@@ -1245,5 +1247,64 @@ describe('a conditional item behaviour becomes an option_state rule', () => {
     // The literal arm is `optionDefaultsOf`'s business in `pipeline.ts` — a base default, not a
     // rule. A rule here would be a second writer of a cell the base already settles.
     expect(buildRules(patched, built.graph, built.env).rules).toEqual([]);
+  });
+});
+
+/**
+ * The `or` half of the lowering table. `prioritized` and `deprioritized` combine with
+ * `combineOr` over a `false` base, so a TRUE write is what moves the cell — the exact opposite of
+ * `visible`. One lowering applied to both would be silently wrong for one of them, and wrong in a
+ * way that produces a rule which type-checks, ships, and quietly does nothing.
+ */
+describe('an ordering property lowers the other way round', () => {
+  it('lowers behaviour.prioritized to IF C THEN prioritized = TRUE, with no negation', () => {
+    const lowered = lowerBehaviour('prioritized', (env, v) => q1Equals(env, v, 1));
+    expect(lowered.rule.condition.op).not.toBe('not');
+    expect(lowered.rule.effect).toMatchObject({
+      action: 'option_state',
+      prop: 'prioritized',
+      value: { op: 'lit', v: { k: 'bool', v: true } },
+    });
+  });
+
+  it('lowers behaviour.deprioritized the same way', () => {
+    const lowered = lowerBehaviour('deprioritized', (env, v) => q1Equals(env, v, 1));
+    expect(lowered.rule.effect).toMatchObject({ prop: 'deprioritized', value: { v: { v: true } } });
+  });
+
+  it('does not warn CMP-0703: an undecided condition simply does not promote', () => {
+    // The warning exists because an undecided `visible` leaves the item SHOWN, which is the
+    // surprising direction. An undecided `prioritized` leaves it unpromoted, which is both safe
+    // and what the author expects, so warning here would be noise on every unguarded condition.
+    expect(lowerBehaviour('prioritized', (env, v) => q1Equals(env, v, 1)).diagnostics).toEqual([]);
+  });
+
+  it.each([
+    { label: 'C is TRUE  → promoted', answer: 1, promoted: true },
+    { label: 'C is FALSE → not promoted', answer: 2, promoted: false },
+    { label: 'C is UNKNOWN → not promoted', answer: undefined, promoted: false },
+  ])('$label', ({ answer, promoted }) => {
+    const fixture = scaffold();
+    const built = fixture.build();
+    const q1Variable = variableOf(built.survey, fixture.q1.id, 'scalar').id;
+    const domain = built.env.byId(asVariableId(q1Variable))?.domain;
+    if (domain === undefined) throw new Error('Q1 has no enum domain');
+
+    const survey = withItemBehaviour(built.survey, {
+      questionRef: 'Q5',
+      optionRef: 'o2',
+      prop: 'prioritized',
+      behaviour: { prioritized: { condition: q1Equals(built.env, q1Variable, 1) } },
+    });
+    const program = compileLogic(buildRules(survey, built.graph, built.env).rules, built.env);
+    const verdict = evaluate(
+      program,
+      varStateOf(answer === undefined ? {} : { [q1Variable]: enumValue(answer, domain) }),
+      {},
+    );
+    expect(verdict.option(optionId(fixture.q5, 'o2'), 'prioritized')).toBe(promoted);
+    // Banding one item must not band its siblings, and must not touch visibility at all.
+    expect(verdict.option(optionId(fixture.q5, 'o1'), 'prioritized')).toBe(false);
+    expect(verdict.option(optionId(fixture.q5, 'o2'), 'visible')).toBe(true);
   });
 });
