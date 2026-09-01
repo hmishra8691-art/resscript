@@ -446,6 +446,7 @@ export const SCHEMA_DEFS: { readonly [name: string]: SchemaDesc } = {
     media: optNull(ref('OptionMedia')),
     position: req(num(true)),
     anchor: opt(pattern(ANCHOR_PATTERN)),
+    pin: opt(bool),
     exclusive: opt(bool),
     behaviour: opt(ref('OptionBehaviour')),
     value_override: optNull(str()),

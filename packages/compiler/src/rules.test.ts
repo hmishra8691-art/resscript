@@ -30,6 +30,7 @@ import {
   type LogicRule,
   type Mask,
   type MaskSource,
+  type OptionBehaviour,
   type OptionId,
   type PageId,
   type PageNode,
@@ -49,6 +50,7 @@ import {
   astBuilder,
   checkRule,
   compileLogic,
+  walkExpr,
   enumValue,
   evaluate,
   varStateOf,
@@ -1056,31 +1058,44 @@ describe('the fields carried through unchanged', () => {
  * asserted by evaluating the compiled program rather than by inspecting the produced rule.
  */
 
-/** Attach `behaviour.<prop> = {condition}` to one option, returning a new `Survey`. */
+/**
+ * Rewrite every question in a survey.
+ *
+ * The two casts are the content tree's nesting: `PageNode.children` is `readonly PageChild[]`, a
+ * narrower union than `ContentNode`, so a generic visitor cannot prove it returns the child type
+ * it was handed even though it always does. Confined to this fixture.
+ */
+function mapQuestions(survey: Survey, fn: (question: QuestionNode) => QuestionNode): Survey {
+  const visit = <T extends ContentNode>(node: T): T => {
+    if (node.type === 'question') return fn(node) as T;
+    if (node.type === 'block' || node.type === 'page') {
+      return { ...node, children: node.children.map(visit) } as T;
+    }
+    return node;
+  };
+  return { ...survey, content: survey.content.map(visit) };
+}
+
+/** Attach `behaviour.<prop>` to one option, returning a new `Survey`. */
 function withItemBehaviour(
   survey: Survey,
   spec: {
     readonly questionRef: string;
     readonly optionRef: string;
     readonly prop: 'visible' | 'enabled';
-    readonly condition: SchemaExpr;
+    readonly behaviour: OptionBehaviour;
   },
 ): Survey {
-  const patchNode = (node: ContentNode): ContentNode => {
-    if (node.type === 'block' || node.type === 'page') {
-      return { ...node, children: node.children.map(patchNode) };
-    }
-    if (node.type !== 'question' || node.ref !== spec.questionRef) return node;
-    return {
-      ...node,
-      options: (node.options ?? []).map((option) =>
-        option.ref === spec.optionRef
-          ? { ...option, behaviour: { [spec.prop]: { condition: spec.condition } } }
-          : option,
-      ),
-    };
-  };
-  return { ...survey, content: survey.content.map(patchNode) };
+  return mapQuestions(survey, (question) =>
+    question.ref !== spec.questionRef
+      ? question
+      : {
+          ...question,
+          options: (question.options ?? []).map((option) =>
+            option.ref === spec.optionRef ? { ...option, behaviour: spec.behaviour } : option,
+          ),
+        },
+  );
 }
 
 /** `Q1 = <code>`: decidable when Q1 is answered, `U` when it is not. */
@@ -1109,7 +1124,7 @@ function lowerBehaviour(
     questionRef: 'Q5',
     optionRef: 'o2',
     prop,
-    condition: condition(built.env, q1Variable),
+    behaviour: { [prop]: { condition: condition(built.env, q1Variable) } },
   });
   const result = buildRules(survey, built.graph, built.env);
   return {
@@ -1142,20 +1157,19 @@ describe('a conditional item behaviour becomes an option_state rule', () => {
     expect(lowered.rule.effect).toMatchObject({ prop: 'enabled', value: { v: { v: false } } });
   });
 
+  /**
+   * A rule's condition and its effect expressions share one node-id namespace, and the collision
+   * this guards is silent: `compileLogic` indexes the memo table by `n`, so two nodes with the
+   * same id read each other's cached value rather than throwing.
+   */
   it('numbers the condition and the effect in one namespace, with no collisions', () => {
     const lowered = lowerBehaviour('visible', (env, v) => q1Equals(env, v, 1));
     const ids: number[] = [];
-    const walk = (e: Expr): void => {
-      ids.push(e.n);
-      for (const child of Object.values(e) as unknown[]) {
-        if (Array.isArray(child)) for (const c of child) if (isNode(c)) walk(c as Expr);
-        else if (isNode(child)) walk(child as Expr);
-      }
-    };
-    const isNode = (v: unknown): boolean =>
-      typeof v === 'object' && v !== null && 'op' in (v as object) && 'n' in (v as object);
-    walk(lowered.rule.condition);
-    if (lowered.rule.effect.action === 'option_state') walk(lowered.rule.effect.value);
+    walkExpr(lowered.rule.condition, (node) => ids.push(node.n));
+    if (lowered.rule.effect.action === 'option_state') {
+      walkExpr(lowered.rule.effect.value, (node) => ids.push(node.n));
+    }
+    expect(ids.length).toBeGreaterThan(1);
     expect(new Set(ids).size).toBe(ids.length);
   });
 
@@ -1193,7 +1207,7 @@ describe('a conditional item behaviour becomes an option_state rule', () => {
       questionRef: 'Q5',
       optionRef: 'o2',
       prop: 'visible',
-      condition: q1Equals(built.env, q1Variable, 1),
+      behaviour: { visible: { condition: q1Equals(built.env, q1Variable, 1) } },
     });
     const target = optionId(fixture.q5, 'o2');
     const program = compileLogic(
@@ -1222,21 +1236,12 @@ describe('a conditional item behaviour becomes an option_state rule', () => {
   it('produces nothing for an option whose behaviour is a literal', () => {
     const fixture = scaffold();
     const built = fixture.build();
-    const patched: Survey = {
-      ...built.survey,
-      content: built.survey.content.map(function patch(node: ContentNode): ContentNode {
-        if (node.type === 'block' || node.type === 'page') {
-          return { ...node, children: node.children.map(patch) };
-        }
-        if (node.type !== 'question' || node.ref !== 'Q5') return node;
-        return {
-          ...node,
-          options: (node.options ?? []).map((option) =>
-            option.ref === 'o2' ? { ...option, behaviour: { visible: { literal: false } } } : option,
-          ),
-        };
-      }),
-    };
+    const patched = withItemBehaviour(built.survey, {
+      questionRef: 'Q5',
+      optionRef: 'o2',
+      prop: 'visible',
+      behaviour: { visible: { literal: false } },
+    });
     // The literal arm is `optionDefaultsOf`'s business in `pipeline.ts` — a base default, not a
     // rule. A rule here would be a second writer of a cell the base already settles.
     expect(buildRules(patched, built.graph, built.env).rules).toEqual([]);

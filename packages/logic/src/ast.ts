@@ -213,6 +213,8 @@ export interface GroupItem {
   readonly label_key?: string;
   /** 0-based position in the *canonical* (unrandomized) list; display order comes from ctx. */
   readonly position?: number;
+  /** "Always show": a mask may not remove this item. See `applyMask`. */
+  readonly pin?: boolean;
   readonly meta?: { readonly [key: string]: string | number | boolean | null };
 }
 

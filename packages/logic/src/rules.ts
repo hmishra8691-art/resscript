@@ -332,17 +332,28 @@ export function optPropCombiner(prop: OptProp): (base: boolean, writes: readonly
  * masks into include/exclude*, and the compiler additionally orders masks on a question by
  * `order_key` and records that order in the artifact, so a mixed include/exclude chain is
  * deterministic too.
+ *
+ * `pinned` — schema §5.1's `QuestionItem.pin` — survives BOTH directions: an include mask keeps a
+ * pinned item it did not match, and an exclude mask keeps one it did. That is what makes "None of
+ * the above" survive a filter that removes every substantive option, and it preserves the
+ * order-independence above, because a code no mask can remove is unaffected by the order the
+ * masks run in. It does not make the item unconditionally visible: `opt.visible` is a different
+ * cell, and an explicit rule still hides it.
  */
 export function applyMask(
   current: readonly number[],
   itemCodes: readonly number[],
   mode: 'include' | 'exclude',
+  pinned: ReadonlySet<number> = EMPTY_PINS,
 ): readonly number[] {
   const filter = new Set(itemCodes);
   return mode === 'include'
-    ? current.filter((code) => filter.has(code))
-    : current.filter((code) => !filter.has(code));
+    ? current.filter((code) => filter.has(code) || pinned.has(code))
+    : current.filter((code) => !filter.has(code) || pinned.has(code));
 }
+
+/** Shared empty set, so the default argument allocates nothing on the hot path. */
+const EMPTY_PINS: ReadonlySet<number> = new Set<number>();
 
 /** Which cell a rule writes. Exactly one, except a mask, which writes an `items` cell. */
 export function writesOf(rule: Rule): readonly Cell[] {

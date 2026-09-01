@@ -236,7 +236,11 @@ export function evaluatePage(input: EvaluatePageInput): EvaluatedPage {
     const q = input.page.questions.find(candidate => candidate.id === questionId);
     if (!q) return [];
     const items = axis === 'options' ? q.options : axis === 'rows' ? q.rows : q.columns;
-    return (items ?? []).map(item => ({ option_id: item.id as never, code: item.code }));
+    return (items ?? []).map(item => ({
+      option_id: item.id as never,
+      code: item.code,
+      ...(item.pin === undefined ? {} : { pin: item.pin }),
+    }));
   });
 
   const verdict = input.evaluate(program, input.varStateOf(input.taggedVars), {

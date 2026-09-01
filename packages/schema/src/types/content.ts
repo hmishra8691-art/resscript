@@ -64,6 +64,21 @@ export interface QuestionItem {
    */
   readonly position: number;
   readonly anchor?: AnchorSpec;
+  /**
+   * "Always show": exempt from mask filtering. The escape hatch for "Other", "None of the above"
+   * and "Prefer not to say", which have to survive a filter that removes everything around them.
+   *
+   * A flag and not a rule, because the alternative fights the lattice. `opt.visible` combines with
+   * an absorbing false — hide wins, which is right, since a hide rule is nearly always a
+   * correction layered on base logic — so an "always show" expressed as an overriding
+   * `option_state` rule would mean weakening that for every item. A pin instead exempts the item
+   * at the one place it needs exempting: mask composition.
+   *
+   * Deliberately NOT an exemption from everything. An explicit `behaviour.visible` on the item, or
+   * an authored rule targeting it, still hides it — those are the "overriding rule" a programmer
+   * configures on purpose. The pin survives only the *dynamic filtering* a mask does.
+   */
+  readonly pin?: boolean;
   /** Selecting this clears all others — "None of these", "Don't know". */
   readonly exclusive?: boolean;
   readonly behaviour?: OptionBehaviour;

@@ -351,6 +351,10 @@ function recomputeItems(
 ): readonly number[] {
   const base = program.baseItems(questionId, axis);
   const items = program.maskItems(questionId, axis);
+  // Built once for the cell rather than per mask: it is a property of the declared items, and a
+  // question with three masks would otherwise rebuild it three times per evaluation.
+  const pinned = new Set<number>();
+  for (const item of items) if (item.pin === true && item.code !== undefined) pinned.add(item.code);
   let current: readonly number[] = base;
   let fallback: MaskFallback | undefined;
 
@@ -376,7 +380,7 @@ function recomputeItems(
       // combined with the mandatory fallback this can never dead-end silently.
       if (evalCondition(rule.effect.per_item, { ...env, item: binding }) === 'T') matched.push(item.code);
     }
-    current = applyMask(current, matched, rule.effect.mode);
+    current = applyMask(current, matched, rule.effect.mode, pinned);
 
     if (current.length === 0) {
       const whenEmpty = rule.effect.fallback.when_empty;

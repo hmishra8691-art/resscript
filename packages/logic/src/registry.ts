@@ -98,6 +98,8 @@ export interface ItemDecl {
   readonly position: number;
   /** The author's handle for the item, used to resolve `Group.column_ref` / `row_ref`. */
   readonly ref?: string;
+  /** "Always show": a mask may not remove this item. See `applyMask`. */
+  readonly pin?: boolean;
   readonly meta?: { readonly [key: string]: string | number | boolean | null };
   /** The fan-out variable this item emits, when it emits one. */
   readonly variable_id?: VariableId;

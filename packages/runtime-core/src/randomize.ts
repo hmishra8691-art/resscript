@@ -57,6 +57,12 @@ export interface RandomizeItem {
   readonly code: number;
   readonly ref?: string;
   readonly anchor?: AnchorSpec;
+  /**
+   * "Always show" — carried here because this is the shape a compiled page item takes and the
+   * engine's `maskItems` view is built from it. Ordering never reads it: a pin exempts an item
+   * from filtering, it does not give it a position.
+   */
+  readonly pin?: boolean;
   readonly position?: number;
 }
 

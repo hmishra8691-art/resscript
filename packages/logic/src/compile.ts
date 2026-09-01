@@ -494,6 +494,7 @@ function axisItems(env: TypeEnv, questionId: QuestionId, axis: MaskAxis): readon
     ...(question.domain === undefined ? {} : { domain: question.domain }),
     label_key: item.label_key,
     position: item.position,
+    ...(item.pin === undefined ? {} : { pin: item.pin }),
     ...(item.variable_id === undefined ? {} : { variable_id: item.variable_id }),
     ...(item.meta === undefined ? {} : { meta: item.meta }),
   }));

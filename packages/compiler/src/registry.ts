@@ -734,6 +734,7 @@ function itemDecls(
       label_key: item.label?.key ?? '',
       position: index,
       ref: item.ref,
+      ...(item.pin === undefined ? {} : { pin: item.pin }),
       ...(meta === undefined ? {} : { meta }),
       ...(variableId === undefined ? {} : { variable_id: variableId }),
     };
