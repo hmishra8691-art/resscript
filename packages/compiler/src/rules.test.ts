@@ -48,6 +48,10 @@ import {
   asVariableId,
   astBuilder,
   checkRule,
+  compileLogic,
+  enumValue,
+  evaluate,
+  varStateOf,
   writesOf,
   type Expr,
   type Rule,
@@ -57,7 +61,13 @@ import { deterministicIds, makeMiniSurvey } from '../../schema/src/__fixtures__/
 
 import { buildFlowGraph } from './flow.js';
 import { buildTypeEnvFor } from './registry.js';
-import { buildRules, ORDER_KEY_SITE_STRIDE, synthesizedMaskRuleId } from './rules.js';
+import {
+  buildRules,
+  OPTION_BEHAVIOUR_ORDER_SLOT,
+  ORDER_KEY_SITE_STRIDE,
+  synthesizedMaskRuleId,
+  synthesizedOptionRuleId,
+} from './rules.js';
 import type { FlowGraph } from './types.js';
 
 /* -------------------------------------------------------------------------- */
@@ -1030,5 +1040,205 @@ describe('the fields carried through unchanged', () => {
     expect(produced.authored_in).toBe('visual');
     expect(produced.label).toBe('client asked for this in the 3 March call');
     expect(produced.priority_group).toBeUndefined();
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Conditional item behaviour                                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `behaviour.<prop> = {condition: C}` lowers to `IF NOT C THEN <prop> = FALSE`, and the reason
+ * this block exists is that the negation is the whole correctness argument. `opt.visible` combines
+ * with an absorbing-false lattice over a base that defaults to `true`, so the obvious lowering —
+ * condition `C`, write `true` — fires on the wrong half of the truth table and leaves the item
+ * shown for everyone. Nothing about that is visible in a shape assertion, so the truth table is
+ * asserted by evaluating the compiled program rather than by inspecting the produced rule.
+ */
+
+/** Attach `behaviour.<prop> = {condition}` to one option, returning a new `Survey`. */
+function withItemBehaviour(
+  survey: Survey,
+  spec: {
+    readonly questionRef: string;
+    readonly optionRef: string;
+    readonly prop: 'visible' | 'enabled';
+    readonly condition: SchemaExpr;
+  },
+): Survey {
+  const patchNode = (node: ContentNode): ContentNode => {
+    if (node.type === 'block' || node.type === 'page') {
+      return { ...node, children: node.children.map(patchNode) };
+    }
+    if (node.type !== 'question' || node.ref !== spec.questionRef) return node;
+    return {
+      ...node,
+      options: (node.options ?? []).map((option) =>
+        option.ref === spec.optionRef
+          ? { ...option, behaviour: { [spec.prop]: { condition: spec.condition } } }
+          : option,
+      ),
+    };
+  };
+  return { ...survey, content: survey.content.map(patchNode) };
+}
+
+/** `Q1 = <code>`: decidable when Q1 is answered, `U` when it is not. */
+function q1Equals(env: TypeEnv, variableId: string, code: number): SchemaExpr {
+  const domain = env.byId(asVariableId(variableId))?.domain;
+  if (domain === undefined) throw new Error('Q1 has no enum domain');
+  const b = astBuilder();
+  return toSchema(b.cmp('==', b.variable(asVariableId(variableId)), b.enumLit(code, domain)));
+}
+
+interface Lowered {
+  readonly rule: Rule;
+  readonly built: Built;
+  readonly optionId: OptionId;
+  readonly diagnostics: readonly string[];
+}
+
+function lowerBehaviour(
+  prop: 'visible' | 'enabled',
+  condition: (env: TypeEnv, q1Variable: string) => SchemaExpr,
+): Lowered {
+  const fixture = scaffold();
+  const built = fixture.build();
+  const q1Variable = variableOf(built.survey, fixture.q1.id, 'scalar').id;
+  const survey = withItemBehaviour(built.survey, {
+    questionRef: 'Q5',
+    optionRef: 'o2',
+    prop,
+    condition: condition(built.env, q1Variable),
+  });
+  const result = buildRules(survey, built.graph, built.env);
+  return {
+    rule: only(result.rules),
+    built: { ...built, survey },
+    optionId: optionId(fixture.q5, 'o2'),
+    diagnostics: result.diagnostics.map((d) => d.code),
+  };
+}
+
+describe('a conditional item behaviour becomes an option_state rule', () => {
+  it('lowers behaviour.visible to IF NOT C THEN visible = FALSE', () => {
+    const lowered = lowerBehaviour('visible', (env, v) => q1Equals(env, v, 1));
+
+    expect(lowered.rule.id).toBe(synthesizedOptionRuleId(lowered.optionId, 'visible'));
+    expect(lowered.rule.kind).toBe('option_state');
+    expect(lowered.rule.target).toEqual({ type: 'option', id: lowered.optionId });
+    // The negation is the point: without it the rule fires on the wrong half of the table.
+    expect(lowered.rule.condition.op).toBe('not');
+    expect(lowered.rule.effect).toMatchObject({
+      action: 'option_state',
+      option_id: lowered.optionId,
+      prop: 'visible',
+      value: { op: 'lit', v: { k: 'bool', v: false } },
+    });
+  });
+
+  it('lowers behaviour.enabled the same way, because it shares the lattice', () => {
+    const lowered = lowerBehaviour('enabled', (env, v) => q1Equals(env, v, 1));
+    expect(lowered.rule.effect).toMatchObject({ prop: 'enabled', value: { v: { v: false } } });
+  });
+
+  it('numbers the condition and the effect in one namespace, with no collisions', () => {
+    const lowered = lowerBehaviour('visible', (env, v) => q1Equals(env, v, 1));
+    const ids: number[] = [];
+    const walk = (e: Expr): void => {
+      ids.push(e.n);
+      for (const child of Object.values(e) as unknown[]) {
+        if (Array.isArray(child)) for (const c of child) if (isNode(c)) walk(c as Expr);
+        else if (isNode(child)) walk(child as Expr);
+      }
+    };
+    const isNode = (v: unknown): boolean =>
+      typeof v === 'object' && v !== null && 'op' in (v as object) && 'n' in (v as object);
+    walk(lowered.rule.condition);
+    if (lowered.rule.effect.action === 'option_state') walk(lowered.rule.effect.value);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('writes the opt cell, and checkRule reports nothing about it when C is guarded', () => {
+    const lowered = lowerBehaviour('visible', (_env, v) => answered(v));
+    expect(writesOf(lowered.rule).map((cell) => cell.c)).toEqual(['opt']);
+    expect(codesOf(lowered.rule, lowered.built.env)).toEqual([]);
+    expect(lowered.diagnostics).toEqual([]);
+  });
+
+  it('sits in the behaviour order band, behind the authored rules and the masks', () => {
+    const lowered = lowerBehaviour('visible', (env, v) => q1Equals(env, v, 1));
+    const site = Math.floor(lowered.rule.order_key / ORDER_KEY_SITE_STRIDE);
+    expect(lowered.rule.order_key - site * ORDER_KEY_SITE_STRIDE).toBe(
+      OPTION_BEHAVIOUR_ORDER_SLOT,
+    );
+  });
+
+  /**
+   * The truth table, evaluated. Three respondents, one authored condition (`Q1 = 1`), and the
+   * third is the row worth having a test for: an undecided condition leaves the item shown.
+   */
+  it.each([
+    { label: 'C is TRUE  → shown', answer: 1, visible: true },
+    { label: 'C is FALSE → hidden', answer: 2, visible: false },
+    { label: 'C is UNKNOWN → shown', answer: undefined, visible: true },
+  ])('$label', ({ answer, visible }) => {
+    const fixture = scaffold();
+    const built = fixture.build();
+    const q1Variable = variableOf(built.survey, fixture.q1.id, 'scalar').id;
+    const domain = built.env.byId(asVariableId(q1Variable))?.domain;
+    if (domain === undefined) throw new Error('Q1 has no enum domain');
+
+    const survey = withItemBehaviour(built.survey, {
+      questionRef: 'Q5',
+      optionRef: 'o2',
+      prop: 'visible',
+      condition: q1Equals(built.env, q1Variable, 1),
+    });
+    const target = optionId(fixture.q5, 'o2');
+    const program = compileLogic(
+      buildRules(survey, built.graph, built.env).rules,
+      built.env,
+    );
+    const verdict = evaluate(
+      program,
+      varStateOf(
+        answer === undefined ? {} : { [q1Variable]: enumValue(answer, domain) },
+      ),
+      {},
+    );
+    expect(verdict.option(target, 'visible')).toBe(visible);
+    // The sibling option, which carries no behaviour at all, is unaffected either way.
+    expect(verdict.option(optionId(fixture.q5, 'o1'), 'visible')).toBe(true);
+  });
+
+  it('warns CMP-0703 when the condition can be unknown, and not when it is guarded', () => {
+    expect(lowerBehaviour('visible', (env, v) => q1Equals(env, v, 1)).diagnostics).toEqual([
+      'CMP-0703',
+    ]);
+    expect(lowerBehaviour('visible', (_env, v) => answered(v)).diagnostics).toEqual([]);
+  });
+
+  it('produces nothing for an option whose behaviour is a literal', () => {
+    const fixture = scaffold();
+    const built = fixture.build();
+    const patched: Survey = {
+      ...built.survey,
+      content: built.survey.content.map(function patch(node: ContentNode): ContentNode {
+        if (node.type === 'block' || node.type === 'page') {
+          return { ...node, children: node.children.map(patch) };
+        }
+        if (node.type !== 'question' || node.ref !== 'Q5') return node;
+        return {
+          ...node,
+          options: (node.options ?? []).map((option) =>
+            option.ref === 'o2' ? { ...option, behaviour: { visible: { literal: false } } } : option,
+          ),
+        };
+      }),
+    };
+    // The literal arm is `optionDefaultsOf`'s business in `pipeline.ts` — a base default, not a
+    // rule. A rule here would be a second writer of a cell the base already settles.
+    expect(buildRules(patched, built.graph, built.env).rules).toEqual([]);
   });
 });

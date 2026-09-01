@@ -76,6 +76,7 @@ export const CMP_DIAGNOSTIC_CODES = {
   'CMP-0700': 'a rule uses ON UNKNOWN, which the current authoring schema cannot persist',
   'CMP-0701': 'an enum domain has no stable identity, so cross-question set logic is unprovable',
   'CMP-0702': 'a rule effect has no counterpart in the logic engine effect union',
+  'CMP-0703': 'a conditional item behaviour can be UNKNOWN, and an undecided item is shown',
 
   'CMP-0800': 'the cell graph has no evaluation order, so the program cannot be published',
   'CMP-0801': 'the compile produced no pages',
@@ -136,6 +137,7 @@ export const CMP_SEVERITY: { readonly [K in CmpCode]: CompileSeverity } = {
   'CMP-0700': 'error',
   'CMP-0701': 'warning',
   'CMP-0702': 'error',
+  'CMP-0703': 'warning',
 
   'CMP-0800': 'error',
   'CMP-0801': 'error',

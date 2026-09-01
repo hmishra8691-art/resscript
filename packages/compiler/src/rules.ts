@@ -135,6 +135,7 @@
 import {
   MASK_FALLBACKS,
   pointer,
+  type ConditionalValue,
   type ContentNode,
   type Disposition as SchemaDisposition,
   type Expr as SchemaExpr,
@@ -161,7 +162,10 @@ import {
   asRuleId,
   asVariableId,
   astBuilder,
+  countNodes,
   hasPrefix,
+  mayBeUnknown,
+  renumber,
   type AstBuilder,
   type Disposition,
   type Effect,
@@ -228,6 +232,30 @@ export function synthesizedMaskRuleId(maskId: string): RuleId {
   return asRuleId(`rul_${maskId}`);
 }
 
+/**
+ * Slot base for rules synthesized from an item's `behaviour` condition arms, above the mask band.
+ *
+ * A question carrying more than five hundred masks would spill into this band, and the spill is
+ * harmless here in a way it is not for masks: `opt(...)` cells combine with an order-independent
+ * lattice — a `false` write wins however the writers are ordered (D §4.6) — and `compileLogic`
+ * breaks an equal key on the rule id. The band exists to keep a trace readable, not to make
+ * evaluation correct.
+ */
+export const OPTION_BEHAVIOUR_ORDER_SLOT = 500;
+
+/**
+ * The rule id of a rule synthesized from an item's `behaviour.<prop>` condition arm.
+ *
+ * `synthesizedMaskRuleId`'s reasoning, applied to a second synthesized surface: the cell writer
+ * needs an id for the trace, for `LGC-CONFLICT` and for `CompiledRule.id`, and there is no
+ * `logic_rules` row to take one from. The item's own `opt_` id plus the property name is the
+ * stable, unique seed — an item declares each property at most once — so `rul_opt_01J…_visible`
+ * is self-describing, injective, and cannot be mistaken for a rule the author wrote.
+ */
+export function synthesizedOptionRuleId(optionId: string, prop: OptProp): RuleId {
+  return asRuleId(`rul_${optionId}_${prop}`);
+}
+
 export function buildRules(
   survey: Survey,
   graph: FlowGraph,
@@ -255,6 +283,9 @@ export function buildRules(
   for (const site of maskSites(survey)) {
     const lowered = lowerQuestionMask(site, ctx);
     if (lowered !== undefined) rules.push(lowered);
+  }
+  for (const site of behaviourSites(survey)) {
+    rules.push(lowerOptionBehaviour(site, ctx));
   }
 
   return {
@@ -804,6 +835,176 @@ function explicitCodes(
   const first = tests[0];
   if (first === undefined) return b.boolLit(false);
   return tests.length === 1 ? first : b.or(...tests);
+}
+
+/* ========================================================================== */
+/* 4b. Conditional item behaviour                                              */
+/* ========================================================================== */
+
+/**
+ * The `behaviour` properties whose cells a respondent can actually observe.
+ *
+ * Only `visible` and `enabled`. `preselected`, `auto_select` and `required_if` also have `opt`
+ * cells and also type-check, and lowering them here would produce three more cells that nothing
+ * reads: `OptionState` in `runtime-core/src/render.ts` carries exactly `hidden` and `disabled`,
+ * so a `preselected` verdict computed at publish would reach no respondent. That is this
+ * codebase's failure shape #1 — a computed value with no consumer — and the fix is to add the
+ * consumer first, not the producer now. Left open, deliberately, and named in the report.
+ */
+const LOWERED_PROPS = ['visible', 'enabled'] as const;
+
+/** The three axes, because an option, a row and a column all carry `behaviour`. */
+const BEHAVIOUR_AXES = ['options', 'rows', 'columns'] as const;
+
+interface BehaviourSite {
+  readonly question: QuestionNode;
+  readonly item: QuestionItem;
+  readonly prop: (typeof LOWERED_PROPS)[number];
+  readonly condition: SchemaExpr;
+  /** Ordinal within the question, so sibling items get distinct order keys. */
+  readonly slot: number;
+  readonly path: string;
+}
+
+/**
+ * Every item `behaviour.<prop>` carrying a `condition` arm, in document order.
+ *
+ * The walk is `maskSites`' walk over a different leaf, and it is duplicated rather than shared
+ * for that function's stated reason: it carries the path as it descends, so a diagnostic points
+ * at `/content/0/children/2/options/3/behaviour/visible` rather than making the author bisect a
+ * forty-option brand list by hand. Iterative, per this package's house rule.
+ */
+function behaviourSites(survey: Survey): readonly BehaviourSite[] {
+  const out: BehaviourSite[] = [];
+  const stack: { readonly node: ContentNode; readonly path: readonly (string | number)[] }[] = [];
+  const pushAll = (nodes: readonly ContentNode[], base: readonly (string | number)[]): void => {
+    for (let i = nodes.length - 1; i >= 0; i -= 1) {
+      const node = nodes[i];
+      if (node !== undefined) stack.push({ node, path: [...base, i] });
+    }
+  };
+  pushAll(survey.content, ['content']);
+
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (frame === undefined) break;
+    const node = frame.node;
+    if (node.type === 'block' || node.type === 'page') {
+      pushAll(node.children, [...frame.path, 'children']);
+      continue;
+    }
+    if (node.type !== 'question') continue;
+    let slot = 0;
+    for (const axis of BEHAVIOUR_AXES) {
+      (node[axis] ?? []).forEach((item, index) => {
+        for (const prop of LOWERED_PROPS) {
+          const condition = conditionOf(item.behaviour?.[prop]);
+          if (condition === undefined) continue;
+          out.push({
+            question: node,
+            item,
+            prop,
+            condition,
+            slot,
+            path: pointer(...frame.path, axis, index, 'behaviour', prop),
+          });
+          slot += 1;
+        }
+      });
+    }
+  }
+  return out;
+}
+
+/** The other arm of `ConditionalValue`; `pipeline.ts`'s `literalOf` reads the first. */
+function conditionOf(
+  value: ConditionalValue<boolean> | null | undefined,
+): SchemaExpr | undefined {
+  if (value === undefined || value === null) return undefined;
+  return 'condition' in value ? value.condition : undefined;
+}
+
+/**
+ * One `Rule` per conditional item property: `behaviour.visible = {condition: C}` lowers to
+ * `IF NOT C THEN HIDE <item>`.
+ *
+ * **The negation is forced by the lattice, not chosen.** `opt.visible` and `opt.enabled` combine
+ * with `combineAbsorbingFalse` (D §4.6), so the only write that can move the cell is `false`: a
+ * `true` write is a no-op against a base that already defaults to `true` (`defaultOptionState`).
+ * "Visible iff C" therefore has exactly one expressible form — fire when `C` is false, write
+ * `false` — and the tempting alternative, condition `C` writing `true`, is the silent bug: it
+ * fires on the wrong half of the truth table and leaves the option shown for every respondent.
+ *
+ *  - `C = TRUE`  → `NOT C` false → no write → base `true` → shown.
+ *  - `C = FALSE` → `NOT C` true  → writes `false` → hidden.
+ *  - `C = U`     → `NOT C` is `U` → `option_state`'s collapse is `false` (D §2.5, "the literal
+ *    default is authored; unknown should not override it") → no write → **shown**.
+ *
+ * The third row is the one to know, and it is the documented collapse rather than a consequence
+ * of this lowering: an item whose condition cannot be decided is shown. That is the opposite
+ * direction from a mask, which excludes an item it cannot prove belongs — and the asymmetry is
+ * real, because a mask has `when_empty` to catch an emptied axis and a per-item condition has
+ * nothing. `CMP-0703` reports it wherever the condition can be unknown, so the author can write
+ * `ANSWERED(...)` — D §2.5's preferred form — instead of finding out in field.
+ *
+ * The condition is renumbered because it mixes authored node ids with the fresh `not`: nothing
+ * else in this file wraps an authored expression, and two nodes sharing an `n` would collide in
+ * the memo table's typed array rather than fail loudly. The effect's builder then starts *past*
+ * the condition — a rule's condition and its effect expressions share one node-id namespace
+ * (`exprsOf` hands both to `compileLogic`'s flattener), which is why `lowerQuestionMask` draws
+ * both from a single builder and why two independent builders would be wrong here.
+ *
+ * The trace shows `NOT C` and not `C`, so the rule carries a derived label naming the property
+ * and the item — `lowerQuestionMask` labels its rules for the same reason.
+ */
+function lowerOptionBehaviour(site: BehaviourSite, ctx: Ctx): Rule {
+  const questionSite = flowSiteOfQuestion(site.question.id, ctx);
+  const condition = renumber(astBuilder().not(asLogicExpr(site.condition)));
+  const b = astBuilder(countNodes(condition) + 1);
+  reportUnknownable(site, condition, ctx);
+  return {
+    id: synthesizedOptionRuleId(site.item.id, site.prop),
+    kind: 'option_state',
+    target: { type: 'option', id: asOptionId(site.item.id) },
+    condition,
+    effect: optionState(site.item.id, site.prop, false, b),
+    // `on_change`, for `lowerQuestionMask`'s reason: the item's state is a cell like any other
+    // and the graph decides when it is recomputed.
+    evaluation: 'on_change',
+    authored_in: 'visual',
+    order_key: orderKeyOf(questionSite, OPTION_BEHAVIOUR_ORDER_SLOT + site.slot, ctx),
+    ...(questionSite === undefined ? {} : { flow_node_id: asFlowNodeId(questionSite) }),
+    label: `${site.prop} of ${site.item.ref} in ${site.question.ref}`,
+  };
+}
+
+/**
+ * `CMP-0703` — the condition can be `UNKNOWN`, and an undecided item is shown.
+ *
+ * Reported against the item's own `behaviour.<prop>` pointer rather than against the synthesized
+ * rule, because the author has no rule to open: the condition was written on the option, and that
+ * is where the fix goes. `mayBeUnknown` is the checker's own predicate, so an author who has
+ * already guarded with `ANSWERED(...)` is not warned — the guard is recognised, which is what
+ * makes the warning worth acting on rather than worth suppressing.
+ *
+ * A warning and not an error. Showing an item on an undecided condition is a defensible default
+ * and is sometimes exactly what the author wants ("show unless proven ineligible"); what is not
+ * defensible is not knowing. Acknowledging it is recorded in the audit log like any other
+ * accepted warning.
+ */
+function reportUnknownable(site: BehaviourSite, condition: Expr, ctx: Ctx): void {
+  if (!mayBeUnknown(condition, ctx.env)) return;
+  ctx.diagnostics.push(
+    cmpDiagnostic(
+      'CMP-0703',
+      `${site.item.ref} of ${site.question.ref} is ${site.prop} on a condition that can be ` +
+        'UNKNOWN — for a respondent who never answered one of the questions it reads. An ' +
+        'undecided condition leaves the item SHOWN (D §2.5: unknown must not override the ' +
+        'authored default). Guard it with ANSWERED(...) if it should be hidden instead.',
+      `${ctx.path}${site.path}`,
+      { question_id: site.question.id, option_id: site.item.id, prop: site.prop },
+    ),
+  );
 }
 
 /* ========================================================================== */
