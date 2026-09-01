@@ -192,6 +192,47 @@ describe('POST /api/v1/nodes/:id/items', () => {
     expect(both.status).toBe(422);
   });
 
+  /**
+   * The authorability check for the option-level features. An engine that computes `pin` and the
+   * two ordering bands is worth nothing if the write path rejects them — `behaviour` is `.strict()`
+   * on purpose, so every property has to be named to exist, and that is exactly the kind of gap
+   * that goes unnoticed while every unit test in three packages passes.
+   */
+  it('accepts pin and the ordering bands, and round-trips them', async () => {
+    const h = createHarness();
+    const nodeId = await question(h, 'Q14');
+    const b = astBuilder(1);
+
+    const created = await addItem(h, nodeId, {
+      item_kind: 'option',
+      ref: 'none',
+      code: 99,
+      behaviour: {
+        pin: true,
+        prioritized: { literal: false },
+        deprioritized: { condition: b.probe('answered', { kind: 'variable', id: IDS.varS1 as never }) },
+      },
+    });
+    expect(created.status).toBe(201);
+
+    const stored = h.data.items[0]?.behaviour as Record<string, unknown> | undefined;
+    expect(stored?.['pin']).toBe(true);
+    expect(stored?.['deprioritized']).toBeDefined();
+  });
+
+  it('still refuses a behaviour property that has no cell behind it', async () => {
+    const h = createHarness();
+    const nodeId = await question(h, 'Q15');
+    const refused = await addItem(h, nodeId, {
+      item_kind: 'option',
+      ref: 'x',
+      code: 1,
+      behaviour: { promoted: true } as never,
+    });
+    // 400 and not 422: an unknown key fails body validation before any semantic check runs.
+    expect(refused.status).toBe(400);
+  });
+
   it('refuses items on a node that is not a question', async () => {
     const h = createHarness();
     h.as({ userId: h.ids.programmerA, activeOrgId: h.ids.orgA });

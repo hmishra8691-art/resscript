@@ -598,7 +598,16 @@ const behaviourEntrySchema = z
     'provide either literal or condition, not both',
   );
 
-/** The five programmable properties C §5.1 names. A sixth would be a schema change, not a key. */
+/**
+ * The programmable properties of one item.
+ *
+ * `.strict()`, so a property the schema does not name is a 422 rather than a field that is
+ * accepted, stored, and read by nothing. That is also why adding one here is a deliberate edit:
+ * every key below has a cell in the engine and a consumer at render time.
+ *
+ * `pin` is a plain boolean among the conditional values — see `OptionBehaviour.pin` for why it
+ * lives in this bag rather than beside `exclusive` on the item.
+ */
 const behaviourSchema = z
   .object({
     visible: behaviourEntrySchema.optional(),
@@ -606,6 +615,9 @@ const behaviourSchema = z
     preselected: behaviourEntrySchema.optional(),
     auto_select: behaviourEntrySchema.optional(),
     required_if: behaviourEntrySchema.optional(),
+    pin: z.boolean().optional(),
+    prioritized: behaviourEntrySchema.optional(),
+    deprioritized: behaviourEntrySchema.optional(),
   })
   .strict();
 

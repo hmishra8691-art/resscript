@@ -31,6 +31,27 @@ export interface OptionBehaviour {
   readonly auto_select?: ConditionalValue<boolean> | null;
   readonly required_if?: Expr | null;
   /**
+   * "Always show": exempt from mask filtering. The escape hatch for "Other", "None of the above"
+   * and "Prefer not to say", which have to survive a filter that removes everything around them.
+   *
+   * A flag and not a rule, because the alternative fights the lattice. `opt.visible` combines with
+   * an absorbing false — hide wins, which is right, since a hide rule is nearly always a
+   * correction layered on base logic — so an "always show" expressed as an overriding
+   * `option_state` rule would mean weakening that for every item. A pin instead exempts the item
+   * at the one place it needs exempting: mask composition.
+   *
+   * Deliberately NOT an exemption from everything. An explicit `behaviour.visible` on the item, or
+   * an authored rule targeting it, still hides it — those are the "overriding rule" a programmer
+   * configures on purpose. The pin survives only the *dynamic filtering* a mask does.
+   *
+   * A plain boolean in a bag of `ConditionalValue`s, and it belongs here rather than beside
+   * `exclusive` on the item for a concrete reason: `behaviour` is a `jsonb` column
+   * (`content.question_items`), so this is authorable through the existing write path, while a new
+   * item column would need a migration to carry a flag that is per-item programmability by any
+   * reading. `required_if` is already a bare `Expr` in the same bag, so the shape is not novel.
+   */
+  readonly pin?: boolean;
+  /**
    * Move this item to the top of the eligible list, or to the bottom.
    *
    * Ordering, not eligibility: a deprioritized item is still offered, still exportable, and still
@@ -79,21 +100,6 @@ export interface QuestionItem {
    */
   readonly position: number;
   readonly anchor?: AnchorSpec;
-  /**
-   * "Always show": exempt from mask filtering. The escape hatch for "Other", "None of the above"
-   * and "Prefer not to say", which have to survive a filter that removes everything around them.
-   *
-   * A flag and not a rule, because the alternative fights the lattice. `opt.visible` combines with
-   * an absorbing false — hide wins, which is right, since a hide rule is nearly always a
-   * correction layered on base logic — so an "always show" expressed as an overriding
-   * `option_state` rule would mean weakening that for every item. A pin instead exempts the item
-   * at the one place it needs exempting: mask composition.
-   *
-   * Deliberately NOT an exemption from everything. An explicit `behaviour.visible` on the item, or
-   * an authored rule targeting it, still hides it — those are the "overriding rule" a programmer
-   * configures on purpose. The pin survives only the *dynamic filtering* a mask does.
-   */
-  readonly pin?: boolean;
   /** Selecting this clears all others — "None of these", "Don't know". */
   readonly exclusive?: boolean;
   readonly behaviour?: OptionBehaviour;

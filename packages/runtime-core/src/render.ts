@@ -5,13 +5,31 @@
  * The order this module actually runs, and why, is below — the two differ on where randomization
  * sits, because `packages/logic` needs the display order as an *input*.
  *
- *   1. base items    — the question's options / rows / columns from the artifact
- *   2. order          — randomize the DECLARED list; this is `EvalContext.orders`
- *   3. masking       — filter to `Verdict.items`, preserving that order
- *   4. fallback      — when masking emptied the set
- *   5. option state  — logic's per-item verdicts, over the survivors only
- *   6. subset limit  — take n of what survived, and record which n
- *   7. piping        — interpolate label and instruction text
+ *    1. base items    — the question's options / rows / columns from the artifact
+ *    2. order         — randomize the DECLARED list; this is `EvalContext.orders`
+ *    3. masking       — filter to `Verdict.items`, preserving that order; a pinned item
+ *                       (`OptionBehaviour.pin`) is exempt and cannot be filtered out
+ *    4. fallback      — when masking emptied the set
+ *    5. option state  — logic's per-item verdicts, over the survivors only
+ *    6. all-hidden    — every survivor hidden is as unanswerable as an empty mask
+ *    7. priority band — stable partition on `prioritized` / `deprioritized`
+ *    8. subset limit  — take n of what survived, and record which n
+ *    9. piping        — interpolate label and instruction text
+ *
+ * ## Why ordering stays at step 2, and the bands at step 7
+ *
+ * The intuitive reading — eligibility first, then randomize what is left — would change the
+ * seeded order of every survey already in field: the same seed and the same answers would produce
+ * a different option order, which breaks replay, changes the artifact hash, and makes ADR-004's
+ * divergence detector fire on our own change. So step 2 orders the DECLARED list, masking
+ * preserves relative order rather than reordering to the verdict, and the bands at step 7 are a
+ * STABLE partition. A question with no pins and no bands renders byte-identical to one compiled
+ * before either existed — asserted in `render.test.ts` against the digest, which covers the item
+ * codes in order.
+ *
+ * Bands sit after masking and option state rather than beside the ordering: an item can only be
+ * promoted if it survived, and banding earlier would let the order depend on items the respondent
+ * never sees.
  *
  * ## Steps 2–4 belong to `packages/logic`, not to this module
  *

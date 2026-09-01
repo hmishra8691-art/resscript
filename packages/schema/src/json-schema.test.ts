@@ -97,7 +97,6 @@ describe('the descriptor', () => {
       'media',
       'meta',
       'other_specify',
-      'pin',
       'position',
       'ref',
       'value_override',
